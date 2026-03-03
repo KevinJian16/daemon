@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Daemon Console</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
+    --text: #e2e8f0; --muted: #94a3b8; --accent: #6366f1;
+    --green: #10b981; --yellow: #f59e0b; --red: #ef4444;
+    --font: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--surface); }
+  header h1 { font-size: 16px; font-weight: 600; color: var(--accent); }
+  #gate-badge { padding: 3px 10px; border-radius: 4px; font-weight: 700; font-size: 11px; }
+  .GREEN { background: #064e3b; color: var(--green); }
+  .YELLOW { background: #451a03; color: var(--yellow); }
+  .RED { background: #450a0a; color: var(--red); }
+  nav { display: flex; gap: 2px; padding: 8px 20px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  nav button { background: none; border: none; color: var(--muted); padding: 6px 14px; cursor: pointer; border-radius: 4px; font-family: var(--font); font-size: 12px; }
+  nav button.active, nav button:hover { background: var(--border); color: var(--text); }
+  main { padding: 20px; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 16px; margin-bottom: 12px; }
+  .card h3 { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 12px; }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 12px; }
+  .stat .val { font-size: 28px; font-weight: 700; color: var(--text); }
+  .stat .lbl { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--muted); font-size: 11px; text-transform: uppercase; padding: 8px; border-bottom: 1px solid var(--border); }
+  td { padding: 8px; border-bottom: 1px solid var(--border); color: var(--text); }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+  .ok { background: #064e3b; color: var(--green); }
+  .error { background: #450a0a; color: var(--red); }
+  .degraded { background: #451a03; color: var(--yellow); }
+  .hybrid { background: #1e1b4b; color: #a5b4fc; }
+  .deterministic { background: #0c2340; color: #67e8f9; }
+  button.action { background: var(--accent); color: white; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; font-family: var(--font); font-size: 12px; }
+  button.action:hover { opacity: 0.85; }
+  #nerve-feed { max-height: 300px; overflow-y: auto; font-size: 12px; }
+  #nerve-feed div { padding: 5px 8px; border-bottom: 1px solid var(--border); }
+  #nerve-feed .ts { color: var(--muted); font-size: 10px; }
+  pre { background: #0a0c12; padding: 12px; border-radius: 4px; overflow-x: auto; font-size: 11px; color: #a5f3fc; line-height: 1.6; }
+  input, select { background: var(--surface); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 4px; font-family: var(--font); font-size: 12px; }
+  .search-row { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+  .refresh-note { color: var(--muted); font-size: 11px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⬡ Daemon Console</h1>
+  <span id="gate-badge" class="GREEN">GREEN</span>
+  <span id="running-tasks" style="color:var(--muted);font-size:11px;margin-left:auto"></span>
+  <button onclick="refreshAll()" style="background:none;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:11px;">↻ Refresh</button>
+</header>
+
+<nav>
+  <button class="active" onclick="show('overview')">Overview</button>
+  <button onclick="show('spine')">Spine</button>
+  <button onclick="show('fabric')">Fabric</button>
+  <button onclick="show('policy')">Policy</button>
+  <button onclick="show('traces')">Traces</button>
+</nav>
+
+<main>
+
+<!-- OVERVIEW -->
+<div id="panel-overview" class="panel active">
+  <div class="grid-4" id="stat-cards">
+    <div class="stat"><div class="val" id="stat-memory">—</div><div class="lbl">Memory Units</div></div>
+    <div class="stat"><div class="val" id="stat-methods">—</div><div class="lbl">Active Methods</div></div>
+    <div class="stat"><div class="val" id="stat-signals">—</div><div class="lbl">Attention Signals</div></div>
+    <div class="stat"><div class="val" id="stat-tasks">—</div><div class="lbl">Running Tasks</div></div>
+  </div>
+  <div class="card">
+    <h3>Cortex Usage Today</h3>
+    <div id="cortex-table">Loading…</div>
+  </div>
+</div>
+
+<!-- SPINE -->
+<div id="panel-spine" class="panel">
+  <div class="card">
+    <h3>Routine Status</h3>
+    <table id="spine-table">
+      <thead><tr><th>Routine</th><th>Mode</th><th>Schedule</th><th>Last Run</th><th>Action</th></tr></thead>
+      <tbody id="spine-tbody"></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h3>Nerve Event Feed</h3>
+    <div id="nerve-feed">Loading…</div>
+  </div>
+</div>
+
+<!-- FABRIC -->
+<div id="panel-fabric" class="panel">
+  <div style="display:flex;gap:8px;margin-bottom:12px;">
+    <button class="action" onclick="showFabric('memory')">Memory</button>
+    <button class="action" onclick="showFabric('playbook')">Playbook</button>
+    <button class="action" onclick="showFabric('compass')">Compass</button>
+  </div>
+  <div id="fabric-content"></div>
+</div>
+
+<!-- POLICY -->
+<div id="panel-policy" class="panel">
+  <div class="card">
+    <h3>Domain Priorities</h3>
+    <table id="priority-table">
+      <thead><tr><th>Domain</th><th>Weight</th><th>Source</th><th>Updated</th></tr></thead>
+      <tbody id="priority-tbody"></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h3>Quality Profiles</h3>
+    <div class="search-row">
+      <input id="profile-type" placeholder="task_type (e.g. research_report)" style="width:280px">
+      <button class="action" onclick="loadProfile()">Load</button>
+    </div>
+    <pre id="profile-content">Select a profile to view.</pre>
+  </div>
+</div>
+
+<!-- TRACES -->
+<div id="panel-traces" class="panel">
+  <div class="search-row">
+    <select id="trace-routine">
+      <option value="">All routines</option>
+      <option>spine.pulse</option><option>spine.intake</option>
+      <option>spine.record</option><option>spine.witness</option>
+      <option>spine.distill</option><option>spine.learn</option>
+      <option>spine.judge</option><option>spine.focus</option>
+      <option>spine.relay</option><option>spine.tend</option>
+    </select>
+    <select id="trace-status"><option value="">Any status</option><option>ok</option><option>error</option></select>
+    <button class="action" onclick="loadTraces()">Search</button>
+  </div>
+  <table>
+    <thead><tr><th>Trace ID</th><th>Routine</th><th>Status</th><th>Degraded</th><th>Started</th><th>Elapsed</th></tr></thead>
+    <tbody id="traces-tbody"></tbody>
+  </table>
+</div>
+
+</main>
+
+<script>
+const API = '';
+
+function show(panel) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('panel-' + panel).classList.add('active');
+  event.target.classList.add('active');
+  if (panel === 'overview') loadOverview();
+  else if (panel === 'spine') loadSpine();
+  else if (panel === 'fabric') showFabric('memory');
+  else if (panel === 'policy') loadPolicy();
+  else if (panel === 'traces') loadTraces();
+}
+
+async function api(path) {
+  const r = await fetch(API + path);
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+async function loadOverview() {
+  const d = await api('/console/overview');
+  const gate = d.gate?.status || 'GREEN';
+  const badge = document.getElementById('gate-badge');
+  badge.textContent = gate;
+  badge.className = gate;
+  document.getElementById('stat-memory').textContent = d.memory?.total_active ?? '—';
+  document.getElementById('stat-methods').textContent = d.playbook?.by_status?.active ?? '—';
+  document.getElementById('stat-signals').textContent = d.compass?.active_signals ?? '—';
+  document.getElementById('stat-tasks').textContent = d.running_tasks ?? '—';
+  document.getElementById('running-tasks').textContent = `${d.running_tasks ?? 0} running`;
+
+  const usage = d.cortex_usage?.by_provider || {};
+  let html = '<table><thead><tr><th>Provider</th><th>Calls</th><th>In Tokens</th><th>Out Tokens</th><th>Errors</th></tr></thead><tbody>';
+  for (const [p, u] of Object.entries(usage)) {
+    html += `<tr><td>${p}</td><td>${u.calls}</td><td>${(u.in_tokens||0).toLocaleString()}</td><td>${(u.out_tokens||0).toLocaleString()}</td><td>${u.errors||0}</td></tr>`;
+  }
+  if (!Object.keys(usage).length) html += '<tr><td colspan="5" style="color:var(--muted)">No calls today</td></tr>';
+  html += '</tbody></table>';
+  document.getElementById('cortex-table').innerHTML = html;
+}
+
+async function loadSpine() {
+  const routines = await api('/console/spine/status');
+  const tbody = document.getElementById('spine-tbody');
+  tbody.innerHTML = routines.map(r => `
+    <tr>
+      <td>${r.routine}</td>
+      <td><span class="badge ${r.mode}">${r.mode}</span></td>
+      <td style="color:var(--muted)">${r.schedule || '—'}</td>
+      <td style="color:var(--muted)">${r.last_run_utc ? r.last_run_utc.replace('T',' ').replace('Z','') : 'never'}</td>
+      <td><button class="action" onclick="triggerRoutine('${r.routine.replace('spine.','')}')" style="font-size:11px;padding:3px 8px">▶ Run</button></td>
+    </tr>`).join('');
+
+  const events = await api('/console/spine/nerve/events?limit=30');
+  const feed = document.getElementById('nerve-feed');
+  if (!events.length) { feed.innerHTML = '<div style="color:var(--muted)">No events yet</div>'; return; }
+  feed.innerHTML = events.reverse().map(e =>
+    `<div><span class="ts">${e.timestamp}</span> <strong>${e.event}</strong> ${JSON.stringify(e.payload).slice(0,80)}</div>`
+  ).join('');
+}
+
+async function triggerRoutine(name) {
+  try {
+    const r = await fetch(`${API}/console/spine/${name}/trigger`, {method:'POST'});
+    const d = await r.json();
+    alert(d.ok ? `✓ ${name} triggered` : `✗ ${d.error || d.detail}`);
+    loadSpine();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function showFabric(type) {
+  const content = document.getElementById('fabric-content');
+  content.innerHTML = 'Loading…';
+  if (type === 'memory') {
+    const units = await api('/console/fabric/memory?limit=50');
+    let html = '<div class="card"><h3>Memory Units (latest 50)</h3><table><thead><tr><th>Title</th><th>Domain</th><th>Tier</th><th>Confidence</th><th>Created</th></tr></thead><tbody>';
+    html += units.map(u => `<tr><td>${esc(u.title)}</td><td>${u.domain}</td><td>${u.tier}</td><td>${(u.confidence*100).toFixed(0)}%</td><td style="color:var(--muted)">${(u.created_utc||'').replace('T',' ').replace('Z','')}</td></tr>`).join('');
+    html += '</tbody></table></div>';
+    content.innerHTML = html;
+  } else if (type === 'playbook') {
+    const methods = await api('/console/fabric/playbook');
+    let html = '<div class="card"><h3>Active Playbook Methods</h3><table><thead><tr><th>Name</th><th>Category</th><th>Success Rate</th><th>Runs</th><th>Version</th></tr></thead><tbody>';
+    html += methods.map(m => `<tr><td>${esc(m.name)}</td><td>${m.category}</td><td>${m.success_rate != null ? (m.success_rate*100).toFixed(1)+'%' : '—'}</td><td>${m.total_runs}</td><td>v${m.version}</td></tr>`).join('');
+    html += '</tbody></table></div>';
+    content.innerHTML = html;
+  } else if (type === 'compass') {
+    const [prios, budgets, signals] = await Promise.all([
+      api('/console/fabric/compass/priorities'),
+      api('/console/fabric/compass/budgets'),
+      api('/console/fabric/compass/signals'),
+    ]);
+    let html = '<div class="card"><h3>Priorities</h3><table><thead><tr><th>Domain</th><th>Weight</th></tr></thead><tbody>';
+    html += prios.map(p => `<tr><td>${p.domain}</td><td>${p.weight}</td></tr>`).join('');
+    html += '</tbody></table></div>';
+    html += '<div class="card"><h3>Resource Budgets</h3><table><thead><tr><th>Resource</th><th>Daily Limit</th><th>Current Usage</th></tr></thead><tbody>';
+    html += budgets.map(b => `<tr><td>${b.resource_type}</td><td>${(b.daily_limit||0).toLocaleString()}</td><td>${(b.current_usage||0).toLocaleString()}</td></tr>`).join('');
+    html += '</tbody></table></div>';
+    if (signals.length) {
+      html += '<div class="card"><h3>Active Attention Signals</h3><table><thead><tr><th>Domain</th><th>Trend</th><th>Severity</th><th>Observed</th></tr></thead><tbody>';
+      html += signals.map(s => `<tr><td>${s.domain}</td><td>${esc(s.trend)}</td><td><span class="badge ${s.severity==='critical'?'error':s.severity==='high'?'degraded':'ok'}">${s.severity}</span></td><td style="color:var(--muted)">${(s.observed_utc||'').replace('T',' ').replace('Z','')}</td></tr>`).join('');
+      html += '</tbody></table></div>';
+    }
+    content.innerHTML = html;
+  }
+}
+
+async function loadPolicy() {
+  const prios = await api('/console/fabric/compass/priorities');
+  document.getElementById('priority-tbody').innerHTML = prios.map(p =>
+    `<tr><td>${p.domain}</td><td>${p.weight}</td><td style="color:var(--muted)">${p.source||'system'}</td><td style="color:var(--muted)">${(p.updated_utc||'').replace('T',' ').replace('Z','')}</td></tr>`
+  ).join('');
+}
+
+async function loadProfile() {
+  const t = document.getElementById('profile-type').value.trim() || 'default';
+  const d = await api('/console/policy/' + encodeURIComponent(t));
+  document.getElementById('profile-content').textContent = JSON.stringify(d.rules, null, 2);
+}
+
+async function loadTraces() {
+  const routine = document.getElementById('trace-routine').value;
+  const status = document.getElementById('trace-status').value;
+  let url = '/console/traces?limit=50';
+  if (routine) url += '&routine=' + encodeURIComponent(routine);
+  if (status) url += '&status=' + status;
+  const traces = await api(url);
+  document.getElementById('traces-tbody').innerHTML = traces.map(t =>
+    `<tr>
+      <td style="color:var(--muted);font-size:11px">${t.trace_id}</td>
+      <td>${t.routine}</td>
+      <td><span class="badge ${t.status}">${t.status}</span></td>
+      <td>${t.degraded ? '<span class="badge degraded">yes</span>' : '—'}</td>
+      <td style="color:var(--muted)">${(t.started_utc||'').replace('T',' ').replace('Z','')}</td>
+      <td>${t.elapsed_s}s</td>
+    </tr>`
+  ).join('') || '<tr><td colspan="6" style="color:var(--muted)">No traces found</td></tr>';
+}
+
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function refreshAll() {
+  const active = document.querySelector('.panel.active');
+  if (active?.id === 'panel-overview') loadOverview();
+  else if (active?.id === 'panel-spine') loadSpine();
+  else if (active?.id === 'panel-policy') loadPolicy();
+  else if (active?.id === 'panel-traces') loadTraces();
+}
+
+// Auto-load on start.
+loadOverview();
+setInterval(loadOverview, 30000);
+</script>
+</body>
+</html>
