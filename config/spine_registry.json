@@ -1,0 +1,95 @@
+{
+  "version": 3,
+  "routines": {
+    "spine.pulse": {
+      "mode": "deterministic",
+      "schedule": "*/10 * * * *",
+      "nerve_triggers": ["service_error"],
+      "reads": ["infra:health"],
+      "writes": ["state:gate"],
+      "depends_on": [],
+      "degraded_mode": null
+    },
+    "spine.intake": {
+      "mode": "deterministic",
+      "schedule": "0 4 * * *",
+      "nerve_triggers": ["collect_completed"],
+      "reads": ["runs:collect_output"],
+      "writes": ["fabric:memory:units"],
+      "depends_on": [],
+      "degraded_mode": null
+    },
+    "spine.record": {
+      "mode": "deterministic",
+      "schedule": null,
+      "nerve_triggers": ["task_completed", "delivery_completed"],
+      "reads": ["state:traces"],
+      "writes": ["fabric:playbook:evaluations", "fabric:memory:usage", "state:traces:summary"],
+      "depends_on": [],
+      "degraded_mode": null
+    },
+    "spine.witness": {
+      "mode": "hybrid",
+      "schedule": "adaptive:4h:2h-12h",
+      "nerve_triggers": [],
+      "reads": ["state:tasks", "state:traces", "fabric:memory:stats", "fabric:playbook:stats", "fabric:playbook:evaluations:unanalyzed"],
+      "writes": ["fabric:memory:observations", "fabric:compass:attention_signals"],
+      "depends_on": ["spine.record"],
+      "degraded_mode": "stats_only"
+    },
+    "spine.distill": {
+      "mode": "hybrid",
+      "schedule": "30 4 * * *",
+      "nerve_triggers": ["intake_completed"],
+      "reads": ["fabric:memory:units"],
+      "writes": ["fabric:memory:units", "fabric:memory:links"],
+      "depends_on": ["spine.intake"],
+      "degraded_mode": "string_match_only"
+    },
+    "spine.learn": {
+      "mode": "hybrid",
+      "schedule": "adaptive:4h30m:2h30m-12h30m",
+      "nerve_triggers": [],
+      "reads": ["state:tasks", "state:traces", "fabric:playbook:active", "fabric:memory:observations"],
+      "writes": ["fabric:playbook:candidates", "state:skill_evolution_proposals"],
+      "depends_on": ["spine.witness"],
+      "degraded_mode": "skip"
+    },
+    "spine.judge": {
+      "mode": "deterministic",
+      "schedule": "0 5 * * *",
+      "nerve_triggers": [],
+      "reads": ["fabric:playbook:evaluations"],
+      "writes": ["fabric:playbook:methods"],
+      "depends_on": ["spine.learn"],
+      "degraded_mode": null
+    },
+    "spine.focus": {
+      "mode": "hybrid",
+      "schedule": "0 6 * * 1",
+      "nerve_triggers": ["attention_critical"],
+      "reads": ["fabric:compass:attention_signals", "fabric:memory:stats", "fabric:playbook:stats"],
+      "writes": ["fabric:compass:priorities", "fabric:compass:resource_budgets"],
+      "depends_on": ["spine.witness"],
+      "degraded_mode": "no_adjustment"
+    },
+    "spine.relay": {
+      "mode": "deterministic",
+      "schedule": "0 */4 * * *",
+      "nerve_triggers": ["fabric_updated"],
+      "reads": ["fabric:memory", "fabric:playbook", "fabric:compass"],
+      "writes": ["state:snapshots", "openclaw:skill_index"],
+      "depends_on": [],
+      "degraded_mode": null
+    },
+    "spine.tend": {
+      "mode": "deterministic",
+      "schedule": "0 3 * * *",
+      "nerve_triggers": ["gate_changed"],
+      "reads": ["state", "fabric:memory", "fabric:playbook", "openclaw:sessions"],
+      "writes": ["state", "fabric:memory:gc", "fabric:playbook:gc", "openclaw:sessions:gc"],
+      "depends_on": [],
+      "degraded_mode": null
+    }
+  }
+}

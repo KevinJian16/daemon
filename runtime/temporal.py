@@ -1,0 +1,56 @@
+"""Temporal client wrapper — thin facade over temporalio SDK."""
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any
+
+from temporalio.client import Client, WorkflowHandle
+from temporalio.common import RetryPolicy
+
+
+class TemporalClient:
+    """Thin facade over temporalio.client.Client for workflow submission and querying."""
+
+    def __init__(self, client: Client, task_queue: str) -> None:
+        self._client = client
+        self._task_queue = task_queue
+
+    @classmethod
+    async def connect(cls, host: str = "127.0.0.1", port: int = 7233, namespace: str = "default", task_queue: str = "daemon-queue") -> "TemporalClient":
+        client = await Client.connect(f"{host}:{port}", namespace=namespace)
+        return cls(client, task_queue)
+
+    async def submit(self, workflow_id: str, plan: dict, run_root: str) -> str:
+        """Submit a workflow and return the run_id."""
+        handle: WorkflowHandle = await self._client.start_workflow(
+            "GraphDispatchWorkflow",
+            args=[{"plan": plan, "run_root": run_root}],
+            id=workflow_id,
+            task_queue=self._task_queue,
+        )
+        return handle.result_run_id or workflow_id
+
+    async def cancel(self, workflow_id: str) -> None:
+        handle = self._client.get_workflow_handle(workflow_id)
+        await handle.cancel()
+
+    async def status(self, workflow_id: str) -> str:
+        try:
+            handle = self._client.get_workflow_handle(workflow_id)
+            desc = await handle.describe()
+            return str(desc.status.name).lower() if desc.status else "unknown"
+        except Exception as e:
+            return f"error: {str(e)[:60]}"
+
+    def health_check(self) -> str:
+        """Synchronous check: attempt TCP connection to Temporal server."""
+        import socket
+        try:
+            host, port_str = self._client.service_client.config.target_host.rsplit(":", 1)
+            port = int(port_str)
+            sock = socket.create_connection((host, port), timeout=3)
+            sock.close()
+            return "ok"
+        except Exception as e:
+            return f"unreachable: {str(e)[:60]}"
