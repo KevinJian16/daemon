@@ -218,6 +218,12 @@ class MemoryFabric:
             unit["links_in"] = [
                 dict(r) for r in conn.execute("SELECT * FROM links WHERE to_id=?", (unit_id,)).fetchall()
             ]
+            unit["audit"] = [
+                dict(r) for r in conn.execute(
+                    "SELECT * FROM audit WHERE detail LIKE ? ORDER BY timestamp DESC LIMIT 30",
+                    (f"%{unit_id}%",),
+                ).fetchall()
+            ]
         return unit
 
     def distill(self, unit_id: str, updates: dict, actor: str = "spine.distill") -> bool:

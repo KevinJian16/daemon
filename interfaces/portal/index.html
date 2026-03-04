@@ -92,9 +92,10 @@
 </header>
 
 <nav>
-  <button class="active" onclick="show('chat')">Chat</button>
-  <button onclick="show('outcomes')">Outcomes</button>
-  <button onclick="show('tasks')">Tasks</button>
+  <button class="active" onclick="show('chat', this)">Chat</button>
+  <button onclick="show('outcomes', this)">Outcomes</button>
+  <button onclick="show('timeline', this)">Timeline</button>
+  <button onclick="show('tasks', this)">Tasks</button>
 </nav>
 
 <!-- CHAT -->
@@ -132,6 +133,19 @@
     <div id="outcomes-preview">
       <div class="empty" id="preview-empty">Select an outcome to view</div>
       <div id="preview-content" style="display:none"></div>
+    </div>
+  </div>
+</div>
+
+<!-- TIMELINE -->
+<div id="panel-timeline" class="panel">
+  <div id="timeline-toolbar" style="display:flex;gap:8px;padding:14px 24px;border-bottom:1px solid var(--border);align-items:center;flex-shrink:0;">
+    <span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:1px">Timeline (Last 30 days)</span>
+    <button class="sm" style="margin-left:auto" onclick="loadTimeline()">↻ Refresh</button>
+  </div>
+  <div id="timeline-body" style="flex:1;overflow-y:auto;padding:0 24px 24px;">
+    <div id="timeline-groups" style="display:flex;flex-direction:column;gap:12px;padding-top:12px;">
+      <div style="color:var(--muted);font-size:12px">Loading…</div>
     </div>
   </div>
 </div>
@@ -192,12 +206,13 @@ function autoResize(el) {
   el.style.height = Math.min(el.scrollHeight, 120) + 'px';
 }
 
-function show(panel) {
+function show(panel, el) {
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
   document.getElementById('panel-' + panel).classList.add('active');
-  event.target.classList.add('active');
+  if (el) el.classList.add('active');
   if (panel === 'outcomes') loadOutcomes();
+  else if (panel === 'timeline') loadTimeline();
   else if (panel === 'tasks') loadTasks();
 }
 
@@ -314,18 +329,19 @@ async function loadOutcomes() {
       return;
     }
     container.innerHTML = items.map((o, i) => `
-      <div class="outcome-item" onclick="viewOutcome('${esc(o.path)}', this)">
+      <div class="outcome-item" data-path-key="${encodeURIComponent(String(o.path||''))}" onclick="viewOutcome('${encodeURIComponent(String(o.path||''))}', this)">
         <div class="title">${esc(o.title || o.task_id || '—')}</div>
-        <div class="meta">${esc(o.task_type || '')} · ${(o.archived_utc||'').replace('T',' ').replace('Z','')}</div>
+        <div class="meta">${esc(o.task_type || '')} · ${((o.delivered_utc||o.archived_utc||'').replace('T',' ').replace('Z',''))}</div>
       </div>`).join('');
   } catch(e) {
     container.innerHTML = `<div style="padding:20px;color:var(--red);font-size:12px">Error: ${esc(e.message)}</div>`;
   }
 }
 
-async function viewOutcome(path, el) {
+async function viewOutcome(pathKey, el) {
+  const path = decodeURIComponent(pathKey || '');
   document.querySelectorAll('.outcome-item').forEach(i => i.classList.remove('selected'));
-  el.classList.add('selected');
+  if (el) el.classList.add('selected');
 
   const empty = document.getElementById('preview-empty');
   const content = document.getElementById('preview-content');
@@ -334,25 +350,91 @@ async function viewOutcome(path, el) {
   content.innerHTML = '<p style="color:var(--muted)">Loading…</p>';
 
   try {
-    // Try to fetch report.md from outcome directory.
-    const mdPath = path.endsWith('/') ? path + 'report.md' : path + '/report.md';
-    const r = await fetch(API + '/outcome/' + mdPath.replace(/^\//, ''));
-    if (r.ok) {
-      const md = await r.text();
-      content.innerHTML = formatMd(md);
+    const normalized = path.replace(/^\//, '').replace(/\/+$/, '');
+
+    // Prefer HTML preview.
+    const htmlResp = await fetch(API + '/outcome/' + normalized + '/report.html');
+    if (htmlResp.ok) {
+      const html = await htmlResp.text();
+      content.innerHTML = '';
+      const frame = document.createElement('iframe');
+      frame.style.width = '100%';
+      frame.style.height = '70vh';
+      frame.style.border = '1px solid var(--border)';
+      frame.style.borderRadius = '6px';
+      frame.style.background = 'white';
+      frame.srcdoc = html;
+      content.appendChild(frame);
     } else {
-      // Fall back to manifest.
-      const mr = await fetch(API + '/outcome/' + path.replace(/^\//, '') + '/manifest.json');
-      if (mr.ok) {
-        const manifest = await mr.json();
-        content.innerHTML = `<pre>${esc(JSON.stringify(manifest, null, 2))}</pre>`;
+      const mdResp = await fetch(API + '/outcome/' + normalized + '/report.md');
+      if (mdResp.ok) {
+        const md = await mdResp.text();
+        content.innerHTML = formatMd(md);
       } else {
-        content.innerHTML = '<p style="color:var(--muted)">No preview available</p>';
+        const mr = await fetch(API + '/outcome/' + normalized + '/manifest.json');
+        if (mr.ok) {
+          const manifest = await mr.json();
+          content.innerHTML = `<pre>${esc(JSON.stringify(manifest, null, 2))}</pre>`;
+        } else {
+          content.innerHTML = '<p style="color:var(--muted)">No preview available</p>';
+        }
       }
     }
   } catch(e) {
     content.innerHTML = `<p style="color:var(--red)">Error: ${esc(e.message)}</p>`;
   }
+}
+
+async function loadTimeline() {
+  const container = document.getElementById('timeline-groups');
+  container.innerHTML = '<div style="color:var(--muted);font-size:12px">Loading…</div>';
+  try {
+    const data = await apiFetch('/outcome/timeline?days=30&limit_per_day=40');
+    const groups = data.days || [];
+    if (!groups.length) {
+      container.innerHTML = '<div style="color:var(--muted);font-size:12px">No outcomes in timeline yet</div>';
+      return;
+    }
+    container.innerHTML = groups.map(g => {
+      const items = g.items || [];
+      const rows = items.map(o => {
+        const pathKey = encodeURIComponent(String(o.path || ''));
+        return `
+          <tr>
+            <td><button class="sm" onclick="openOutcomeFromTimeline('${pathKey}')">Open</button></td>
+            <td>${esc(o.title || o.task_id || '—')}</td>
+            <td style="color:var(--muted)">${esc(o.task_type || '')}</td>
+            <td style="color:var(--muted)">${((o.delivered_utc||'').replace('T',' ').replace('Z',''))}</td>
+          </tr>`;
+      }).join('');
+      return `
+        <div style="border:1px solid var(--border);border-radius:8px;background:var(--surface);overflow:hidden">
+          <div style="padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+            <strong>${esc(g.day || 'unknown')}</strong>
+            <span style="color:var(--muted);font-size:11px">${items.length} items</span>
+          </div>
+          <table>
+            <thead><tr><th>Action</th><th>Title</th><th>Type</th><th>Delivered</th></tr></thead>
+            <tbody>${rows || '<tr><td colspan="4" style="color:var(--muted)">No items</td></tr>'}</tbody>
+          </table>
+        </div>`;
+    }).join('');
+  } catch (e) {
+    container.innerHTML = `<div style="color:var(--red);font-size:12px">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+async function openOutcomeFromTimeline(pathKey) {
+  const outcomesTab = document.querySelectorAll('nav button')[1];
+  show('outcomes', outcomesTab);
+  await loadOutcomes();
+  const items = Array.from(document.querySelectorAll('.outcome-item'));
+  const target = items.find(n => n.dataset.pathKey === pathKey);
+  if (target) {
+    target.click();
+    return;
+  }
+  await viewOutcome(pathKey, null);
 }
 
 // ── Tasks ─────────────────────────────────────────────────────────────────────

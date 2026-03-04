@@ -181,6 +181,10 @@ class GraphDispatchWorkflow:
                 if isinstance(delivery, dict) and delivery.get("ok"):
                     break
 
+        if not (isinstance(delivery, dict) and delivery.get("ok")):
+            err_msg = str((delivery or {}).get("error_code") or (delivery or {}).get("detail") or "delivery_failed")
+            await self._mark_task_status(inp.run_root, plan, "failed", err_msg[:200])
+
         return delivery or {}
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -196,9 +200,8 @@ class GraphDispatchWorkflow:
         return str(st.get("agent") or "").strip()
 
     def _agent_limits(self, plan: dict) -> dict[str, int]:
-        # Prefer plan-level overrides; fall back to system defaults from system.json.
-        # At runtime these come from Compass via Dispatch — no hardcoding here.
-        system_defaults = {
+        # Prefer plan-level overrides; fall back to defaults injected by Dispatch.
+        system_defaults = plan.get("agent_concurrency_defaults") or {
             "collect": 8, "analyze": 4, "review": 2,
             "render": 2, "apply": 1, "spine": 2, "router": 1, "build": 2,
         }

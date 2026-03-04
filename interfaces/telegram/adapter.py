@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -28,6 +29,32 @@ ALLOWED_USERS = {
 _sessions: dict[int, str] = {}
 
 app = FastAPI(title="Daemon Telegram Adapter")
+
+
+def _daemon_home() -> Path:
+    env = os.environ.get("DAEMON_HOME")
+    if env:
+        return Path(env)
+    return Path(__file__).resolve().parents[2]
+
+
+def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _log_telegram_event(event: str, payload: dict[str, Any]) -> None:
+    rec = {
+        "event": event,
+        "payload": payload,
+        "source": "telegram",
+        "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    try:
+        _append_jsonl(_daemon_home() / "state" / "telemetry" / "telegram_events.jsonl", rec)
+    except Exception as exc:
+        logger.warning("Failed to write telegram telemetry: %s", exc)
 
 
 def _tg_api(method: str, payload: dict) -> dict:
@@ -104,13 +131,17 @@ def _handle_update(update: dict) -> None:
     if not text:
         return
 
+    _log_telegram_event("message_received", {"chat_id": chat_id, "user_id": user_id, "text_len": len(text)})
+
     # Authorization check.
     if ALLOWED_USERS and user_id not in ALLOWED_USERS:
+        _log_telegram_event("access_denied", {"chat_id": chat_id, "user_id": user_id})
         _send_message(chat_id, "⛔ Access denied.")
         return
 
     # Built-in commands.
     if text == "/start" or text == "/help":
+        _log_telegram_event("command", {"chat_id": chat_id, "user_id": user_id, "cmd": text})
         _send_message(chat_id,
             "*Daemon Portal*\n\n"
             "Talk naturally to submit tasks. When a plan is ready, the Router will show it and you can confirm.\n\n"
@@ -123,11 +154,13 @@ def _handle_update(update: dict) -> None:
         return
 
     if text == "/reset":
+        _log_telegram_event("command", {"chat_id": chat_id, "user_id": user_id, "cmd": text})
         _sessions.pop(user_id, None)
         _send_message(chat_id, "✓ Session reset. Start a new conversation.")
         return
 
     if text == "/status":
+        _log_telegram_event("command", {"chat_id": chat_id, "user_id": user_id, "cmd": text})
         try:
             r = httpx.get(f"{DAEMON_API}/tasks?status=running&limit=10", timeout=10)
             tasks = r.json() if r.ok else []
@@ -139,10 +172,12 @@ def _handle_update(update: dict) -> None:
                     lines.append(f"• `{t.get('task_id')}` — {t.get('title') or t.get('task_type') or '?'}")
                 _send_message(chat_id, "\n".join(lines))
         except Exception as e:
+            _log_telegram_event("status_failed", {"chat_id": chat_id, "user_id": user_id, "error": str(e)[:200]})
             _send_message(chat_id, f"Error: {e}")
         return
 
     if text == "/outcomes":
+        _log_telegram_event("command", {"chat_id": chat_id, "user_id": user_id, "cmd": text})
         try:
             r = httpx.get(f"{DAEMON_API}/outcome?limit=5", timeout=10)
             items = r.json() if r.ok else []
@@ -151,9 +186,11 @@ def _handle_update(update: dict) -> None:
             else:
                 lines = [f"*Recent outcomes ({len(items)}):*"]
                 for o in items:
-                    lines.append(f"• {o.get('title') or o.get('task_id')} — {(o.get('archived_utc') or '')[:10]}")
+                    ts = (o.get("delivered_utc") or o.get("archived_utc") or "")[:10]
+                    lines.append(f"• {o.get('title') or o.get('task_id')} — {ts}")
                 _send_message(chat_id, "\n".join(lines))
         except Exception as e:
+            _log_telegram_event("outcomes_failed", {"chat_id": chat_id, "user_id": user_id, "error": str(e)[:200]})
             _send_message(chat_id, f"Error: {e}")
         return
 
@@ -161,6 +198,7 @@ def _handle_update(update: dict) -> None:
     try:
         result = _chat(user_id, text)
         content = result.get("content") or "(no response)"
+        _log_telegram_event("chat_ok", {"chat_id": chat_id, "user_id": user_id, "has_plan": bool(result.get("plan"))})
 
         # Telegram Markdown: convert code fences.
         tg_content = content.replace("```json", "```").replace("```python", "```")
@@ -180,6 +218,7 @@ def _handle_update(update: dict) -> None:
 
     except Exception as e:
         logger.error(f"Chat error for user {user_id}: {e}")
+        _log_telegram_event("chat_failed", {"chat_id": chat_id, "user_id": user_id, "error": str(e)[:200]})
         _send_message(chat_id, f"⚠️ Error: {str(e)[:200]}")
 
 
@@ -212,8 +251,10 @@ async def webhook(request: Request):
         plan = _pending_plans.pop(user_id)
         try:
             result = _submit_plan(plan)
+            _log_telegram_event("confirm_ok", {"chat_id": chat_id, "user_id": user_id, "task_id": result.get("task_id", "")})
             _send_message(chat_id, f"✓ Plan submitted! Task ID: `{result.get('task_id')}`")
         except Exception as e:
+            _log_telegram_event("confirm_failed", {"chat_id": chat_id, "user_id": user_id, "error": str(e)[:200]})
             _send_message(chat_id, f"✗ Submission failed: {str(e)[:200]}")
         return JSONResponse({"ok": True})
 
@@ -254,4 +295,4 @@ if __name__ == "__main__":
         register_webhook(webhook_url)
     else:
         port = int(os.environ.get("TELEGRAM_ADAPTER_PORT", "8001"))
-        uvicorn.run("adapter:app", host="0.0.0.0", port=port, reload=False)
+        uvicorn.run(app, host="0.0.0.0", port=port, reload=False)

@@ -211,6 +211,31 @@ class PlaybookFabric:
             results.append(m)
         return results
 
+    def list_methods(self, status: str | None = None, category: str | None = None, limit: int = 100) -> list[dict]:
+        clauses = []
+        params: list[Any] = []
+        if status:
+            clauses.append("status=?")
+            params.append(status)
+        if category:
+            clauses.append("category=?")
+            params.append(category)
+
+        sql = "SELECT method_id, name, category, description, spec_json, status, success_rate, total_runs, version FROM methods"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY COALESCE(success_rate, 0.0) DESC, total_runs DESC LIMIT ?"
+        params.append(limit)
+
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["spec"] = json.loads(item.pop("spec_json"))
+            out.append(item)
+        return out
+
     def get(self, method_id: str) -> dict | None:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM methods WHERE method_id=?", (method_id,)).fetchone()

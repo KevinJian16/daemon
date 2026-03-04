@@ -220,6 +220,33 @@ class CompassFabric:
         with self._connect() as conn:
             return [dict(r) for r in conn.execute("SELECT * FROM resource_budgets").fetchall()]
 
+    def set_budget(self, resource_type: str, daily_limit: float, changed_by: str = "console") -> None:
+        now = _utc()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT current_usage, reset_utc FROM resource_budgets WHERE resource_type=?",
+                (resource_type,),
+            ).fetchone()
+            if row:
+                current_usage = float(row["current_usage"] or 0)
+                reset_utc = str(row["reset_utc"] or now)
+            else:
+                current_usage = 0.0
+                reset_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 86400))
+
+            conn.execute(
+                "INSERT INTO resource_budgets VALUES (?,?,?,?) "
+                "ON CONFLICT(resource_type) DO UPDATE SET daily_limit=excluded.daily_limit, reset_utc=excluded.reset_utc",
+                (resource_type, float(daily_limit), current_usage, reset_utc),
+            )
+            self._version(
+                conn,
+                f"budget.{resource_type}",
+                {"daily_limit": float(daily_limit), "current_usage": current_usage, "reset_utc": reset_utc},
+                changed_by,
+                None,
+            )
+
     # ── Preferences ───────────────────────────────────────────────────────────
 
     def get_pref(self, key: str, default: str = "") -> str:
@@ -303,15 +330,21 @@ class CompassFabric:
             self.set_quality_profile(sub, old_value, changed_by=changed_by)
         elif kind == "pref":
             self.set_pref(sub, old_value["value"], changed_by=changed_by)
+        elif kind == "budget":
+            self.set_budget(sub, float(old_value.get("daily_limit", 0)), changed_by=changed_by)
+        else:
+            return False
         return True
 
     def snapshot(self) -> dict:
+        with self._connect() as conn:
+            quality_profiles = {
+                r["task_type"]: json.loads(r["rules_json"])
+                for r in conn.execute("SELECT task_type, rules_json FROM quality_profiles").fetchall()
+            }
         return {
             "priorities": self.get_priorities(),
-            "quality_profiles": {
-                r["task_type"]: json.loads(r["rules_json"])
-                for r in self._connect().execute("SELECT task_type, rules_json FROM quality_profiles").fetchall()
-            },
+            "quality_profiles": quality_profiles,
             "preferences": self.all_prefs(),
             "attention_signals": self.active_signals(),
             "exported_utc": _utc(),

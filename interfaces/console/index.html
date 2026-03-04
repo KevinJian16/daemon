@@ -50,6 +50,18 @@
   input, select { background: var(--surface); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 4px; font-family: var(--font); font-size: 12px; }
   .search-row { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
   .refresh-note { color: var(--muted); font-size: 11px; margin-top: 8px; }
+  textarea.editor {
+    width: 100%;
+    min-height: 260px;
+    background: #0a0c12;
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 10px;
+    font-family: var(--font);
+    font-size: 12px;
+    line-height: 1.6;
+  }
 </style>
 </head>
 <body>
@@ -61,13 +73,15 @@
 </header>
 
 <nav>
-  <button class="active" onclick="show('overview')">Overview</button>
-  <button onclick="show('spine')">Spine</button>
-  <button onclick="show('fabric')">Fabric</button>
-  <button onclick="show('policy')">Policy</button>
-  <button onclick="show('traces')">Traces</button>
-  <button onclick="show('agents')">Agents</button>
-  <button onclick="show('schedules')">Schedules</button>
+  <button class="active" onclick="show('overview', this)">Overview</button>
+  <button onclick="show('spine', this)">Spine</button>
+  <button onclick="show('fabric', this)">Fabric</button>
+  <button onclick="show('policy', this)">Policy</button>
+  <button onclick="show('traces', this)">Traces</button>
+  <button onclick="show('cortex', this)">Cortex</button>
+  <button onclick="show('agents', this)">Agents</button>
+  <button onclick="show('skill-evolution', this)">Skill Evolution</button>
+  <button onclick="show('schedules', this)">Schedules</button>
 </nav>
 
 <main>
@@ -99,6 +113,10 @@
     <h3>Nerve Event Feed</h3>
     <div id="nerve-feed">Loading…</div>
   </div>
+  <div class="card">
+    <h3>Dependency Graph</h3>
+    <pre id="spine-deps">Loading…</pre>
+  </div>
 </div>
 
 <!-- FABRIC -->
@@ -121,12 +139,53 @@
     </table>
   </div>
   <div class="card">
-    <h3>Quality Profiles</h3>
+    <h3>Policy Editor</h3>
     <div class="search-row">
-      <input id="profile-type" placeholder="task_type (e.g. research_report)" style="width:280px">
-      <button class="action" onclick="loadProfile()">Load</button>
+      <select id="policy-scope" onchange="onPolicyScopeChange()" style="width:160px">
+        <option value="quality">quality</option>
+        <option value="preference">preference</option>
+        <option value="budget">budget</option>
+      </select>
+      <input id="policy-key" placeholder="task_type (e.g. research_report)" style="width:260px">
+      <button class="action" onclick="loadPolicyEditor()">Load</button>
+      <button class="action" style="background:#14532d" onclick="savePolicyEditor()">Save</button>
     </div>
-    <pre id="profile-content">Select a profile to view.</pre>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin:8px 0;color:var(--muted);font-size:11px">
+      <span id="policy-editor-meta">No policy loaded</span>
+      <span>Quality quick keys:
+        <button class="action" style="font-size:10px;padding:2px 6px;background:#334155" onclick="editPolicyKey('quality','default')">default</button>
+        <button class="action" style="font-size:10px;padding:2px 6px;background:#334155" onclick="editPolicyKey('quality','research_report')">research_report</button>
+        <button class="action" style="font-size:10px;padding:2px 6px;background:#334155" onclick="editPolicyKey('quality','daily_brief')">daily_brief</button>
+      </span>
+    </div>
+    <textarea id="policy-editor-text" class="editor" style="min-height:220px"></textarea>
+  </div>
+  <div class="card">
+    <h3>Policy Catalog</h3>
+    <div class="search-row">
+      <button class="action" onclick="loadPolicyCatalog()">Refresh Catalog</button>
+    </div>
+    <table>
+      <thead><tr><th>Preference Key</th><th>Value</th><th>Action</th></tr></thead>
+      <tbody id="policy-pref-tbody"><tr><td colspan="3" style="color:var(--muted)">Loading…</td></tr></tbody>
+    </table>
+    <table style="margin-top:10px">
+      <thead><tr><th>Budget Type</th><th>Daily Limit</th><th>Current Usage</th><th>Action</th></tr></thead>
+      <tbody id="policy-budget-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h3>Policy Versions</h3>
+    <div class="search-row">
+      <button class="action" onclick="loadPolicyVersions()">Load Versions</button>
+      <select id="policy-diff-a" onchange="renderPolicyDiff()"><option value="">Version A</option></select>
+      <select id="policy-diff-b" onchange="renderPolicyDiff()"><option value="">Version B</option></select>
+    </div>
+    <table>
+      <thead><tr><th>Version</th><th>Changed</th><th>By</th><th>Reason</th><th>Action</th></tr></thead>
+      <tbody id="policy-versions-tbody"><tr><td colspan="5" style="color:var(--muted)">Load a policy key to view versions</td></tr></tbody>
+    </table>
+    <pre id="policy-diff-content" style="margin-top:10px">Select two versions to view diff.</pre>
   </div>
 </div>
 
@@ -148,6 +207,29 @@
     <thead><tr><th>Trace ID</th><th>Routine</th><th>Status</th><th>Degraded</th><th>Started</th><th>Elapsed</th></tr></thead>
     <tbody id="traces-tbody"></tbody>
   </table>
+  <div class="card" style="margin-top:12px">
+    <h3>Trace Detail</h3>
+    <pre id="trace-detail">Select a trace row to inspect details.</pre>
+  </div>
+</div>
+
+<!-- CORTEX -->
+<div id="panel-cortex" class="panel">
+  <div class="card">
+    <div class="search-row">
+      <input id="cortex-since" placeholder="since UTC (e.g. 2026-03-04T00:00:00Z)" style="width:280px">
+      <input id="cortex-until" placeholder="until UTC (optional)" style="width:240px">
+      <button class="action" onclick="loadCortexUsage()">Search</button>
+    </div>
+    <table>
+      <thead><tr><th>Time</th><th>Trace</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Elapsed</th><th>Status</th></tr></thead>
+      <tbody id="cortex-usage-tbody"><tr><td colspan="8" style="color:var(--muted)">No records loaded</td></tr></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h3>Cortex Provider Summary</h3>
+    <pre id="cortex-usage-summary">Load data to inspect provider usage summary.</pre>
+  </div>
 </div>
 
 <!-- AGENT MANAGER -->
@@ -155,9 +237,57 @@
   <div class="card">
     <h3>OpenClaw Agents</h3>
     <table>
-      <thead><tr><th>Agent</th><th>Skills</th><th>Workspace</th></tr></thead>
+      <thead><tr><th>Agent</th><th>Skills</th><th>Workspace</th><th>Action</th></tr></thead>
       <tbody id="agents-tbody"></tbody>
     </table>
+  </div>
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <h3 style="margin:0">Agent Skills</h3>
+      <span style="color:var(--muted);font-size:11px" id="skills-agent-tag">No agent selected</span>
+      <button class="action" style="margin-left:auto;font-size:11px;padding:4px 8px" onclick="reloadActiveAgentSkills()">↻ Refresh</button>
+    </div>
+    <table>
+      <thead><tr><th>Skill</th><th>Enabled</th><th>Path</th><th>Action</th></tr></thead>
+      <tbody id="agent-skills-tbody"><tr><td colspan="4" style="color:var(--muted)">Select an agent to manage skills</td></tr></tbody>
+    </table>
+  </div>
+  <div class="card" id="skill-editor-card" style="display:none">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <h3 style="margin:0">Skill Editor</h3>
+      <span style="color:var(--muted);font-size:11px" id="skill-editor-meta"></span>
+    </div>
+    <textarea id="skill-editor-text" class="editor"></textarea>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+      <button class="action" style="background:#334155" onclick="cancelSkillEdit()">Cancel</button>
+      <button class="action" onclick="saveSkillEdit()">Save Skill</button>
+    </div>
+  </div>
+</div>
+
+<!-- SKILL EVOLUTION -->
+<div id="panel-skill-evolution" class="panel">
+  <div class="card">
+    <h3>Skill Evolution Proposals</h3>
+    <div class="search-row">
+      <select id="sev-status" onchange="loadSkillEvolution()">
+        <option value="">All status</option>
+        <option value="pending">pending</option>
+        <option value="approved">approved</option>
+        <option value="rejected">rejected</option>
+        <option value="applied">applied</option>
+        <option value="apply_failed">apply_failed</option>
+      </select>
+      <button class="action" onclick="loadSkillEvolution()">Load</button>
+    </div>
+    <table>
+      <thead><tr><th>ID</th><th>Skill</th><th>Status</th><th>Reviewed</th><th>Action</th></tr></thead>
+      <tbody id="sev-tbody"><tr><td colspan="5" style="color:var(--muted)">No proposals loaded</td></tr></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h3>Proposal Detail</h3>
+    <pre id="sev-detail">Select a proposal to inspect details.</pre>
   </div>
 </div>
 
@@ -170,24 +300,44 @@
       <tbody id="schedules-tbody"></tbody>
     </table>
   </div>
+  <div class="card">
+    <div class="search-row">
+      <h3 style="margin:0">Schedule History</h3>
+      <select id="schedule-history-routine" onchange="loadScheduleHistory()"><option value="">All routines</option></select>
+      <button class="action" onclick="loadScheduleHistory()">Load History</button>
+    </div>
+    <table>
+      <thead><tr><th>Run UTC</th><th>Routine</th><th>Trigger</th><th>Status</th><th>Detail</th></tr></thead>
+      <tbody id="schedule-history-tbody"><tr><td colspan="5" style="color:var(--muted)">No history loaded</td></tr></tbody>
+    </table>
+  </div>
 </div>
 
 </main>
 
 <script>
 const API = '';
+let activeAgentId = '';
+let activeAgentSkills = [];
+let editingSkillName = '';
+let activePlaybookMethod = null;
+let currentPolicyScope = 'quality';
+let currentPolicyType = 'default';
+let currentPolicyVersions = [];
 
-function show(panel) {
+function show(panel, el) {
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
   document.getElementById('panel-' + panel).classList.add('active');
-  event.target.classList.add('active');
+  if (el) el.classList.add('active');
   if (panel === 'overview') loadOverview();
   else if (panel === 'spine') loadSpine();
   else if (panel === 'fabric') showFabric('memory');
   else if (panel === 'policy') loadPolicy();
   else if (panel === 'traces') loadTraces();
+  else if (panel === 'cortex') loadCortexUsage();
   else if (panel === 'agents') loadAgents();
+  else if (panel === 'skill-evolution') loadSkillEvolution();
   else if (panel === 'schedules') loadSchedules();
 }
 
@@ -195,6 +345,19 @@ async function api(path) {
   const r = await fetch(API + path);
   if (!r.ok) throw new Error(r.status);
   return r.json();
+}
+
+async function apiWrite(path, method, body) {
+  const r = await fetch(API + path, {
+    method,
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body || {}),
+  });
+  const text = await r.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch (_) { data = {"detail": text || r.status}; }
+  if (!r.ok) throw new Error(data.error || data.detail || r.status);
+  return data;
 }
 
 async function loadOverview() {
@@ -233,10 +396,44 @@ async function loadSpine() {
 
   const events = await api('/console/spine/nerve/events?limit=30');
   const feed = document.getElementById('nerve-feed');
-  if (!events.length) { feed.innerHTML = '<div style="color:var(--muted)">No events yet</div>'; return; }
-  feed.innerHTML = events.reverse().map(e =>
-    `<div><span class="ts">${e.timestamp}</span> <strong>${e.event}</strong> ${JSON.stringify(e.payload).slice(0,80)}</div>`
-  ).join('');
+  if (!events.length) {
+    feed.innerHTML = '<div style="color:var(--muted)">No events yet</div>';
+  } else {
+    feed.innerHTML = events.reverse().map(e =>
+      `<div><span class="ts">${e.timestamp}</span> <strong>${e.event}</strong> ${JSON.stringify(e.payload).slice(0,80)}</div>`
+    ).join('');
+  }
+
+  const depNode = document.getElementById('spine-deps');
+  if (!depNode) return;
+  try {
+    const deps = await api('/console/spine/dependencies');
+    if (!deps.length) {
+      depNode.textContent = 'No routine definitions found.';
+      return;
+    }
+    const sorted = deps.slice().sort((a, b) => String(a.routine||'').localeCompare(String(b.routine||'')));
+    const lines = ['# Spine Dependency View', ''];
+    for (const row of sorted) {
+      const depsText = (row.depends_on || []).length ? row.depends_on.join(', ') : '[root]';
+      lines.push(`${row.routine} (${row.mode || 'deterministic'}) <- ${depsText}`);
+      lines.push(`  reads: ${(row.reads || []).join(', ') || '—'}`);
+      lines.push(`  writes: ${(row.writes || []).join(', ') || '—'}`);
+    }
+    lines.push('');
+    lines.push('# Edges');
+    let edgeCount = 0;
+    for (const row of sorted) {
+      for (const d of (row.depends_on || [])) {
+        lines.push(`${d} -> ${row.routine}`);
+        edgeCount += 1;
+      }
+    }
+    if (!edgeCount) lines.push('No dependency edges.');
+    depNode.textContent = lines.join('\n');
+  } catch (e) {
+    depNode.textContent = 'Error loading dependencies: ' + e.message;
+  }
 }
 
 async function triggerRoutine(name) {
@@ -253,15 +450,25 @@ async function showFabric(type) {
   content.innerHTML = 'Loading…';
   if (type === 'memory') {
     const units = await api('/console/fabric/memory?limit=50');
-    let html = '<div class="card"><h3>Memory Units (latest 50)</h3><table><thead><tr><th>Title</th><th>Domain</th><th>Tier</th><th>Confidence</th><th>Created</th></tr></thead><tbody>';
-    html += units.map(u => `<tr><td>${esc(u.title)}</td><td>${u.domain}</td><td>${u.tier}</td><td>${(u.confidence*100).toFixed(0)}%</td><td style="color:var(--muted)">${(u.created_utc||'').replace('T',' ').replace('Z','')}</td></tr>`).join('');
+    let html = '<div class="card"><h3>Memory Units (latest 50)</h3><table><thead><tr><th>Action</th><th>Title</th><th>Domain</th><th>Tier</th><th>Confidence</th><th>Created</th></tr></thead><tbody>';
+    html += units.map(u => `<tr><td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewMemoryUnit('${u.unit_id}')">View</button></td><td>${esc(u.title)}</td><td>${u.domain}</td><td>${u.tier}</td><td>${(u.confidence*100).toFixed(0)}%</td><td style="color:var(--muted)">${(u.created_utc||'').replace('T',' ').replace('Z','')}</td></tr>`).join('');
     html += '</tbody></table></div>';
+    html += '<div class="card"><h3>Memory Unit Detail</h3><pre id="memory-detail">Select a unit to inspect usage/links/audit details.</pre></div>';
     content.innerHTML = html;
   } else if (type === 'playbook') {
     const methods = await api('/console/fabric/playbook');
-    let html = '<div class="card"><h3>Active Playbook Methods</h3><table><thead><tr><th>Name</th><th>Category</th><th>Success Rate</th><th>Runs</th><th>Version</th></tr></thead><tbody>';
-    html += methods.map(m => `<tr><td>${esc(m.name)}</td><td>${m.category}</td><td>${m.success_rate != null ? (m.success_rate*100).toFixed(1)+'%' : '—'}</td><td>${m.total_runs}</td><td>v${m.version}</td></tr>`).join('');
+    let html = '<div class="card"><h3>Active Playbook Methods</h3><table><thead><tr><th>Action</th><th>Name</th><th>Category</th><th>Success Rate</th><th>Runs</th><th>Version</th></tr></thead><tbody>';
+    html += methods.map(m => `<tr><td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewPlaybookMethod('${m.method_id}')">View</button></td><td>${esc(m.name)}</td><td>${m.category}</td><td>${m.success_rate != null ? (m.success_rate*100).toFixed(1)+'%' : '—'}</td><td>${m.total_runs}</td><td>v${m.version}</td></tr>`).join('');
     html += '</tbody></table></div>';
+    html += `<div class="card">
+      <h3>Playbook Method Detail</h3>
+      <div class="search-row">
+        <select id="playbook-ver-a" onchange="renderPlaybookVersionDiff()"><option value="">Version A</option></select>
+        <select id="playbook-ver-b" onchange="renderPlaybookVersionDiff()"><option value="">Version B</option></select>
+      </div>
+      <pre id="playbook-version-diff">Select two versions to compare specs.</pre>
+      <pre id="playbook-detail">Select a method to inspect evaluations and versions.</pre>
+    </div>`;
     content.innerHTML = html;
   } else if (type === 'compass') {
     const [prios, budgets, signals] = await Promise.all([
@@ -279,9 +486,116 @@ async function showFabric(type) {
       html += '<div class="card"><h3>Active Attention Signals</h3><table><thead><tr><th>Domain</th><th>Trend</th><th>Severity</th><th>Observed</th></tr></thead><tbody>';
       html += signals.map(s => `<tr><td>${s.domain}</td><td>${esc(s.trend)}</td><td><span class="badge ${s.severity==='critical'?'error':s.severity==='high'?'degraded':'ok'}">${s.severity}</span></td><td style="color:var(--muted)">${(s.observed_utc||'').replace('T',' ').replace('Z','')}</td></tr>`).join('');
       html += '</tbody></table></div>';
+      const timeline = signals
+        .slice()
+        .sort((a, b) => String(a.observed_utc || '').localeCompare(String(b.observed_utc || '')))
+        .map(s => `[${String(s.observed_utc || '').replace('T', ' ').replace('Z', '')}] ${s.domain} (${s.severity}) ${s.trend}`);
+      html += `<div class="card"><h3>Signal Timeline</h3><pre>${esc(timeline.join('\n') || 'No signals')}</pre></div>`;
     }
     content.innerHTML = html;
   }
+}
+
+async function viewMemoryUnit(unitId) {
+  const target = document.getElementById('memory-detail');
+  if (!target) return;
+  target.textContent = 'Loading memory unit detail…';
+  try {
+    const u = await api('/console/fabric/memory/' + encodeURIComponent(unitId));
+    const summary = {
+      unit_id: u.unit_id,
+      title: u.title,
+      domain: u.domain,
+      tier: u.tier,
+      confidence: u.confidence,
+      usage_count: Array.isArray(u.usage) ? u.usage.length : 0,
+      links_out_count: Array.isArray(u.links_out) ? u.links_out.length : 0,
+      links_in_count: Array.isArray(u.links_in) ? u.links_in.length : 0,
+      audit_count: Array.isArray(u.audit) ? u.audit.length : 0,
+      sources: u.sources || [],
+      usage: u.usage || [],
+      links_out: u.links_out || [],
+      links_in: u.links_in || [],
+      audit: u.audit || [],
+    };
+    target.textContent = JSON.stringify(summary, null, 2);
+  } catch (e) {
+    target.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function viewPlaybookMethod(methodId) {
+  const target = document.getElementById('playbook-detail');
+  if (!target) return;
+  target.textContent = 'Loading playbook method detail…';
+  try {
+    const m = await api('/console/fabric/playbook/' + encodeURIComponent(methodId));
+    const detail = {
+      method_id: m.method_id,
+      name: m.name,
+      status: m.status,
+      version: m.version,
+      success_rate: m.success_rate,
+      total_runs: m.total_runs,
+      spec: m.spec || {},
+      evaluations_count: Array.isArray(m.evaluations) ? m.evaluations.length : 0,
+      versions_count: Array.isArray(m.versions) ? m.versions.length : 0,
+      evaluations: m.evaluations || [],
+      versions: m.versions || [],
+    };
+    activePlaybookMethod = detail;
+    populatePlaybookVersionSelects(detail.versions || []);
+    target.textContent = JSON.stringify(detail, null, 2);
+  } catch (e) {
+    target.textContent = 'Error: ' + e.message;
+  }
+}
+
+function _playbookVersionSpec(version) {
+  if (!activePlaybookMethod || !Array.isArray(activePlaybookMethod.versions)) return null;
+  const row = activePlaybookMethod.versions.find(v => Number(v.version) === Number(version));
+  if (!row) return null;
+  try {
+    return row.spec_json ? JSON.parse(row.spec_json) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function populatePlaybookVersionSelects(versions) {
+  const a = document.getElementById('playbook-ver-a');
+  const b = document.getElementById('playbook-ver-b');
+  const diff = document.getElementById('playbook-version-diff');
+  if (!a || !b || !diff) return;
+  const opts = ['<option value="">Version A</option>']
+    .concat((versions || []).map(v => `<option value="${v.version}">v${v.version}</option>`))
+    .join('');
+  const optsB = ['<option value="">Version B</option>']
+    .concat((versions || []).map(v => `<option value="${v.version}">v${v.version}</option>`))
+    .join('');
+  a.innerHTML = opts;
+  b.innerHTML = optsB;
+  diff.textContent = 'Select two versions to compare specs.';
+}
+
+function renderPlaybookVersionDiff() {
+  const a = document.getElementById('playbook-ver-a');
+  const b = document.getElementById('playbook-ver-b');
+  const diff = document.getElementById('playbook-version-diff');
+  if (!a || !b || !diff) return;
+  const va = a.value;
+  const vb = b.value;
+  if (!va || !vb) {
+    diff.textContent = 'Select two versions to compare specs.';
+    return;
+  }
+  const sa = _playbookVersionSpec(va);
+  const sb = _playbookVersionSpec(vb);
+  if (!sa || !sb) {
+    diff.textContent = 'Unable to parse selected version payload.';
+    return;
+  }
+  diff.textContent = jsonDiff(sa, sb, `v${va}`, `v${vb}`);
 }
 
 async function loadPolicy() {
@@ -289,12 +603,318 @@ async function loadPolicy() {
   document.getElementById('priority-tbody').innerHTML = prios.map(p =>
     `<tr><td>${p.domain}</td><td>${p.weight}</td><td style="color:var(--muted)">${p.source||'system'}</td><td style="color:var(--muted)">${(p.updated_utc||'').replace('T',' ').replace('Z','')}</td></tr>`
   ).join('');
+  onPolicyScopeChange();
+  await Promise.all([loadPolicyEditor(), loadPolicyCatalog()]);
 }
 
-async function loadProfile() {
-  const t = document.getElementById('profile-type').value.trim() || 'default';
-  const d = await api('/console/policy/' + encodeURIComponent(t));
-  document.getElementById('profile-content').textContent = JSON.stringify(d.rules, null, 2);
+function onPolicyScopeChange(forceDefault = false) {
+  const scopeEl = document.getElementById('policy-scope');
+  const keyEl = document.getElementById('policy-key');
+  const prevScope = currentPolicyScope || 'quality';
+  const scope = (scopeEl?.value || 'quality').trim();
+  const defaults = {
+    quality: 'default',
+    preference: 'output_language',
+    budget: 'openai_tokens',
+  };
+  const placeholders = {
+    quality: 'task_type (e.g. research_report)',
+    preference: 'pref_key (e.g. output_language)',
+    budget: 'resource_type (e.g. openai_tokens)',
+  };
+  const nextDefault = defaults[scope] || 'default';
+  if (scopeEl) scopeEl.value = scope;
+  if (keyEl) {
+    keyEl.placeholder = placeholders[scope] || placeholders.quality;
+    if (!keyEl.value.trim() || forceDefault || scope !== prevScope) {
+      keyEl.value = nextDefault;
+    }
+  }
+  currentPolicyScope = scope;
+  currentPolicyType = keyEl?.value.trim() || nextDefault;
+}
+
+function _policyDescriptor() {
+  const scopeEl = document.getElementById('policy-scope');
+  const keyEl = document.getElementById('policy-key');
+  const scope = (scopeEl?.value || currentPolicyScope || 'quality').trim();
+  const defaults = {
+    quality: 'default',
+    preference: 'output_language',
+    budget: 'openai_tokens',
+  };
+  const key = keyEl?.value.trim() || defaults[scope] || 'default';
+  currentPolicyScope = scope;
+  currentPolicyType = key;
+  if (keyEl && !keyEl.value.trim()) keyEl.value = key;
+  if (scope === 'preference') {
+    return {
+      scope,
+      key,
+      label: `preference.${key}`,
+      getPath: '/console/policy/preferences/' + encodeURIComponent(key),
+      putPath: '/console/policy/preferences/' + encodeURIComponent(key),
+      versionsPath: '/console/policy/preferences/' + encodeURIComponent(key) + '/versions',
+      rollbackPath: '/console/policy/preferences/' + encodeURIComponent(key) + '/rollback/',
+    };
+  }
+  if (scope === 'budget') {
+    return {
+      scope,
+      key,
+      label: `budget.${key}`,
+      getPath: '/console/policy/budgets/' + encodeURIComponent(key),
+      putPath: '/console/policy/budgets/' + encodeURIComponent(key),
+      versionsPath: '/console/policy/budgets/' + encodeURIComponent(key) + '/versions',
+      rollbackPath: '/console/policy/budgets/' + encodeURIComponent(key) + '/rollback/',
+    };
+  }
+  return {
+    scope: 'quality',
+    key,
+    label: `quality.${key}`,
+    getPath: '/console/policy/quality/' + encodeURIComponent(key),
+    putPath: '/console/policy/quality/' + encodeURIComponent(key),
+    versionsPath: '/console/policy/quality/' + encodeURIComponent(key) + '/versions',
+    rollbackPath: '/console/policy/quality/' + encodeURIComponent(key) + '/rollback/',
+  };
+}
+
+function _policyEditorContent(scope, value) {
+  if (scope === 'preference') {
+    if (value && typeof value === 'object' && value.value !== undefined) return String(value.value);
+    if (typeof value === 'string') return value;
+    return '';
+  }
+  if (scope === 'budget') {
+    const raw = value && typeof value === 'object' ? value : {};
+    return JSON.stringify({
+      daily_limit: Number(raw.daily_limit || 0),
+      current_usage: Number(raw.current_usage || 0),
+      reset_utc: raw.reset_utc || '',
+    }, null, 2);
+  }
+  const rules = value && typeof value === 'object' && value.rules !== undefined ? value.rules : value;
+  return JSON.stringify(rules || {}, null, 2);
+}
+
+function _policyWriteBody(scope, rawText) {
+  if (scope === 'preference') {
+    return {value: String(rawText ?? '')};
+  }
+  if (scope === 'budget') {
+    const text = String(rawText ?? '').trim();
+    if (!text) throw new Error('Budget value cannot be empty');
+    let dailyLimit = NaN;
+    if (/^-?\d+(\.\d+)?$/.test(text)) {
+      dailyLimit = Number(text);
+    } else {
+      const parsed = JSON.parse(text);
+      dailyLimit = Number(parsed?.daily_limit);
+    }
+    if (!Number.isFinite(dailyLimit)) throw new Error('daily_limit must be numeric');
+    return {daily_limit: dailyLimit};
+  }
+  const parsed = JSON.parse(String(rawText ?? '{}') || '{}');
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Quality profile must be a JSON object');
+  }
+  return {rules: parsed};
+}
+
+async function loadPolicyEditor() {
+  const desc = _policyDescriptor();
+  const editor = document.getElementById('policy-editor-text');
+  const meta = document.getElementById('policy-editor-meta');
+  if (editor) editor.value = '';
+  if (meta) meta.textContent = `Loading ${desc.label}…`;
+  try {
+    const d = await api(desc.getPath);
+    if (editor) editor.value = _policyEditorContent(desc.scope, d);
+    if (meta) meta.textContent = `Editing ${desc.label}`;
+    await loadPolicyVersions();
+  } catch (e) {
+    if (meta) meta.textContent = `Failed to load ${desc.label}: ${e.message}`;
+    const tbody = document.getElementById('policy-versions-tbody');
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+    }
+    populatePolicyDiffSelects([]);
+  }
+}
+
+async function savePolicyEditor() {
+  const desc = _policyDescriptor();
+  const text = document.getElementById('policy-editor-text')?.value || '';
+  let body;
+  try {
+    body = _policyWriteBody(desc.scope, text);
+  } catch (e) {
+    alert('Invalid policy payload: ' + e.message);
+    return;
+  }
+  try {
+    await apiWrite(desc.putPath, 'PUT', body);
+    await loadPolicy();
+  } catch (e) {
+    alert('Failed to save policy: ' + e.message);
+  }
+}
+
+async function loadPolicyCatalog() {
+  const prefTbody = document.getElementById('policy-pref-tbody');
+  const budgetTbody = document.getElementById('policy-budget-tbody');
+  if (prefTbody) prefTbody.innerHTML = '<tr><td colspan="3" style="color:var(--muted)">Loading…</td></tr>';
+  if (budgetTbody) budgetTbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr>';
+  try {
+    const [prefs, budgets] = await Promise.all([
+      api('/console/policy/preferences'),
+      api('/console/policy/budgets'),
+    ]);
+    if (prefTbody) {
+      prefTbody.innerHTML = (prefs || []).map(p => `
+        <tr>
+          <td>${esc(p.pref_key || '')}</td>
+          <td style="color:var(--muted)">${esc((p.value || '').slice(0, 120))}</td>
+          <td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="editPolicyKey('preference','${encodeURIComponent(p.pref_key || '')}')">Edit</button></td>
+        </tr>
+      `).join('') || '<tr><td colspan="3" style="color:var(--muted)">No preferences</td></tr>';
+    }
+    if (budgetTbody) {
+      budgetTbody.innerHTML = (budgets || []).map(b => `
+        <tr>
+          <td>${esc(b.resource_type || '')}</td>
+          <td>${Number(b.daily_limit || 0).toLocaleString()}</td>
+          <td>${Number(b.current_usage || 0).toLocaleString()}</td>
+          <td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="editPolicyKey('budget','${encodeURIComponent(b.resource_type || '')}')">Edit</button></td>
+        </tr>
+      `).join('') || '<tr><td colspan="4" style="color:var(--muted)">No budgets</td></tr>';
+    }
+  } catch (e) {
+    if (prefTbody) prefTbody.innerHTML = `<tr><td colspan="3" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+    if (budgetTbody) budgetTbody.innerHTML = `<tr><td colspan="4" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function editPolicyKey(scope, keyEncoded) {
+  const key = decodeURIComponent(keyEncoded || '');
+  const scopeEl = document.getElementById('policy-scope');
+  const keyEl = document.getElementById('policy-key');
+  if (scopeEl) scopeEl.value = scope;
+  onPolicyScopeChange();
+  if (keyEl) keyEl.value = key;
+  loadPolicyEditor();
+}
+
+async function loadPolicyVersions() {
+  const desc = _policyDescriptor();
+  const tbody = document.getElementById('policy-versions-tbody');
+  tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">Loading…</td></tr>';
+  try {
+    const versions = await api(desc.versionsPath);
+    currentPolicyVersions = Array.isArray(versions) ? versions : [];
+    if (!currentPolicyVersions.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">No versions found</td></tr>';
+      populatePolicyDiffSelects([]);
+      return;
+    }
+    tbody.innerHTML = currentPolicyVersions.map(v => `
+      <tr>
+        <td>v${v.version}</td>
+        <td style="color:var(--muted)">${(v.changed_utc||'').replace('T',' ').replace('Z','')}</td>
+        <td style="color:var(--muted)">${esc(v.changed_by||'')}</td>
+        <td style="color:var(--muted)">${esc(v.reason||'')}</td>
+        <td>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewPolicyVersion(${v.version})">View</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackPolicyVersion(${v.version})">Rollback</button>
+        </td>
+      </tr>
+    `).join('');
+    populatePolicyDiffSelects(currentPolicyVersions);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function populatePolicyDiffSelects(versions) {
+  const selA = document.getElementById('policy-diff-a');
+  const selB = document.getElementById('policy-diff-b');
+  const opts = ['<option value="">Version A</option>'].concat(
+    versions.map(v => `<option value="${v.version}">v${v.version}</option>`)
+  ).join('');
+  const optsB = ['<option value="">Version B</option>'].concat(
+    versions.map(v => `<option value="${v.version}">v${v.version}</option>`)
+  ).join('');
+  selA.innerHTML = opts;
+  selB.innerHTML = optsB;
+  document.getElementById('policy-diff-content').textContent = 'Select two versions to view diff.';
+}
+
+function _policyVersionValue(version) {
+  const row = currentPolicyVersions.find(v => Number(v.version) === Number(version));
+  if (!row) return null;
+  try {
+    return row.value_json ? JSON.parse(row.value_json) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function viewPolicyVersion(version) {
+  const desc = _policyDescriptor();
+  const value = _policyVersionValue(version);
+  if (!value) return;
+  document.getElementById('policy-editor-text').value = _policyEditorContent(desc.scope, value);
+}
+
+function renderPolicyDiff() {
+  const va = document.getElementById('policy-diff-a').value;
+  const vb = document.getElementById('policy-diff-b').value;
+  const diff = document.getElementById('policy-diff-content');
+  if (!va || !vb) {
+    diff.textContent = 'Select two versions to view diff.';
+    return;
+  }
+  const a = _policyVersionValue(va);
+  const b = _policyVersionValue(vb);
+  if (!a || !b) {
+    diff.textContent = 'Unable to parse selected versions.';
+    return;
+  }
+  diff.textContent = jsonDiff(a, b, `v${va}`, `v${vb}`);
+}
+
+function jsonDiff(a, b, labelA, labelB) {
+  const aLines = JSON.stringify(a, null, 2).split('\n');
+  const bLines = JSON.stringify(b, null, 2).split('\n');
+  const maxLen = Math.max(aLines.length, bLines.length);
+  const out = [`# ${labelA} vs ${labelB}`, ''];
+  for (let i = 0; i < maxLen; i++) {
+    const la = aLines[i] ?? '';
+    const lb = bLines[i] ?? '';
+    if (la === lb) {
+      out.push(`  ${la}`);
+    } else {
+      if (la) out.push(`- ${la}`);
+      if (lb) out.push(`+ ${lb}`);
+    }
+  }
+  return out.join('\n');
+}
+
+async function rollbackPolicyVersion(version) {
+  const desc = _policyDescriptor();
+  if (!confirm(`Rollback ${desc.label} to v${version}?`)) return;
+  try {
+    await apiWrite(
+      desc.rollbackPath + version,
+      'POST',
+      {}
+    );
+    await loadPolicy();
+  } catch (e) {
+    alert('Rollback failed: ' + e.message);
+  }
 }
 
 async function loadTraces() {
@@ -306,7 +926,7 @@ async function loadTraces() {
   const traces = await api(url);
   document.getElementById('traces-tbody').innerHTML = traces.map(t =>
     `<tr>
-      <td style="color:var(--muted);font-size:11px">${t.trace_id}</td>
+      <td style="color:var(--muted);font-size:11px"><button class="action" style="font-size:10px;padding:2px 6px;background:#334155" onclick="loadTraceDetail('${t.trace_id}')">${t.trace_id}</button></td>
       <td>${t.routine}</td>
       <td><span class="badge ${t.status}">${t.status}</span></td>
       <td>${t.degraded ? '<span class="badge degraded">yes</span>' : '—'}</td>
@@ -316,6 +936,135 @@ async function loadTraces() {
   ).join('') || '<tr><td colspan="6" style="color:var(--muted)">No traces found</td></tr>';
 }
 
+async function loadTraceDetail(traceId) {
+  const target = document.getElementById('trace-detail');
+  target.textContent = 'Loading trace detail…';
+  try {
+    const t = await api('/console/traces/' + encodeURIComponent(traceId));
+    const lines = [];
+    lines.push(`# ${t.trace_id || traceId}`);
+    lines.push(`routine: ${t.routine || ''}`);
+    lines.push(`status: ${t.status || ''} (degraded: ${t.degraded ? 'yes' : 'no'})`);
+    lines.push(`started_utc: ${t.started_utc || ''}`);
+    lines.push(`elapsed_s: ${t.elapsed_s || 0}`);
+    if (t.error) lines.push(`error: ${t.error}`);
+    lines.push('');
+    lines.push('## Steps');
+    const steps = Array.isArray(t.steps) ? t.steps : [];
+    if (!steps.length) {
+      lines.push('- no steps recorded');
+    } else {
+      for (const s of steps) {
+        lines.push(`- [${s.t ?? 0}s] ${s.name || 'step'}`);
+        if (s.detail !== undefined && s.detail !== null && s.detail !== '') {
+          lines.push(`  detail: ${JSON.stringify(s.detail).slice(0, 500)}`);
+        }
+      }
+    }
+    lines.push('');
+    lines.push('## Result');
+    lines.push(JSON.stringify(t.result || {}, null, 2));
+    lines.push('');
+    lines.push('## Cortex Summary');
+    const cs = t.cortex_summary || {};
+    lines.push(`total_calls: ${cs.total_calls || 0}`);
+    lines.push(`total_in_tokens: ${cs.total_in_tokens || 0}`);
+    lines.push(`total_out_tokens: ${cs.total_out_tokens || 0}`);
+    const bp = cs.by_provider || {};
+    const providers = Object.keys(bp);
+    if (!providers.length) {
+      lines.push('- no cortex calls attributed');
+    } else {
+      lines.push('- by_provider:');
+      for (const p of providers) {
+        const row = bp[p] || {};
+        lines.push(`  - ${p}: calls=${row.calls||0}, in=${row.in_tokens||0}, out=${row.out_tokens||0}, errors=${row.errors||0}, avg_elapsed_s=${row.avg_elapsed_s||0}`);
+      }
+    }
+    const latest = Array.isArray(cs.latest_calls) ? cs.latest_calls : [];
+    if (latest.length) {
+      lines.push('- latest_calls:');
+      for (const c of latest) {
+        lines.push(`  - [${c.timestamp||''}] ${c.provider||'unknown'} ${c.model||''} in=${c.in_tokens||0} out=${c.out_tokens||0} elapsed=${c.elapsed_s||0}s success=${c.success ? 'yes' : 'no'}`);
+        if (c.prompt_preview) lines.push(`    prompt: ${String(c.prompt_preview).slice(0, 180)}`);
+        if (c.output_preview) lines.push(`    output: ${String(c.output_preview).slice(0, 180)}`);
+        if (c.error) lines.push(`    error: ${String(c.error).slice(0, 180)}`);
+      }
+    }
+    target.textContent = lines.join('\n');
+  } catch (e) {
+    target.textContent = 'Error loading trace detail: ' + e.message;
+  }
+}
+
+function jumpToTrace(traceId) {
+  const resolved = decodeURIComponent(traceId || '');
+  if (!resolved) return;
+  const btn = Array.from(document.querySelectorAll('nav button')).find(b => (b.textContent || '').trim() === 'Traces');
+  show('traces', btn || null);
+  loadTraceDetail(resolved);
+}
+
+async function loadCortexUsage() {
+  const tbody = document.getElementById('cortex-usage-tbody');
+  const summary = document.getElementById('cortex-usage-summary');
+  const since = document.getElementById('cortex-since')?.value?.trim() || '';
+  const until = document.getElementById('cortex-until')?.value?.trim() || '';
+  let url = '/console/cortex/usage?limit=500';
+  if (since) url += '&since=' + encodeURIComponent(since);
+  if (until) url += '&until=' + encodeURIComponent(until);
+  tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted)">Loading…</td></tr>';
+  summary.textContent = 'Loading usage summary…';
+  try {
+    const res = await api(url);
+    const rows = Array.isArray(res.records) ? res.records : [];
+    tbody.innerHTML = rows.map(r => {
+      const rawTrace = String(r.trace_id || '');
+      const traceLabel = esc(rawTrace);
+      const traceAction = rawTrace
+        ? `<button class="action" style="font-size:10px;padding:2px 6px;background:#334155" onclick="jumpToTrace('${encodeURIComponent(rawTrace)}')">${traceLabel}</button>`
+        : '<span style="color:var(--muted)">—</span>';
+      return `<tr>
+        <td style="color:var(--muted)">${(r.timestamp||'').replace('T',' ').replace('Z','')}</td>
+        <td>${traceAction}</td>
+        <td>${esc(r.provider||'')}</td>
+        <td style="color:var(--muted)">${esc(r.model||'')}</td>
+        <td>${Number(r.in_tokens||0).toLocaleString()}</td>
+        <td>${Number(r.out_tokens||0).toLocaleString()}</td>
+        <td>${Number(r.elapsed_s||0).toFixed(2)}s</td>
+        <td><span class="badge ${r.success ? 'ok' : 'error'}">${r.success ? 'ok' : 'error'}</span></td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="8" style="color:var(--muted)">No usage records</td></tr>';
+
+    const byProvider = {};
+    for (const r of rows) {
+      const p = String(r.provider || 'unknown');
+      if (!byProvider[p]) byProvider[p] = {calls: 0, in_tokens: 0, out_tokens: 0, errors: 0, avg_elapsed_s: 0};
+      byProvider[p].calls += 1;
+      byProvider[p].in_tokens += Number(r.in_tokens || 0);
+      byProvider[p].out_tokens += Number(r.out_tokens || 0);
+      byProvider[p].avg_elapsed_s += Number(r.elapsed_s || 0);
+      if (!r.success) byProvider[p].errors += 1;
+    }
+    for (const p of Object.keys(byProvider)) {
+      const x = byProvider[p];
+      x.avg_elapsed_s = x.calls ? Number((x.avg_elapsed_s / x.calls).toFixed(3)) : 0;
+    }
+    summary.textContent = JSON.stringify(
+      {
+        query: {since: since || null, until: until || null, count: rows.length},
+        by_provider: byProvider,
+        today: res.today || {},
+      },
+      null,
+      2
+    );
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+    summary.textContent = 'Error loading usage summary: ' + e.message;
+  }
+}
+
 async function loadAgents() {
   const agents = await api('/console/agents');
   document.getElementById('agents-tbody').innerHTML = agents.map(a =>
@@ -323,22 +1072,248 @@ async function loadAgents() {
       <td>${esc(a.id)}</td>
       <td>${a.skills_count}</td>
       <td><span class="badge ${a.workspace_exists ? 'ok' : 'error'}">${a.workspace_exists ? 'ready' : 'missing'}</span></td>
+      <td><button class="action" style="font-size:11px;padding:3px 8px" onclick="manageAgent('${encodeURIComponent(a.id)}')">Manage</button></td>
     </tr>`
-  ).join('') || '<tr><td colspan="3" style="color:var(--muted)">No agents found</td></tr>';
+  ).join('') || '<tr><td colspan="4" style="color:var(--muted)">No agents found</td></tr>';
+  if (activeAgentId) {
+    await reloadActiveAgentSkills();
+  }
+}
+
+async function manageAgent(agentKey) {
+  activeAgentId = decodeURIComponent(agentKey);
+  await reloadActiveAgentSkills();
+}
+
+async function reloadActiveAgentSkills() {
+  const tbody = document.getElementById('agent-skills-tbody');
+  document.getElementById('skills-agent-tag').textContent = activeAgentId || 'No agent selected';
+  if (!activeAgentId) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">Select an agent to manage skills</td></tr>';
+    return;
+  }
+  try {
+    const skills = await api('/console/agents/' + encodeURIComponent(activeAgentId) + '/skills');
+    activeAgentSkills = Array.isArray(skills) ? skills : [];
+    if (!activeAgentSkills.length) {
+      tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">No skills found</td></tr>';
+      return;
+    }
+    tbody.innerHTML = activeAgentSkills.map(s => {
+      const skillKey = encodeURIComponent(s.skill || '');
+      const enabled = !!s.enabled;
+      return `<tr>
+        <td>${esc(s.skill)}</td>
+        <td><span class="badge ${enabled ? 'ok' : 'error'}">${enabled ? 'enabled' : 'disabled'}</span></td>
+        <td style="color:var(--muted)">${esc((s.path||'').replace(/^.*openclaw\//, 'openclaw/'))}</td>
+        <td>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:${enabled ? '#7f1d1d' : '#14532d'}" onclick="toggleSkillEnabled('${skillKey}', ${enabled ? 'true' : 'false'})">${enabled ? 'Disable' : 'Enable'}</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="openSkillEditor('${skillKey}')">Edit</button>
+        </td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function toggleSkillEnabled(skillKey, currentlyEnabled) {
+  if (!activeAgentId) return;
+  const skill = decodeURIComponent(skillKey);
+  try {
+    await apiWrite(
+      '/console/agents/' + encodeURIComponent(activeAgentId) + '/skills/' + encodeURIComponent(skill) + '/enabled',
+      'PATCH',
+      {enabled: !currentlyEnabled}
+    );
+    await reloadActiveAgentSkills();
+    await loadAgents();
+  } catch (e) {
+    alert('Failed to update skill state: ' + e.message);
+  }
+}
+
+function openSkillEditor(skillKey) {
+  const skill = decodeURIComponent(skillKey);
+  const row = activeAgentSkills.find(s => s.skill === skill);
+  if (!row) return;
+  editingSkillName = skill;
+  document.getElementById('skill-editor-card').style.display = 'block';
+  document.getElementById('skill-editor-meta').textContent = `${activeAgentId} / ${skill}`;
+  document.getElementById('skill-editor-text').value = row.content || '';
+}
+
+function cancelSkillEdit() {
+  editingSkillName = '';
+  document.getElementById('skill-editor-card').style.display = 'none';
+  document.getElementById('skill-editor-meta').textContent = '';
+  document.getElementById('skill-editor-text').value = '';
+}
+
+async function saveSkillEdit() {
+  if (!activeAgentId || !editingSkillName) return;
+  const content = document.getElementById('skill-editor-text').value || '';
+  if (!content.trim()) {
+    alert('Skill content cannot be empty');
+    return;
+  }
+  try {
+    await apiWrite(
+      '/console/agents/' + encodeURIComponent(activeAgentId) + '/skills/' + encodeURIComponent(editingSkillName),
+      'PUT',
+      {content}
+    );
+    cancelSkillEdit();
+    await reloadActiveAgentSkills();
+    await loadAgents();
+  } catch (e) {
+    alert('Failed to save skill: ' + e.message);
+  }
+}
+
+async function loadSkillEvolution() {
+  const status = document.getElementById('sev-status').value;
+  const tbody = document.getElementById('sev-tbody');
+  tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">Loading…</td></tr>';
+  let url = '/console/skill-evolution/proposals?limit=200';
+  if (status) url += '&status=' + encodeURIComponent(status);
+  try {
+    const rows = await api(url);
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">No proposals found</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(p => {
+      const pid = encodeURIComponent(p.proposal_id || '');
+      return `<tr>
+        <td style="color:var(--muted);font-size:11px">${esc(p.proposal_id || '')}</td>
+        <td>${esc(p.skill || '')}</td>
+        <td><span class="badge ${p.status === 'applied' ? 'ok' : p.status === 'rejected' || p.status === 'apply_failed' ? 'error' : 'degraded'}">${esc(p.status || '')}</span></td>
+        <td style="color:var(--muted)">${((p.reviewed_utc||'').replace('T',' ').replace('Z','')) || '—'}</td>
+        <td>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewSkillProposal('${pid}')">View</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#14532d" onclick="reviewSkillProposal('${pid}','approve')">Approve</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="reviewSkillProposal('${pid}','reject')">Reject</button>
+          <button class="action" style="font-size:11px;padding:3px 8px" onclick="applySkillProposal('${pid}')">Apply</button>
+        </td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function _findSkillProposal(proposalId) {
+  const all = await api('/console/skill-evolution/proposals?limit=300');
+  return all.find(p => String(p.proposal_id || '') === String(proposalId || '')) || null;
+}
+
+async function viewSkillProposal(pidKey) {
+  const proposalId = decodeURIComponent(pidKey);
+  const detail = document.getElementById('sev-detail');
+  detail.textContent = 'Loading proposal detail…';
+  try {
+    const row = await _findSkillProposal(proposalId);
+    if (!row) {
+      detail.textContent = 'Proposal not found.';
+      return;
+    }
+    detail.textContent = JSON.stringify(row, null, 2);
+  } catch (e) {
+    detail.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function reviewSkillProposal(pidKey, decision) {
+  const proposalId = decodeURIComponent(pidKey);
+  const note = prompt(`${decision.toUpperCase()} note for ${proposalId}:`) || '';
+  try {
+    await apiWrite(
+      '/console/skill-evolution/proposals/' + encodeURIComponent(proposalId) + '/review',
+      'POST',
+      {decision, reviewer: 'console', note, apply: decision === 'approve'}
+    );
+    await loadSkillEvolution();
+    await viewSkillProposal(encodeURIComponent(proposalId));
+  } catch (e) {
+    alert('Review failed: ' + e.message);
+  }
+}
+
+async function applySkillProposal(pidKey) {
+  const proposalId = decodeURIComponent(pidKey);
+  try {
+    await apiWrite('/console/skill-evolution/proposals/' + encodeURIComponent(proposalId) + '/apply', 'POST', {});
+    await loadSkillEvolution();
+    await viewSkillProposal(encodeURIComponent(proposalId));
+  } catch (e) {
+    alert('Apply failed: ' + e.message);
+  }
 }
 
 async function loadSchedules() {
   const routines = await api('/console/schedules');
+  const routineSelect = document.getElementById('schedule-history-routine');
+  if (routineSelect) {
+    const existing = routineSelect.value || '';
+    routineSelect.innerHTML = '<option value="">All routines</option>' + routines.map(r => `<option value="${r.routine}">${r.routine}</option>`).join('');
+    if (existing) routineSelect.value = existing;
+  }
   document.getElementById('schedules-tbody').innerHTML = routines.map(r =>
     `<tr>
       <td>${r.routine}</td>
       <td><span class="badge ${r.mode}">${r.mode}</span></td>
-      <td style="color:var(--muted)">${r.schedule || '—'}</td>
+      <td style="color:var(--muted)">${r.enabled === false ? '(disabled) ' : ''}${r.schedule || '—'}</td>
       <td style="color:var(--muted)">${r.last_run_utc ? r.last_run_utc.replace('T',' ').replace('Z','') : 'never'}</td>
       <td style="color:var(--muted)">${r.next_run_utc ? r.next_run_utc.replace('T',' ').replace('Z','') : '—'}</td>
-      <td><button class="action" onclick="triggerRoutine('${r.routine.replace('spine.','')}')" style="font-size:11px;padding:3px 8px">▶ Run</button></td>
+      <td>
+        <button class="action" onclick="triggerRoutine('${r.routine.replace('spine.','')}')" style="font-size:11px;padding:3px 8px">▶ Run</button>
+        <button class="action" onclick="editSchedule('${r.routine}')" style="font-size:11px;padding:3px 8px;background:#334155">✎ Edit</button>
+      </td>
     </tr>`
   ).join('') || '<tr><td colspan="6" style="color:var(--muted)">No schedules</td></tr>';
+  await loadScheduleHistory();
+}
+
+async function editSchedule(routine) {
+  const schedule = prompt(`Schedule for ${routine} (cron/adaptive, empty keeps current):`);
+  if (schedule === null) return;
+  const enabled = confirm(`Enable ${routine}? Click Cancel to disable.`);
+  try {
+    const r = await fetch(`${API}/console/schedules/${routine}`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({schedule: schedule || undefined, enabled}),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || d.detail || r.status);
+    loadSchedules();
+  } catch (e) {
+    alert('Failed to update schedule: ' + e.message);
+  }
+}
+
+async function loadScheduleHistory() {
+  const tbody = document.getElementById('schedule-history-tbody');
+  if (!tbody) return;
+  let url = '/console/schedules/history?limit=80';
+  const routine = document.getElementById('schedule-history-routine')?.value || '';
+  if (routine) url += '&routine=' + encodeURIComponent(routine);
+  tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">Loading…</td></tr>';
+  try {
+    const rows = await api(url);
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td style="color:var(--muted)">${(r.run_utc||'').replace('T',' ').replace('Z','')}</td>
+        <td>${esc(r.routine||'')}</td>
+        <td style="color:var(--muted)">${esc(r.trigger||'')}</td>
+        <td><span class="badge ${r.status==='ok'?'ok':r.status==='contract_failed'?'degraded':'error'}">${esc(r.status||'')}</span></td>
+        <td style="color:var(--muted);font-size:11px">${esc(JSON.stringify(r.detail||{}).slice(0,140))}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="5" style="color:var(--muted)">No history</td></tr>';
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+  }
 }
 
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -348,7 +1323,9 @@ function refreshAll() {
   else if (active?.id === 'panel-spine') loadSpine();
   else if (active?.id === 'panel-policy') loadPolicy();
   else if (active?.id === 'panel-traces') loadTraces();
+  else if (active?.id === 'panel-cortex') loadCortexUsage();
   else if (active?.id === 'panel-agents') loadAgents();
+  else if (active?.id === 'panel-skill-evolution') loadSkillEvolution();
   else if (active?.id === 'panel-schedules') loadSchedules();
 }
 

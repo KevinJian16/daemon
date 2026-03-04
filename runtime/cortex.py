@@ -5,11 +5,13 @@ import json
 import logging
 import os
 import time
-import traceback
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import httpx
+
+from runtime.trace_context import current_trace
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +31,19 @@ class CortexError(Exception):
 class Cortex:
     """Unified LLM access layer. Manages provider selection, fallback, token metering, degradation."""
 
-    def __init__(self, compass=None) -> None:
+    def __init__(self, compass=None, usage_path: Path | None = None) -> None:
         # compass: CompassFabric | None — if provided, reads dynamic routing strategy.
         self._compass = compass
         self._usage: list[dict] = []
         self._clients: dict[str, Any] = {}
+        self._usage_path = usage_path or self._default_usage_path()
+        self._usage_path.parent.mkdir(parents=True, exist_ok=True)
+        self._load_usage()
         self._init_clients()
+
+    def _default_usage_path(self) -> Path:
+        daemon_home = Path(os.environ.get("DAEMON_HOME", Path(__file__).parent.parent))
+        return daemon_home / "state" / "traces" / "cortex_usage.jsonl"
 
     def _init_clients(self) -> None:
         if os.getenv("OPENAI_API_KEY"):
@@ -90,11 +99,29 @@ class Cortex:
             try:
                 result, in_tokens, out_tokens = self._call(provider, prompt, model, max_tokens, temperature)
                 elapsed = time.time() - t0
-                self._record_usage(provider, model or provider, in_tokens, out_tokens, elapsed, True)
+                self._record_usage(
+                    provider,
+                    model or provider,
+                    in_tokens,
+                    out_tokens,
+                    elapsed,
+                    True,
+                    prompt_preview=prompt[:300],
+                    output_preview=result[:300],
+                )
                 return result
             except Exception as e:
                 elapsed = time.time() - t0
-                self._record_usage(provider, model or provider, 0, 0, elapsed, False, str(e)[:200])
+                self._record_usage(
+                    provider,
+                    model or provider,
+                    0,
+                    0,
+                    elapsed,
+                    False,
+                    str(e)[:200],
+                    prompt_preview=prompt[:300],
+                )
                 last_err = e
 
         raise CortexError(f"all providers failed; last error: {last_err}") from last_err
@@ -141,7 +168,7 @@ class Cortex:
 
     def usage_today(self) -> dict:
         today = time.strftime("%Y-%m-%d", time.gmtime())
-        today_usage = [u for u in self._usage if u["timestamp"].startswith(today)]
+        today_usage = [u for u in self._usage if str(u.get("timestamp", "")).startswith(today)]
         by_provider: dict[str, dict] = {}
         for u in today_usage:
             p = u["provider"]
@@ -156,6 +183,25 @@ class Cortex:
 
     def recent_traces(self, limit: int = 20) -> list[dict]:
         return self._usage[-limit:]
+
+    def usage_between(self, since: str | None = None, until: str | None = None, limit: int = 1000) -> list[dict]:
+        items = []
+        for entry in reversed(self._usage):
+            ts = str(entry.get("timestamp", ""))
+            if since and ts < since:
+                continue
+            if until and ts > until:
+                continue
+            items.append(entry)
+            if len(items) >= limit:
+                break
+        return list(reversed(items))
+
+    def usage_for_trace(self, trace_id: str, limit: int = 200) -> list[dict]:
+        if not trace_id:
+            return []
+        items = [u for u in self._usage if str(u.get("trace_id", "")) == str(trace_id)]
+        return items[-limit:]
 
     # ── Internal ─────────────────────────────────────────────────────────────
 
@@ -207,7 +253,19 @@ class Cortex:
         usage = data.get("usage", {})
         return text, int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
 
-    def _record_usage(self, provider: str, model: str, in_t: int, out_t: int, elapsed: float, success: bool, error: str | None = None) -> None:
+    def _record_usage(
+        self,
+        provider: str,
+        model: str,
+        in_t: int,
+        out_t: int,
+        elapsed: float,
+        success: bool,
+        error: str | None = None,
+        prompt_preview: str | None = None,
+        output_preview: str | None = None,
+    ) -> None:
+        trace = current_trace()
         entry = {
             "timestamp": _utc(),
             "provider": provider,
@@ -216,15 +274,44 @@ class Cortex:
             "out_tokens": out_t,
             "elapsed_s": round(elapsed, 2),
             "success": success,
+            "trace_id": trace.get("trace_id", ""),
+            "routine": trace.get("routine", ""),
         }
         if error:
             entry["error"] = error
+        if prompt_preview:
+            entry["prompt_preview"] = prompt_preview
+        if output_preview:
+            entry["output_preview"] = output_preview
         self._usage.append(entry)
-        # Keep last 1000 entries in memory; persistence handled by spine.witness analysis of traces.
-        if len(self._usage) > 1000:
-            self._usage = self._usage[-1000:]
+        if len(self._usage) > 5000:
+            self._usage = self._usage[-5000:]
+        try:
+            with self._usage_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            logger.warning("Failed to persist cortex usage trace: %s", exc)
         # Deduct from Compass budget if available.
         if success and self._compass:
             total = in_t + out_t
             resource_key = f"{provider}_tokens"
             self._compass.consume_budget(resource_key, total)
+
+    def _load_usage(self) -> None:
+        if not self._usage_path.exists():
+            return
+        try:
+            lines = self._usage_path.read_text(encoding="utf-8").splitlines()
+        except Exception as exc:
+            logger.warning("Failed to read cortex usage trace file: %s", exc)
+            return
+        loaded: list[dict] = []
+        for line in lines[-5000:]:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                loaded.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        self._usage = loaded

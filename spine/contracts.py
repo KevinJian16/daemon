@@ -1,6 +1,7 @@
 """Spine Contracts — IO contract validation for Routine pre/post conditions."""
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,9 @@ from typing import Any
 
 class ContractError(Exception):
     pass
+
+
+logger = logging.getLogger(__name__)
 
 
 def _utc() -> str:
@@ -66,7 +70,7 @@ def check_contract(
         runs_dir = daemon_home / "state" / "runs"
         if phase == "pre" and kind == "collect_output":
             if not any(runs_dir.glob("**/signals_prepare.json")) if runs_dir.exists() else True:
-                pass  # Warning only — collect may not have run yet.
+                logger.info("%s.pre: runs:collect_output not found yet under %s", routine_name, runs_dir)
 
     elif ns == "openclaw":
         # OpenClaw contracts validated at runtime via Gateway health check.

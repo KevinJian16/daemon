@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -17,6 +18,9 @@ if TYPE_CHECKING:
 
 def _utc() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+logger = logging.getLogger(__name__)
 
 
 class SpineRoutines:
@@ -174,7 +178,24 @@ class SpineRoutines:
             mem_stats = self.memory.stats()
             pb_stats = self.playbook.stats()
             unanalyzed = self.playbook.unanalyzed_evaluations(limit=50)
-            ctx.step("data_collected", {"mem_units": mem_stats["total_active"], "unanalyzed_evals": len(unanalyzed)})
+            openclaw_obs = self._collect_openclaw_observations()
+            interface_obs = self._collect_interface_observations()
+            router_patterns = self._read_router_patterns(limit=30)
+            trace_obs = self._collect_trace_observations(limit=200)
+            cortex_usage = self.cortex.recent_traces(limit=200)
+            ctx.step(
+                "data_collected",
+                {
+                    "mem_units": mem_stats["total_active"],
+                    "unanalyzed_evals": len(unanalyzed),
+                    "session_files": openclaw_obs.get("session_files", 0),
+                    "portal_events": interface_obs.get("portal_events", 0),
+                    "telegram_events": interface_obs.get("telegram_events", 0),
+                    "router_patterns": len(router_patterns),
+                    "trace_records": trace_obs.get("total_traces", 0),
+                    "cortex_calls": len(cortex_usage),
+                },
+            )
 
             if len(unanalyzed) < 3:
                 ctx.step("skip", "not enough unanalyzed evaluations")
@@ -196,6 +217,11 @@ class SpineRoutines:
                     "playbook_stats": pb_stats,
                     "recent_evals": unanalyzed[:10],
                     "success_rate": success_rate,
+                    "openclaw_observations": openclaw_obs,
+                    "interface_observations": interface_obs,
+                    "router_patterns": router_patterns[:10],
+                    "trace_observations": trace_obs,
+                    "cortex_recent_usage": cortex_usage[-50:],
                 }, ensure_ascii=False)
                 return self.cortex.structured(
                     f"Analyze these system performance metrics and identify patterns:\n{summary}\n\n"
@@ -211,6 +237,8 @@ class SpineRoutines:
                 signals = []
                 if success_rate < 0.5:
                     signals.append({"domain": "system", "trend": f"low success rate: {success_rate:.1%}", "severity": "high"})
+                if int(trace_obs.get("error_traces", 0)) >= 3:
+                    signals.append({"domain": "spine", "trend": f"trace errors: {trace_obs.get('error_traces', 0)}", "severity": "high"})
                 return {"observations": [f"Success rate: {success_rate:.1%}"], "attention_signals": signals}
 
             analysis = self.cortex.try_or_degrade(_llm_analysis, _stats_fallback)
@@ -236,6 +264,12 @@ class SpineRoutines:
                 "observations": len(analysis.get("observations", [])),
                 "signals_added": len(analysis.get("attention_signals", [])),
                 "critical_signals": critical_signals,
+                "openclaw_sessions_seen": openclaw_obs.get("session_files", 0),
+                "portal_events_seen": interface_obs.get("portal_events", 0),
+                "telegram_events_seen": interface_obs.get("telegram_events", 0),
+                "router_patterns_seen": len(router_patterns),
+                "trace_records_seen": trace_obs.get("total_traces", 0),
+                "trace_errors_seen": trace_obs.get("error_traces", 0),
                 "degraded": ctx._degraded,
             }
             ctx.set_result(result)
@@ -307,13 +341,18 @@ class SpineRoutines:
             active_methods = self.playbook.consult()
             recent_traces = self.tracer.recent(limit=100)
             mem_stats = self.memory.stats()
-            ctx.step("data_collected", {"methods": len(active_methods), "traces": len(recent_traces)})
+            router_patterns = self._read_router_patterns(limit=30)
+            ctx.step(
+                "data_collected",
+                {"methods": len(active_methods), "traces": len(recent_traces), "router_patterns": len(router_patterns)},
+            )
 
             def _llm_learn() -> dict:
                 context = {
                     "active_methods": [{"name": m["name"], "success_rate": m.get("success_rate"), "total_runs": m.get("total_runs")} for m in active_methods],
                     "recent_traces": [{"routine": t.get("routine"), "status": t.get("status"), "elapsed_s": t.get("elapsed_s")} for t in recent_traces[:20]],
                     "memory_stats": mem_stats,
+                    "router_patterns": router_patterns,
                 }
                 return self.cortex.structured(
                     f"Analyze system execution history and identify improvements:\n{json.dumps(context, ensure_ascii=False)}\n\n"
@@ -352,7 +391,8 @@ class SpineRoutines:
                 if proposals_path.exists():
                     try:
                         existing = json.loads(proposals_path.read_text())
-                    except Exception:
+                    except Exception as exc:
+                        logger.warning("Failed to parse %s: %s", proposals_path, exc)
                         existing = []
                 existing.extend(proposals)
                 proposals_path.write_text(json.dumps(existing[-100:], ensure_ascii=False, indent=2))
@@ -453,8 +493,14 @@ class SpineRoutines:
             if self.openclaw_home:
                 for agent in ["router", "collect", "analyze", "build", "review", "render", "apply"]:
                     agent_mem = self.openclaw_home / "workspace" / agent / "memory"
-                    if agent_mem.exists():
-                        (agent_mem / "compass_snapshot.json").write_text(json.dumps(cp_snap, ensure_ascii=False, indent=2))
+                    agent_mem.mkdir(parents=True, exist_ok=True)
+                    (agent_mem / "compass_snapshot.json").write_text(json.dumps(cp_snap, ensure_ascii=False, indent=2))
+
+                router_mem = self.openclaw_home / "workspace" / "router" / "memory"
+                router_mem.mkdir(parents=True, exist_ok=True)
+                hints = self._build_runtime_hints(mem_snap, pb_snap, cp_snap)
+                (router_mem / "runtime_hints.txt").write_text(hints)
+                ctx.step("runtime_hints_written", True)
 
             result = {"snapshots": 3, "skill_index": index_written}
             ctx.set_result(result)
@@ -509,12 +555,29 @@ class SpineRoutines:
                 return "config_missing"
             port = cfg.get("gateway", {}).get("port", 18789)
             token = cfg.get("gateway", {}).get("auth", {}).get("token", "")
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
             resp = httpx.get(
                 f"http://127.0.0.1:{port}/health",
-                headers={"Authorization": f"Bearer {token}"},
+                headers=headers,
                 timeout=5,
             )
-            return "ok" if resp.status_code < 300 else f"http_{resp.status_code}"
+            if resp.status_code < 300:
+                return "ok"
+
+            # OpenClaw 2026.3 can return 503 on /health when control UI assets are absent
+            # while the tool RPC path remains fully available; probe tool path as fallback.
+            rpc = httpx.post(
+                f"http://127.0.0.1:{port}/tools/invoke",
+                json={
+                    "tool": "sessions_history",
+                    "args": {"session_key": "agent:collect:task:probe:gateway", "limit": 1},
+                },
+                headers={**headers, "Content-Type": "application/json"},
+                timeout=5,
+            )
+            if rpc.status_code < 300:
+                return "ok"
+            return f"http_{resp.status_code}|rpc_{rpc.status_code}"
         except Exception as e:
             return f"error: {str(e)[:80]}"
 
@@ -535,7 +598,8 @@ class SpineRoutines:
             return None
         try:
             return json.loads(cfg_path.read_text())
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to parse OpenClaw config %s: %s", cfg_path, exc)
             return None
 
     def _find_signals_files(self) -> list[Path]:
@@ -553,7 +617,8 @@ class SpineRoutines:
             return {"status": "GREEN"}
         try:
             return json.loads(gate_path.read_text())
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to parse gate file %s: %s", gate_path, exc)
             return {"status": "GREEN"}
 
     def _write_gate(self, gate: dict) -> None:
@@ -592,6 +657,169 @@ class SpineRoutines:
                 index[agent_dir.name] = agent_skills
         return index
 
+    def _build_runtime_hints(self, mem_snap: dict, pb_snap: dict, cp_snap: dict) -> str:
+        top_methods = pb_snap.get("methods", [])[:5]
+        top_priorities = cp_snap.get("priorities", [])[:5]
+        lines = [
+            f"# Runtime Hints ({_utc()})",
+            "",
+            "## Top Priorities",
+        ]
+        for p in top_priorities:
+            lines.append(f"- {p.get('domain')}: weight={p.get('weight')}")
+        lines.append("")
+        lines.append("## Best Methods")
+        for m in top_methods:
+            lines.append(f"- {m.get('name')} (success_rate={m.get('success_rate')}, runs={m.get('total_runs')})")
+        lines.append("")
+        lines.append(f"## Memory Snapshot")
+        lines.append(f"- active_units={len(mem_snap.get('units', []))}")
+        lines.append(f"- links={len(mem_snap.get('links', []))}")
+        return "\n".join(lines).strip() + "\n"
+
+    def _collect_openclaw_observations(self) -> dict:
+        if not self.openclaw_home:
+            return {"session_files": 0, "signals_files": 0, "session_errors": 0}
+
+        session_files = list(self.openclaw_home.glob("agents/*/sessions/**/*.jsonl"))
+        signal_files = list(self.openclaw_home.glob("runs/**/signals_prepare.json"))
+        session_errors = 0
+        for session_file in session_files[:50]:
+            try:
+                lines = session_file.read_text(encoding="utf-8").splitlines()
+            except Exception as exc:
+                logger.warning("Failed to read session file %s: %s", session_file, exc)
+                continue
+            for line in lines[-40:]:
+                low = line.lower()
+                if "error" in low or "timeout" in low:
+                    session_errors += 1
+
+        return {
+            "session_files": len(session_files),
+            "signals_files": len(signal_files),
+            "session_errors": session_errors,
+        }
+
+    def _read_router_patterns(self, limit: int = 30) -> list[dict]:
+        if not self.openclaw_home:
+            return []
+        root = self.openclaw_home / "workspace" / "router" / "memory" / "langgraph_patterns"
+        if not root.exists():
+            return []
+        out: list[dict] = []
+        for p in sorted(root.glob("**/*")):
+            if not p.is_file():
+                continue
+            try:
+                text = p.read_text(encoding="utf-8")
+            except Exception as exc:
+                logger.warning("Failed to read router pattern %s: %s", p, exc)
+                continue
+            out.append({"path": str(p.relative_to(root)), "snippet": text[:1000]})
+            if len(out) >= limit:
+                break
+        return out
+
+    def _collect_interface_observations(self) -> dict:
+        telemetry_dir = self.state_dir / "telemetry"
+        portal_path = telemetry_dir / "portal_events.jsonl"
+        telegram_path = telemetry_dir / "telegram_events.jsonl"
+
+        def _read(path: Path, max_lines: int = 500) -> list[dict]:
+            if not path.exists():
+                return []
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except Exception as exc:
+                logger.warning("Failed to read interface telemetry %s: %s", path, exc)
+                return []
+            out: list[dict] = []
+            for line in lines[-max_lines:]:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    if isinstance(row, dict):
+                        out.append(row)
+                except json.JSONDecodeError:
+                    continue
+            return out
+
+        portal_rows = _read(portal_path)
+        telegram_rows = _read(telegram_path)
+        portal_errors = sum(1 for r in portal_rows if "fail" in str(r.get("event", "")).lower() or "error" in str(r.get("event", "")).lower())
+        telegram_errors = sum(1 for r in telegram_rows if "fail" in str(r.get("event", "")).lower() or "error" in str(r.get("event", "")).lower())
+        return {
+            "portal_events": len(portal_rows),
+            "telegram_events": len(telegram_rows),
+            "portal_error_events": portal_errors,
+            "telegram_error_events": telegram_errors,
+            "recent_portal_events": [r.get("event", "") for r in portal_rows[-20:]],
+            "recent_telegram_events": [r.get("event", "") for r in telegram_rows[-20:]],
+        }
+
+    def _collect_trace_observations(self, limit: int = 200) -> dict:
+        traces = self.tracer.recent(limit=limit)
+        if not traces:
+            return {
+                "total_traces": 0,
+                "error_traces": 0,
+                "degraded_traces": 0,
+                "routines": [],
+                "slow_traces": [],
+            }
+
+        by_routine: dict[str, dict[str, Any]] = {}
+        error_traces = 0
+        degraded_traces = 0
+        slow_traces: list[dict] = []
+
+        for t in traces:
+            routine = str(t.get("routine") or "unknown")
+            status = str(t.get("status") or "unknown")
+            degraded = bool(t.get("degraded"))
+            elapsed = float(t.get("elapsed_s") or 0.0)
+            row = by_routine.setdefault(
+                routine,
+                {"routine": routine, "calls": 0, "errors": 0, "degraded": 0, "avg_elapsed_s": 0.0, "max_elapsed_s": 0.0},
+            )
+            row["calls"] += 1
+            row["avg_elapsed_s"] += elapsed
+            row["max_elapsed_s"] = max(float(row["max_elapsed_s"]), elapsed)
+            if status == "error":
+                row["errors"] += 1
+                error_traces += 1
+            if degraded:
+                row["degraded"] += 1
+                degraded_traces += 1
+            if elapsed >= 30:
+                slow_traces.append(
+                    {
+                        "trace_id": t.get("trace_id", ""),
+                        "routine": routine,
+                        "elapsed_s": elapsed,
+                        "status": status,
+                    }
+                )
+
+        routines = []
+        for row in by_routine.values():
+            calls = int(row["calls"] or 1)
+            row["avg_elapsed_s"] = round(float(row["avg_elapsed_s"]) / calls, 3)
+            routines.append(row)
+        routines.sort(key=lambda x: (int(x.get("errors", 0)), int(x.get("degraded", 0)), float(x.get("avg_elapsed_s", 0))), reverse=True)
+        slow_traces.sort(key=lambda x: float(x.get("elapsed_s", 0)), reverse=True)
+
+        return {
+            "total_traces": len(traces),
+            "error_traces": error_traces,
+            "degraded_traces": degraded_traces,
+            "routines": routines[:20],
+            "slow_traces": slow_traces[:20],
+        }
+
     def _maybe_reset_budgets(self) -> None:
         budgets = self.compass.all_budgets()
         now = _utc()
@@ -608,7 +836,8 @@ class SpineRoutines:
             return 0
         try:
             tasks = json.loads(tasks_path.read_text())
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to parse queued tasks file %s: %s", tasks_path, exc)
             return 0
         queued = [t for t in tasks if t.get("status") == "queued"]
         replayed = 0

@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+
+logger = logging.getLogger(__name__)
 
 
 def _utc() -> str:
@@ -36,7 +40,8 @@ class OpenClawAdapter:
         if not cfg_path.exists():
             raise OpenClawError(f"openclaw.json not found at {cfg_path}")
         self._cfg = json.loads(cfg_path.read_text())
-        port = self._cfg.get("gateway", {}).get("port", 18789)
+        # Keep daemon-only fallback to avoid accidentally binding old MAS defaults.
+        port = self._cfg.get("gateway", {}).get("port", 18790)
         self._gateway_url = f"http://127.0.0.1:{port}"
         self._token = self._cfg.get("gateway", {}).get("auth", {}).get("token", "")
 
@@ -116,7 +121,8 @@ class OpenClawAdapter:
             return 0
         try:
             sessions = json.loads(sessions_path.read_text())
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to parse session index %s: %s", sessions_path, exc)
             return 0
 
         sessions_dir = self._home / "sessions"

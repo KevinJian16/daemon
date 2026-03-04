@@ -7,6 +7,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from runtime.trace_context import reset_current_trace, set_current_trace
+
 
 def _utc() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -25,6 +27,7 @@ class TraceContext:
         self._steps: list[dict] = []
         self._degraded = False
         self._result: dict = {}
+        self._trace_tokens = None
 
     @property
     def trace_id(self) -> str:
@@ -41,9 +44,11 @@ class TraceContext:
         self._result = result
 
     def __enter__(self) -> "TraceContext":
+        self._trace_tokens = set_current_trace(self._trace_id, self._routine)
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+        reset_current_trace(self._trace_tokens)
         elapsed = round(time.time() - self._started, 2)
         status = "error" if exc_type else "ok"
         entry: dict[str, Any] = {
@@ -87,6 +92,15 @@ class Tracer:
         items = self._recent if not routine else [t for t in self._recent if t.get("routine") == routine]
         return items[-limit:]
 
+    def get(self, trace_id: str) -> dict | None:
+        for item in reversed(self._recent):
+            if item.get("trace_id") == trace_id:
+                return item
+        for entry in self._iter_file_entries():
+            if entry.get("trace_id") == trace_id:
+                return entry
+        return None
+
     def query(
         self,
         since: str | None = None,
@@ -95,7 +109,10 @@ class Tracer:
         degraded: bool | None = None,
         limit: int = 100,
     ) -> list[dict]:
-        results = []
+        results: list[dict] = []
+        seen: set[str] = set()
+
+        # Prefer in-memory traces first for latest runtime data.
         for t in reversed(self._recent):
             if routine and t.get("routine") != routine:
                 continue
@@ -105,7 +122,47 @@ class Tracer:
                 continue
             if since and t.get("started_utc", "") < since:
                 continue
+            trace_id = str(t.get("trace_id") or "")
+            if trace_id:
+                seen.add(trace_id)
+            results.append(t)
+            if len(results) >= limit:
+                break
+
+        if len(results) >= limit:
+            return results
+
+        # Fallback to persisted traces so history survives process restarts.
+        for t in self._iter_file_entries():
+            if routine and t.get("routine") != routine:
+                continue
+            if status and t.get("status") != status:
+                continue
+            if degraded is not None and t.get("degraded") != degraded:
+                continue
+            if since and t.get("started_utc", "") < since:
+                continue
+            trace_id = str(t.get("trace_id") or "")
+            if trace_id and trace_id in seen:
+                continue
+            if trace_id:
+                seen.add(trace_id)
             results.append(t)
             if len(results) >= limit:
                 break
         return results
+
+    def _iter_file_entries(self):
+        for path in sorted(self._dir.glob("*.jsonl"), reverse=True):
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                continue
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue

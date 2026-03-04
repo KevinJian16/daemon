@@ -94,7 +94,8 @@ Examples:
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
-def cmd_health() -> None:
+def cmd_health(args: list[str]) -> None:
+    del args
     d = _get("/health")
     gate = d.get("gate", "?")
     print(f"Gate: {_fmt_status(gate)}")
@@ -116,7 +117,7 @@ def cmd_submit(args: list[str]) -> None:
     result = _post("/submit", plan)
     if result.get("ok"):
         print(f"✓ Submitted: {result.get('task_id')}")
-        if result.get("queued"):
+        if result.get("status") == "queued":
             print("  (queued — Gate is not GREEN)")
     else:
         _die(result.get("error") or "submission failed")
@@ -172,14 +173,15 @@ def cmd_outcomes(args: list[str]) -> None:
         return
     rows = [
         [o.get("task_id", ""), o.get("title", "")[:50],
-         o.get("task_type", ""), (o.get("archived_utc") or "")[:19]]
+         o.get("task_type", ""), (o.get("delivered_utc") or o.get("archived_utc") or "")[:19]]
         for o in items
     ]
-    _table(rows, ["Task ID", "Title", "Type", "Archived"])
+    _table(rows, ["Task ID", "Title", "Type", "Delivered"])
 
 
-def cmd_chat() -> None:
+def cmd_chat(args: list[str]) -> None:
     """Interactive chat session with the Router Agent."""
+    del args
     try:
         d = _post("/chat/session")
     except Exception as e:

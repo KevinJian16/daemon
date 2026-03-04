@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 from pathlib import Path
@@ -15,6 +16,9 @@ if TYPE_CHECKING:
 
 def _utc() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+logger = logging.getLogger(__name__)
 
 
 class Dispatch:
@@ -33,6 +37,10 @@ class Dispatch:
         self._state = state_dir
         self._temporal = temporal_client
         self._task_queue = task_queue
+        self._agent_defaults = self._load_agent_defaults()
+
+    def set_temporal_client(self, temporal_client) -> None:
+        self._temporal = temporal_client
 
     def validate(self, plan: dict) -> tuple[bool, str]:
         """Validate a plan before submission. Returns (ok, error_message)."""
@@ -57,8 +65,15 @@ class Dispatch:
     def enrich(self, plan: dict) -> dict:
         """Apply Playbook parameters (timeouts, retry policy) into plan."""
         plan = dict(plan)
+        # Clear stale queue markers before re-evaluating gate policy (important for replay).
+        plan.pop("queued", None)
+        plan.pop("queue_reason", None)
+        plan.pop("status", None)
         task_type = str(plan.get("task_type") or plan.get("method") or "research_report")
         plan.setdefault("task_id", _new_task_id())
+        agent_defaults = self._agent_defaults_from_compass() or dict(self._agent_defaults)
+        plan.setdefault("agent_concurrency_defaults", dict(agent_defaults))
+        plan.setdefault("agent_concurrency", dict(agent_defaults))
 
         # Consult Playbook for best matching method.
         methods = self._playbook.consult(category="dag_pattern")
@@ -73,12 +88,21 @@ class Dispatch:
             spec: dict = best.get("spec") or {}
             plan.setdefault("rework_budget", spec.get("rework_budget", 2))
             plan.setdefault("rework_strategy", spec.get("rework_strategy", "error_code_based"))
+            if isinstance(spec.get("concurrency"), dict):
+                existing = plan.get("concurrency") if isinstance(plan.get("concurrency"), dict) else {}
+                plan["concurrency"] = {**spec.get("concurrency", {}), **existing}
+            if isinstance(spec.get("timeout_hints"), dict):
+                existing_hints = plan.get("timeout_hints") if isinstance(plan.get("timeout_hints"), dict) else {}
+                plan["timeout_hints"] = {**spec.get("timeout_hints", {}), **existing_hints}
             plan["method_id"] = best["method_id"]
 
         # Apply Compass quality profile as timeout hint.
         quality = self._compass.get_quality_profile(task_type)
         plan.setdefault("quality_profile", quality)
-        plan.setdefault("default_step_timeout_s", 480)
+        default_timeout = int(self._compass.get_pref("default_step_timeout_s", "480") or 480)
+        plan.setdefault("default_step_timeout_s", default_timeout)
+        plan.setdefault("model_primary", self._compass.get_pref("model_primary", ""))
+        plan.setdefault("resource_budgets", self._compass.all_budgets())
 
         # Gate check — apply priority to queued vs immediate.
         gate = self._read_gate()
@@ -93,11 +117,68 @@ class Dispatch:
 
         return plan
 
+    def _agent_defaults_from_compass(self) -> dict[str, int]:
+        raw = self._compass.get_pref("agent_concurrency_defaults_json", "")
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except Exception as exc:
+            logger.warning("Invalid agent_concurrency_defaults_json in Compass: %s", exc)
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        out: dict[str, int] = {}
+        for k, v in data.items():
+            try:
+                out[str(k)] = int(v)
+            except Exception:
+                continue
+        return out
+
+    def _load_agent_defaults(self) -> dict[str, int]:
+        cfg_path = self._state.parent / "config" / "system.json"
+        if not cfg_path.exists():
+            return {
+                "collect": 8,
+                "analyze": 4,
+                "review": 2,
+                "render": 2,
+                "apply": 1,
+                "spine": 2,
+                "router": 1,
+                "build": 2,
+            }
+        try:
+            cfg = json.loads(cfg_path.read_text())
+        except Exception as exc:
+            logger.warning("Failed to read system defaults from %s: %s", cfg_path, exc)
+            return {
+                "collect": 8,
+                "analyze": 4,
+                "review": 2,
+                "render": 2,
+                "apply": 1,
+                "spine": 2,
+                "router": 1,
+                "build": 2,
+            }
+        defaults = cfg.get("agent_concurrency_defaults", {})
+        if not isinstance(defaults, dict):
+            return {}
+        out: dict[str, int] = {}
+        for k, v in defaults.items():
+            try:
+                out[str(k)] = int(v)
+            except Exception:
+                continue
+        return out
+
     async def submit(self, plan: dict) -> dict:
         """Validate, enrich, and submit plan to Temporal. Returns task record."""
         ok, err = self.validate(plan)
         if not ok:
-            return {"ok": False, "error": err}
+            return {"ok": False, "error": err, "error_code": "invalid_plan"}
 
         plan = self.enrich(plan)
         task_id = plan["task_id"]
@@ -106,18 +187,42 @@ class Dispatch:
             self._queue_task(plan)
             return {"ok": True, "task_id": task_id, "status": "queued", "reason": plan.get("queue_reason")}
 
+        if not self._temporal:
+            self._record_task(plan, "failed_submission", "")
+            return {
+                "ok": False,
+                "task_id": task_id,
+                "error_code": "temporal_unavailable",
+                "error": "Temporal client unavailable; submission rejected",
+            }
+
         run_root = self._make_run_root(task_id)
         self._record_task(plan, "running", run_root)
 
-        if self._temporal:
+        try:
             workflow_id = f"daemon-{task_id}"
             await self._temporal.submit(workflow_id, plan, run_root)
-        else:
-            # Temporal not connected — record as pending for manual testing.
-            self._record_task(plan, "pending_temporal", run_root)
+        except Exception as exc:
+            logger.error("Temporal submit failed for task %s: %s", task_id, exc)
+            self._record_task({**plan, "last_error": str(exc)[:300]}, "failed_submission", run_root)
+            return {
+                "ok": False,
+                "task_id": task_id,
+                "error_code": "temporal_submit_failed",
+                "error": str(exc)[:400],
+            }
 
         self._nerve.emit("task_submitted", {"task_id": task_id, "run_root": run_root})
         return {"ok": True, "task_id": task_id, "status": "running", "run_root": run_root}
+
+    async def replay(self, task_id: str, plan: dict) -> dict:
+        """Replay a previously queued task with its original task_id."""
+        replay_plan = dict(plan)
+        replay_plan["task_id"] = task_id
+        replay_plan.pop("queued", None)
+        replay_plan.pop("queue_reason", None)
+        replay_plan.pop("status", None)
+        return await self.submit(replay_plan)
 
     def _make_run_root(self, task_id: str) -> str:
         runs_dir = self._state / "runs" / task_id
@@ -128,13 +233,18 @@ class Dispatch:
         tasks_path = self._state / "tasks.json"
         try:
             tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to parse tasks.json at %s: %s", tasks_path, exc)
             tasks = []
         task_id = plan.get("task_id", "")
         for t in tasks:
             if t.get("task_id") == task_id:
                 t["status"] = status
                 t["updated_utc"] = _utc()
+                if plan.get("last_error"):
+                    t["last_error"] = plan.get("last_error")
+                if run_root:
+                    t["run_root"] = run_root
                 break
         else:
             tasks.append({
@@ -147,6 +257,7 @@ class Dispatch:
                 "updated_utc": _utc(),
                 "priority": plan.get("priority", 5),
                 "plan": plan,
+                "last_error": plan.get("last_error", ""),
             })
         tmp = tasks_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(tasks, ensure_ascii=False, indent=2))
@@ -164,7 +275,8 @@ class Dispatch:
             return {"status": "GREEN"}
         try:
             return json.loads(gate_path.read_text())
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to parse gate file %s: %s", gate_path, exc)
             return {"status": "GREEN"}
 
 

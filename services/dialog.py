@@ -57,7 +57,8 @@ class DialogService:
         if not self._oc_cfg:
             return {"ok": False, "error": "OpenClaw not configured"}
 
-        gw_port = self._oc_cfg.get("gateway", {}).get("port", 18789)
+        # Keep daemon-only fallback to avoid accidentally binding old MAS defaults.
+        gw_port = self._oc_cfg.get("gateway", {}).get("port", 18790)
         gw_token = self._oc_cfg.get("gateway", {}).get("auth", {}).get("token", "")
         gw_url = f"http://127.0.0.1:{gw_port}"
         headers = {"Authorization": f"Bearer {gw_token}", "Content-Type": "application/json"}
