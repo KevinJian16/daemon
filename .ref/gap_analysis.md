@@ -1,5 +1,10 @@
 # Daemon 功能差距分析
 
+> 状态声明（2026-03-04）  
+> 本文档是统一方案落地前的历史缺口快照。  
+> 当前缺口判定与优先级以 `.ref/daemon_统一方案_v2.md` 为准。  
+> 本文仅用于回溯“为何曾有这些缺口”。
+
 > 基于方案文档 `/Users/kevinjian/mas/.cursor/plans/daemon_系统设计方案_ddbc4981.plan.md`
 > 对比实现代码（4038行，/Users/kevinjian/daemon/）生成
 

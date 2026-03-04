@@ -25,6 +25,11 @@ isProject: false
 
 # Daemon — 新一代多智能体系统设计方案
 
+> 历史基线声明（2026-03-04）  
+> 本文档定义 Daemon 的基础骨架（Fabric/Spine/Cortex/边界与基础接口），作为历史基线保留。  
+> 后续新增与演进能力请以 `.ref/daemon_统一方案_v2.md` 为唯一执行权威。  
+> 若口径冲突，以 `daemon_统一方案_v2.md` 为准。
+
 > Daemon：后台守护进程，持续运行、自主治理、默默进化。
 
 ---
@@ -1325,4 +1330,3 @@ src/temporal/                      # Temporal Server 相关
 1. **Console** — Overview + Spine Dashboard + Fabric Explorer + Policy Editor + Trace Viewer + **Skill Evolution 面板**
 2. **Portal** — Chat + Outcome（读 index.json）+ Timeline
 3. **Telegram 适配器**
-
