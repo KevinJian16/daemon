@@ -9,12 +9,7 @@ venv/
 *.db
 *.db-shm
 *.db-wal
-state/gate.json
-state/schedules.json
-state/tasks.json
-state/nerve_bridge/
-state/traces/
-state/snapshots/
+state/
 outcome/scheduled/
 outcome/manual/
 logs/
