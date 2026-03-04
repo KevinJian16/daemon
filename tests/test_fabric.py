@@ -1,4 +1,5 @@
 """Tests for all three Fabric components using in-memory SQLite."""
+import json
 import pytest
 from pathlib import Path
 from fabric.memory import MemoryFabric
@@ -188,6 +189,99 @@ class TestPlaybookFabric:
         stats = playbook.stats()
         assert "by_status" in stats
         assert "active" in stats["by_status"]
+
+    def test_strategy_invalid_transition_rejected(self, playbook):
+        playbook.seed_clusters([{"cluster_id": "clst_x", "display_name": "X"}])
+        cand = playbook.spawn_candidate_from_champion("clst_x", stage="candidate")
+        assert cand is not None
+        with pytest.raises(ValueError, match="invalid_stage_transition"):
+            playbook.promote_strategy(
+                strategy_id=cand["strategy_id"],
+                decision="promote_manual",
+                prev_stage="candidate",
+                next_stage="champion",
+                reason="skip_flow",
+                decided_by="test",
+            )
+
+    def test_strategy_challenger_cap_enforced(self, playbook):
+        playbook.seed_clusters([{"cluster_id": "clst_cap", "display_name": "Cap"}])
+        for _ in range(4):
+            cand = playbook.spawn_candidate_from_champion("clst_cap", stage="candidate")
+            assert cand is not None
+            sid = cand["strategy_id"]
+            playbook.promote_strategy(
+                strategy_id=sid,
+                decision="enter_shadow_auto",
+                prev_stage="candidate",
+                next_stage="shadow",
+                reason="test",
+                decided_by="test",
+            )
+            playbook.promote_strategy(
+                strategy_id=sid,
+                decision="promote_manual",
+                prev_stage="shadow",
+                next_stage="challenger",
+                reason="test",
+                decided_by="test",
+            )
+
+        rows = playbook.list_strategies(cluster_id="clst_cap")
+        challengers = [r for r in rows if r.get("stage") == "challenger"]
+        retired = [r for r in rows if r.get("stage") == "retired"]
+        assert len(challengers) <= 3
+        assert len(retired) >= 1
+
+    def test_strategy_audit_gate_and_pass(self, playbook, tmp_path, monkeypatch):
+        monkeypatch.setenv("DAEMON_HOME", str(tmp_path))
+        (tmp_path / "state" / "telemetry").mkdir(parents=True, exist_ok=True)
+
+        playbook.seed_clusters([{"cluster_id": "clst_audit", "display_name": "Audit"}])
+        cand = playbook.spawn_candidate_from_champion("clst_audit", stage="candidate")
+        assert cand is not None
+        sid = cand["strategy_id"]
+        playbook.promote_strategy(
+            strategy_id=sid,
+            decision="enter_shadow_auto",
+            prev_stage="candidate",
+            next_stage="shadow",
+            reason="test",
+            decided_by="test",
+        )
+        audit0 = playbook.strategy_audit_status(sid)
+        assert audit0["promotable_to_champion"] is False
+
+        playbook.record_experiment(
+            strategy_id=sid,
+            task_id="task_shadow_1",
+            cluster_id="clst_audit",
+            score_components={"quality": 0.9},
+            global_score=0.9,
+            outcome="success",
+            is_shadow=True,
+        )
+        cmp_path = tmp_path / "state" / "telemetry" / "shadow_comparisons.jsonl"
+        cmp_path.write_text(
+            json.dumps(
+                {
+                    "task_id": "task_shadow_1",
+                    "cluster_id": "clst_audit",
+                    "shadow_strategy_id": sid,
+                    "champion_strategy_id": "",
+                    "shadow_global_score": 0.9,
+                    "champion_global_score": 0.8,
+                    "delta_global_score": 0.1,
+                    "created_utc": "2026-03-04T00:00:00Z",
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        audit1 = playbook.strategy_audit_status(sid)
+        assert audit1["promotable_to_champion"] is True
 
 
 # ── Compass Fabric ────────────────────────────────────────────────────────────
