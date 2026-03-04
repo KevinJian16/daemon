@@ -113,6 +113,7 @@ class Dispatch:
         plan.setdefault("default_step_timeout_s", default_timeout)
         plan.setdefault("model_primary", self._compass.get_pref("model_primary", ""))
         plan.setdefault("resource_budgets", self._compass.all_budgets())
+        plan = self._apply_strategy(plan)
 
         # Gate check — apply priority to queued vs immediate.
         gate = self._read_gate()
@@ -124,6 +125,41 @@ class Dispatch:
             if priority > 5:
                 plan["queued"] = True
                 plan["queue_reason"] = "gate_yellow_low_priority"
+
+        return plan
+
+    def _apply_strategy(self, plan: dict) -> dict:
+        """Inject champion strategy parameters for the resolved semantic cluster."""
+        cluster_id = str(plan.get("cluster_id") or "")
+        if not cluster_id:
+            raise ValueError("missing_cluster_id")
+
+        champion = self._playbook.get_champion(cluster_id)
+        if not champion:
+            raise ValueError(f"no_champion_strategy_for_cluster:{cluster_id}")
+
+        plan["strategy_id"] = champion.get("strategy_id", "")
+        plan["strategy_stage"] = champion.get("stage", "champion")
+        if isinstance(champion.get("score_components"), dict):
+            plan.setdefault("global_score_components", champion.get("score_components") or {})
+
+        spec = champion.get("spec") if isinstance(champion.get("spec"), dict) else {}
+        if spec:
+            if isinstance(spec.get("concurrency"), dict):
+                existing = plan.get("concurrency") if isinstance(plan.get("concurrency"), dict) else {}
+                plan["concurrency"] = {**spec.get("concurrency", {}), **existing}
+            if isinstance(spec.get("timeout_hints"), dict):
+                existing_hints = plan.get("timeout_hints") if isinstance(plan.get("timeout_hints"), dict) else {}
+                plan["timeout_hints"] = {**spec.get("timeout_hints", {}), **existing_hints}
+            if isinstance(spec.get("agent_concurrency"), dict):
+                existing_agent = plan.get("agent_concurrency") if isinstance(plan.get("agent_concurrency"), dict) else {}
+                plan["agent_concurrency"] = {**spec.get("agent_concurrency", {}), **existing_agent}
+            if "rework_budget" in spec:
+                plan.setdefault("rework_budget", int(spec.get("rework_budget") or 2))
+            if "rework_strategy" in spec:
+                plan.setdefault("rework_strategy", str(spec.get("rework_strategy") or "error_code_based"))
+            if "model_alias" in spec:
+                plan.setdefault("model_alias", str(spec.get("model_alias") or ""))
 
         return plan
 
@@ -217,12 +253,17 @@ class Dispatch:
         plan = dict(plan)
         plan["semantic_fingerprint"] = fingerprint.to_dict()
         plan.setdefault("cluster_id", fingerprint.cluster_id)
+        self._annotate_capability_graph(plan, fingerprint.cluster_id)
 
         ok, err = self.validate(plan)
         if not ok:
             return {"ok": False, "error": err, "error_code": "invalid_plan"}
 
-        plan = self.enrich(plan)
+        try:
+            plan = self.enrich(plan)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "error_code": "strategy_guard_blocked"}
+
         task_id = plan["task_id"]
 
         if plan.get("queued"):
@@ -256,6 +297,19 @@ class Dispatch:
 
         self._nerve.emit("task_submitted", {"task_id": task_id, "run_root": run_root})
         return {"ok": True, "task_id": task_id, "status": "running", "run_root": run_root}
+
+    def _annotate_capability_graph(self, plan: dict, cluster_id: str) -> None:
+        """Ensure each DAG node carries capability_id + quality_contract_id."""
+        steps = plan.get("steps") or plan.get("graph", {}).get("steps") or []
+        if not isinstance(steps, list):
+            return
+        contract_id = str(plan.get("task_type") or "default")
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            sid = str(step.get("id") or step.get("step_id") or f"step_{i}")
+            step.setdefault("capability_id", f"{cluster_id}:{sid}")
+            step.setdefault("quality_contract_id", contract_id)
 
     async def replay(self, task_id: str, plan: dict) -> dict:
         """Replay a queued task with backoff enforcement (decision §7)."""
@@ -348,6 +402,14 @@ class Dispatch:
                     t["last_error"] = plan.get("last_error")
                 if run_root:
                     t["run_root"] = run_root
+                if "cluster_id" in plan:
+                    t["semantic_cluster"] = plan.get("cluster_id", "")
+                if "strategy_id" in plan:
+                    t["strategy_id"] = plan.get("strategy_id", "")
+                if "strategy_stage" in plan:
+                    t["strategy_stage"] = plan.get("strategy_stage", "")
+                if "global_score_components" in plan:
+                    t["global_score_components"] = plan.get("global_score_components") or {}
                 break
         else:
             tasks.append({
@@ -359,6 +421,10 @@ class Dispatch:
                 "submitted_utc": _utc(),
                 "updated_utc": _utc(),
                 "priority": plan.get("priority", 5),
+                "semantic_cluster": plan.get("cluster_id", ""),
+                "strategy_id": plan.get("strategy_id", ""),
+                "strategy_stage": plan.get("strategy_stage", ""),
+                "global_score_components": plan.get("global_score_components") or {},
                 "plan": plan,
                 "last_error": plan.get("last_error", ""),
             })

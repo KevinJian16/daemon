@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import calendar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -166,7 +167,54 @@ class SpineRoutines:
                 self.memory.record_usage(uid, task_id, method_id, status)
             ctx.step("usage_recorded", len(used_unit_ids))
 
-            result = {"task_id": task_id, "outcome": status, "method_id": method_id}
+            strategy_id = str(plan.get("strategy_id") or "")
+            cluster_id = str(plan.get("cluster_id") or "")
+            strategy_stage = str(plan.get("strategy_stage") or "")
+            strategy_components: dict[str, Any] = {}
+            strategy_global_score: float | None = None
+            if strategy_id and cluster_id:
+                strategy_components = self._build_global_score_components(step_results, outcome, plan)
+                strategy_global_score = (
+                    0.45 * float(strategy_components.get("quality", 0.0))
+                    + 0.35 * float(strategy_components.get("stability", 0.0))
+                    + 0.10 * float(strategy_components.get("latency", 0.0))
+                    + 0.10 * float(strategy_components.get("cost", 0.0))
+                )
+                self.playbook.record_experiment(
+                    strategy_id=strategy_id,
+                    task_id=task_id,
+                    cluster_id=cluster_id,
+                    score_components=strategy_components,
+                    global_score=strategy_global_score,
+                    outcome=status,
+                    is_shadow=bool(plan.get("is_shadow", False)),
+                )
+                self._update_task_strategy(
+                    task_id=task_id,
+                    semantic_cluster=cluster_id,
+                    strategy_id=strategy_id,
+                    strategy_stage=strategy_stage or "champion",
+                    global_score_components=strategy_components,
+                    global_score=strategy_global_score,
+                    trace_id=ctx.trace_id,
+                )
+                ctx.step(
+                    "strategy_recorded",
+                    {
+                        "strategy_id": strategy_id,
+                        "cluster_id": cluster_id,
+                        "global_score": round(strategy_global_score, 4),
+                    },
+                )
+
+            result = {
+                "task_id": task_id,
+                "outcome": status,
+                "method_id": method_id,
+                "strategy_id": strategy_id,
+                "semantic_cluster": cluster_id,
+                "global_score": round(strategy_global_score, 4) if strategy_global_score is not None else None,
+            }
             ctx.set_result(result)
         return result
 
@@ -410,7 +458,9 @@ class SpineRoutines:
     def judge(self) -> dict:
         """Promote/retire Playbook methods based on statistical thresholds."""
         with self.tracer.span("spine.judge", trigger="cron") as ctx:
-            result = self.playbook.judge()
+            method_result = self.playbook.judge()
+            strategy_result = self._judge_strategies()
+            result = {**method_result, "strategy": strategy_result}
             ctx.step("judge_done", result)
             ctx.set_result(result)
         return result
@@ -473,15 +523,19 @@ class SpineRoutines:
             snapshots_dir = self.state_dir / "snapshots"
             snapshots_dir.mkdir(parents=True, exist_ok=True)
 
-            # Export all three Fabric snapshots.
+            # Export Fabric snapshots.
             mem_snap = self.memory.snapshot()
             pb_snap = self.playbook.snapshot()
             cp_snap = self.compass.snapshot()
+            semantic_snap = self._build_semantic_snapshot()
+            strategy_snap = self._build_strategy_snapshot()
 
             (snapshots_dir / "memory_snapshot.json").write_text(json.dumps(mem_snap, ensure_ascii=False, indent=2))
             (snapshots_dir / "playbook_snapshot.json").write_text(json.dumps(pb_snap, ensure_ascii=False, indent=2))
             (snapshots_dir / "compass_snapshot.json").write_text(json.dumps(cp_snap, ensure_ascii=False, indent=2))
-            ctx.step("snapshots_written", 3)
+            (snapshots_dir / "semantic_snapshot.json").write_text(json.dumps(semantic_snap, ensure_ascii=False, indent=2))
+            (snapshots_dir / "strategy_snapshot.json").write_text(json.dumps(strategy_snap, ensure_ascii=False, indent=2))
+            ctx.step("snapshots_written", 5)
 
             # Generate model_policy_snapshot.json — single source of truth for OpenClaw.
             policy_snapshot = self._build_model_policy_snapshot()
@@ -507,6 +561,9 @@ class SpineRoutines:
                     agent_mem.mkdir(parents=True, exist_ok=True)
                     (agent_mem / "compass_snapshot.json").write_text(json.dumps(cp_snap, ensure_ascii=False, indent=2))
                     (agent_mem / "model_policy_snapshot.json").write_text(policy_json)
+                    if agent == "router":
+                        (agent_mem / "semantic_snapshot.json").write_text(json.dumps(semantic_snap, ensure_ascii=False, indent=2))
+                        (agent_mem / "strategy_snapshot.json").write_text(json.dumps(strategy_snap, ensure_ascii=False, indent=2))
 
                 router_mem = self.openclaw_home / "workspace" / "router" / "memory"
                 router_mem.mkdir(parents=True, exist_ok=True)
@@ -514,7 +571,7 @@ class SpineRoutines:
                 (router_mem / "runtime_hints.txt").write_text(hints)
                 ctx.step("runtime_hints_written", True)
 
-            result = {"snapshots": 3, "skill_index": index_written, "model_policy_snapshot": True}
+            result = {"snapshots": 5, "skill_index": index_written, "model_policy_snapshot": True}
             ctx.set_result(result)
         return result
 
@@ -592,6 +649,104 @@ class SpineRoutines:
             return f"http_{resp.status_code}|rpc_{rpc.status_code}"
         except Exception as e:
             return f"error: {str(e)[:80]}"
+
+    def _judge_strategies(self) -> dict:
+        min_samples = int(self.compass.get_pref("strategy_min_samples", "12") or 12)
+        promote_delta = float(self.compass.get_pref("strategy_promote_delta", "0.03") or 0.03)
+        rollback_delta = float(self.compass.get_pref("strategy_rollback_delta", "0.08") or 0.08)
+
+        clusters = self.playbook.list_clusters()
+        strategies = self.playbook.list_strategies()
+        by_cluster: dict[str, list[dict]] = {}
+        for row in strategies:
+            cid = str(row.get("cluster_id") or "")
+            by_cluster.setdefault(cid, []).append(row)
+
+        promotions = 0
+        rollbacks = 0
+        checked = 0
+        for c in clusters:
+            cluster_id = str(c.get("cluster_id") or "")
+            rows = by_cluster.get(cluster_id, [])
+            if not rows:
+                continue
+            checked += 1
+
+            champions = [r for r in rows if str(r.get("stage") or "") == "champion"]
+            champion = sorted(champions, key=lambda x: str(x.get("updated_utc") or ""), reverse=True)[0] if champions else None
+            candidates = [
+                r for r in rows
+                if str(r.get("stage") or "") in {"shadow", "challenger", "candidate"}
+                and r.get("global_score") is not None
+                and int(r.get("sample_n") or 0) >= min_samples
+            ]
+            if not candidates:
+                continue
+            best = sorted(candidates, key=lambda x: float(x.get("global_score") or 0.0), reverse=True)[0]
+
+            if not champion:
+                self.playbook.promote_strategy(
+                    strategy_id=str(best.get("strategy_id") or ""),
+                    decision="promote_auto",
+                    prev_stage=str(best.get("stage") or "candidate"),
+                    next_stage="champion",
+                    reason="no_champion_present",
+                    decided_by="spine.judge",
+                )
+                promotions += 1
+                continue
+
+            champion_score = float(champion.get("global_score") or 0.0)
+            best_score = float(best.get("global_score") or 0.0)
+            champion_n = int(champion.get("sample_n") or 0)
+
+            if champion_n >= min_samples and (champion_score - best_score) >= rollback_delta:
+                self.playbook.promote_strategy(
+                    strategy_id=str(champion.get("strategy_id") or ""),
+                    decision="rollback_auto",
+                    prev_stage="champion",
+                    next_stage="challenger",
+                    reason="champion_significant_degradation",
+                    decided_by="spine.judge",
+                )
+                self.playbook.promote_strategy(
+                    strategy_id=str(best.get("strategy_id") or ""),
+                    decision="promote_auto",
+                    prev_stage=str(best.get("stage") or "candidate"),
+                    next_stage="champion",
+                    reason="rollback_replacement",
+                    decided_by="spine.judge",
+                )
+                rollbacks += 1
+                continue
+
+            if best_score >= champion_score + promote_delta:
+                self.playbook.promote_strategy(
+                    strategy_id=str(best.get("strategy_id") or ""),
+                    decision="promote_auto",
+                    prev_stage=str(best.get("stage") or "candidate"),
+                    next_stage="champion",
+                    reason=f"score_delta>={promote_delta}",
+                    decided_by="spine.judge",
+                )
+                self.playbook.promote_strategy(
+                    strategy_id=str(champion.get("strategy_id") or ""),
+                    decision="demote_auto",
+                    prev_stage="champion",
+                    next_stage="challenger",
+                    reason="champion_replaced",
+                    decided_by="spine.judge",
+                )
+                promotions += 1
+
+        return {
+            "clusters_checked": checked,
+            "promotions": promotions,
+            "rollbacks": rollbacks,
+            "min_samples": min_samples,
+            "promote_delta": promote_delta,
+            "rollback_delta": rollback_delta,
+        }
 
     def _probe_temporal(self) -> str:
         try:
@@ -689,6 +844,49 @@ class SpineRoutines:
         lines.append(f"- links={len(mem_snap.get('links', []))}")
         return "\n".join(lines).strip() + "\n"
 
+    def _build_semantic_snapshot(self) -> dict:
+        cfg_root = self.daemon_home / "config" / "semantics"
+        catalog_path = cfg_root / "capability_catalog.json"
+        rules_path = cfg_root / "mapping_rules.json"
+        catalog: dict[str, Any] = {}
+        rules: dict[str, Any] = {}
+        try:
+            catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Failed to load semantic catalog: %s", exc)
+        try:
+            rules = json.loads(rules_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Failed to load semantic mapping rules: %s", exc)
+        return {
+            "generated_utc": _utc(),
+            "clusters": catalog.get("clusters", []) if isinstance(catalog, dict) else [],
+            "rules": rules.get("rules", []) if isinstance(rules, dict) else [],
+            "confidence_thresholds": rules.get("confidence_thresholds", {}) if isinstance(rules, dict) else {},
+        }
+
+    def _build_strategy_snapshot(self) -> dict:
+        strategies = self.playbook.list_strategies()
+        champions: dict[str, dict] = {}
+        for row in strategies:
+            cid = str(row.get("cluster_id") or "")
+            if not cid:
+                continue
+            if row.get("stage") == "champion":
+                champions[cid] = {
+                    "strategy_id": row.get("strategy_id"),
+                    "global_score": row.get("global_score"),
+                    "sample_n": row.get("sample_n"),
+                    "updated_utc": row.get("updated_utc"),
+                }
+        promotions = self.playbook.list_promotions(limit=200)
+        return {
+            "generated_utc": _utc(),
+            "champions": champions,
+            "strategies": strategies,
+            "recent_promotions": promotions[:50],
+        }
+
     def _build_model_policy_snapshot(self) -> dict:
         """Read config/model_policy.json and annotate with generated_utc."""
         policy_path = self.daemon_home / "config" / "model_policy.json"
@@ -699,6 +897,91 @@ class SpineRoutines:
             policy = {}
         policy["generated_utc"] = _utc()
         return policy
+
+    def _build_global_score_components(self, step_results: list[dict], outcome: dict, plan: dict) -> dict:
+        quality = float(outcome.get("quality_score", outcome.get("score", 1.0 if outcome.get("ok") else 0.0)) or 0.0)
+        quality = max(0.0, min(1.0, quality))
+
+        total_steps = len(step_results) if isinstance(step_results, list) else 0
+        if total_steps <= 0:
+            stability = 1.0 if outcome.get("ok") else 0.0
+        else:
+            unstable = 0
+            for r in step_results:
+                st = str(r.get("status") or "").lower()
+                if st in {"error", "failed", "degraded"}:
+                    unstable += 1
+            stability = max(0.0, min(1.0, 1.0 - (unstable / total_steps)))
+
+        latency = 1.0
+        if any("timeout" in str((r.get("error") or "")).lower() for r in step_results):
+            latency = 0.6
+        elif not outcome.get("ok"):
+            latency = 0.75
+
+        cost = 1.0
+        budgets = plan.get("resource_budgets")
+        if isinstance(budgets, list) and budgets:
+            over = 0
+            total = 0
+            for b in budgets:
+                try:
+                    total += 1
+                    used = float(b.get("current_usage", 0))
+                    lim = float(b.get("daily_limit", 0))
+                    if lim > 0 and used > lim * 0.9:
+                        over += 1
+                except Exception:
+                    continue
+            if total:
+                cost = max(0.0, 1.0 - (over / total) * 0.5)
+
+        return {
+            "quality": round(quality, 4),
+            "stability": round(stability, 4),
+            "latency": round(latency, 4),
+            "cost": round(cost, 4),
+        }
+
+    def _update_task_strategy(
+        self,
+        task_id: str,
+        semantic_cluster: str,
+        strategy_id: str,
+        strategy_stage: str,
+        global_score_components: dict,
+        global_score: float,
+        trace_id: str,
+    ) -> None:
+        tasks_path = self.state_dir / "tasks.json"
+        if not tasks_path.exists():
+            return
+        try:
+            tasks = json.loads(tasks_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Failed to read task file %s: %s", tasks_path, exc)
+            return
+        updated = False
+        for row in tasks if isinstance(tasks, list) else []:
+            if str(row.get("task_id") or "") != task_id:
+                continue
+            row["semantic_cluster"] = semantic_cluster
+            row["strategy_id"] = strategy_id
+            row["strategy_stage"] = strategy_stage
+            row["global_score_components"] = global_score_components
+            row["global_score"] = round(float(global_score or 0.0), 4)
+            row["trace_id"] = trace_id
+            row["updated_utc"] = _utc()
+            updated = True
+            break
+        if not updated:
+            return
+        try:
+            tmp = tasks_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(tasks, ensure_ascii=False, indent=2))
+            tmp.replace(tasks_path)
+        except Exception as exc:
+            logger.warning("Failed to write strategy updates to tasks.json: %s", exc)
 
     def _collect_openclaw_observations(self) -> dict:
         if not self.openclaw_home:
@@ -863,11 +1146,22 @@ class SpineRoutines:
             logger.warning("Failed to parse queued tasks file %s: %s", tasks_path, exc)
             return 0
         now = _utc()
+        window_hours = int(self.compass.get_pref("replay_window_hours", "24") or 24)
+        replay_window_s = max(1, window_hours) * 3600
+        changed = False
         eligible = []
         for t in tasks:
             if t.get("status") not in ("queued",):
                 continue
             if t.get("status") == "replay_exhausted":
+                continue
+            queued_utc = str(t.get("queued_utc") or t.get("submitted_utc") or "")
+            queued_ts = self._iso_to_ts(queued_utc)
+            if queued_ts and (time.time() - queued_ts) > replay_window_s:
+                t["status"] = "expired"
+                t["updated_utc"] = now
+                t["expired_reason"] = "replay_window_exceeded"
+                changed = True
                 continue
             next_replay = str(t.get("next_replay_utc") or "")
             if next_replay and next_replay > now:
@@ -878,7 +1172,22 @@ class SpineRoutines:
         for task in sorted(eligible, key=lambda t: int(t.get("priority", 5)))[:10]:
             self.nerve.emit("task_replay", {"task_id": task.get("task_id"), "plan": task.get("plan")})
             replayed += 1
+        if changed:
+            try:
+                tmp = tasks_path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(tasks, ensure_ascii=False, indent=2))
+                tmp.replace(tasks_path)
+            except Exception as exc:
+                logger.warning("Failed to persist expired replay tasks: %s", exc)
         return replayed
+
+    def _iso_to_ts(self, v: str) -> float | None:
+        if not v:
+            return None
+        try:
+            return float(calendar.timegm(time.strptime(v, "%Y-%m-%dT%H:%M:%SZ")))
+        except Exception:
+            return None
 
     def _clean_old_traces(self, max_age_days: int = 7) -> int:
         traces_dir = self.state_dir / "traces"

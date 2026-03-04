@@ -474,6 +474,26 @@ class PlaybookFabric:
         d["score_components"] = json.loads(d.get("score_components") or "{}")
         return d
 
+    def get_strategy(self, strategy_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM strategy_candidates WHERE strategy_id=?",
+                (strategy_id,),
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["spec"] = json.loads(d.pop("spec_json", "{}") or "{}")
+        d["score_components"] = json.loads(d.get("score_components") or "{}")
+        return d
+
+    def list_clusters(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT cluster_id, display_name, task_type_compat, created_utc, updated_utc FROM semantic_clusters ORDER BY cluster_id"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def record_experiment(
         self,
         strategy_id: str,
@@ -499,8 +519,14 @@ class PlaybookFabric:
                 (strategy_id,),
             ).fetchone()
             conn.execute(
-                "UPDATE strategy_candidates SET global_score=?, sample_n=?, updated_utc=? WHERE strategy_id=?",
-                (round(float(agg["avg_score"] or 0), 4), int(agg["n"]), now, strategy_id),
+                "UPDATE strategy_candidates SET global_score=?, score_components=?, sample_n=?, updated_utc=? WHERE strategy_id=?",
+                (
+                    round(float(agg["avg_score"] or 0), 4),
+                    json.dumps(score_components, ensure_ascii=False),
+                    int(agg["n"]),
+                    now,
+                    strategy_id,
+                ),
             )
         # Emit to telemetry JSONL.
         self._append_strategy_event("experiment_recorded", {
@@ -563,6 +589,18 @@ class PlaybookFabric:
             d["score_components"] = json.loads(d.get("score_components") or "{}")
             result.append(d)
         return result
+
+    def list_promotions(self, strategy_id: str | None = None, limit: int = 200) -> list[dict]:
+        sql = "SELECT * FROM strategy_promotions"
+        params: list[Any] = []
+        if strategy_id:
+            sql += " WHERE strategy_id=?"
+            params.append(strategy_id)
+        sql += " ORDER BY decided_utc DESC LIMIT ?"
+        params.append(max(1, min(limit, 2000)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
 
     def _append_strategy_event(self, event: str, payload: dict) -> None:
         """Append to state/telemetry/strategy_events.jsonl (mandatory audit log)."""

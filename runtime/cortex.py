@@ -26,6 +26,7 @@ _DEFAULT_PROVIDER_ORDER = ["minimax", "zhipu", "qwen", "deepseek", "openai", "an
 
 # Path to model registry for alias resolution.
 _REGISTRY_PATH = Path(__file__).parent.parent / "config" / "model_registry.json"
+_POLICY_PATH = Path(__file__).parent.parent / "config" / "model_policy.json"
 
 
 def _load_registry() -> dict[str, dict]:
@@ -37,6 +38,13 @@ def _load_registry() -> dict[str, dict]:
             for m in data.get("models", [])
             if not m.get("inactive")
         }
+    except Exception:
+        return {}
+
+
+def _load_policy() -> dict:
+    try:
+        return json.loads(_POLICY_PATH.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
@@ -118,12 +126,17 @@ class Cortex:
                 logger.debug("openai package not installed — qwen provider skipped")
 
     def _provider_order(self) -> list[str]:
+        policy = _load_policy()
+        chain = policy.get("fallback_chain") if isinstance(policy.get("fallback_chain"), list) else []
+        ordered = [str(p) for p in chain if str(p) in self._clients]
         if self._compass:
             primary = self._compass.get_pref("model_primary", "")
-            if primary and primary in self._clients:
-                rest = [p for p in _DEFAULT_PROVIDER_ORDER if p != primary and p in self._clients]
-                return [primary] + rest
-        return [p for p in _DEFAULT_PROVIDER_ORDER if p in self._clients]
+            if primary and primary in self._clients and primary not in ordered:
+                ordered = [primary] + ordered
+        for p in _DEFAULT_PROVIDER_ORDER:
+            if p in self._clients and p not in ordered:
+                ordered.append(p)
+        return ordered
 
     def is_available(self) -> bool:
         return bool(self._clients)
@@ -151,23 +164,61 @@ class Cortex:
             t0 = time.time()
             try:
                 result, in_t, out_t = self._call(resolved_provider, prompt, resolved_model, max_tokens, temperature)
-                self._record_usage(resolved_provider, resolved_model or resolved_provider, in_t, out_t,
-                                   round(time.time() - t0, 2), True, prompt_preview=prompt[:300], output_preview=result[:300])
-                return result
+                if not self._budget_admit(resolved_provider, in_t + out_t):
+                    self._record_usage(
+                        resolved_provider,
+                        resolved_model or resolved_provider,
+                        in_t,
+                        out_t,
+                        round(time.time() - t0, 2),
+                        False,
+                        "provider_budget_exceeded",
+                        prompt_preview=prompt[:300],
+                    )
+                else:
+                    self._record_usage(
+                        resolved_provider,
+                        resolved_model or resolved_provider,
+                        in_t,
+                        out_t,
+                        round(time.time() - t0, 2),
+                        True,
+                        prompt_preview=prompt[:300],
+                        output_preview=result[:300],
+                    )
+                    return result
             except Exception as e:
                 self._record_usage(resolved_provider, resolved_model or resolved_provider, 0, 0,
                                    round(time.time() - t0, 2), False, str(e)[:200], prompt_preview=prompt[:300])
                 # Fall through to provider loop as fallback.
 
         providers = self._provider_order()
+        if resolved_provider:
+            providers = [p for p in providers if p != resolved_provider]
         if not providers:
             raise CortexError("no LLM providers configured")
 
         last_err: Exception | None = None
+        budget_blocked = False
         for provider in providers:
             t0 = time.time()
             try:
                 result, in_tokens, out_tokens = self._call(provider, prompt, resolved_model, max_tokens, temperature)
+                if not self._budget_admit(provider, in_tokens + out_tokens):
+                    elapsed = time.time() - t0
+                    self._record_usage(
+                        provider,
+                        model or provider,
+                        in_tokens,
+                        out_tokens,
+                        elapsed,
+                        False,
+                        "provider_budget_exceeded",
+                        prompt_preview=prompt[:300],
+                    )
+                    budget_blocked = True
+                    last_err = CortexError("provider_budget_exceeded")
+                    continue
                 elapsed = time.time() - t0
                 self._record_usage(
                     provider,
@@ -194,6 +245,8 @@ class Cortex:
                 )
                 last_err = e
 
+        if budget_blocked:
+            raise CortexError("provider_budget_exceeded: all candidate providers blocked or failed after budget checks")
         raise CortexError(f"all providers failed; last error: {last_err}") from last_err
 
     def structured(self, prompt: str, schema: dict, model: str | None = None) -> dict:
@@ -386,11 +439,14 @@ class Cortex:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as exc:
             logger.warning("Failed to persist cortex usage trace: %s", exc)
-        # Deduct from Compass budget if available.
-        if success and self._compass:
-            total = in_t + out_t
-            resource_key = f"{provider}_tokens"
-            self._compass.consume_budget(resource_key, total)
+
+    def _budget_admit(self, provider: str, tokens: int) -> bool:
+        if not self._compass:
+            return True
+        if tokens <= 0:
+            return True
+        resource_key = f"{provider}_tokens"
+        return self._compass.consume_budget(resource_key, tokens)
 
     def _load_usage(self) -> None:
         if not self._usage_path.exists():

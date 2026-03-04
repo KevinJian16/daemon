@@ -118,6 +118,9 @@ def create_app() -> FastAPI:
     portal_events_path = telemetry_dir / "portal_events.jsonl"
     skill_proposals_path = state / "skill_evolution_proposals.json"
     skill_queue_path = state / "skill_evolution_queue.json"
+    semantic_catalog_path = home / "config" / "semantics" / "capability_catalog.json"
+    semantic_rules_path = home / "config" / "semantics" / "mapping_rules.json"
+    model_policy_path = home / "config" / "model_policy.json"
 
     app = FastAPI(title="Daemon API", version="0.1.0")
     temporal_client: TemporalClient | None = None
@@ -223,6 +226,15 @@ def create_app() -> FastAPI:
         except Exception as exc:
             logger.warning("Failed to read %s: %s", path, exc)
         return []
+
+    def _task_view(task: dict) -> dict:
+        out = dict(task)
+        plan = out.get("plan") if isinstance(out.get("plan"), dict) else {}
+        out.setdefault("semantic_cluster", plan.get("cluster_id", ""))
+        out.setdefault("strategy_id", plan.get("strategy_id", ""))
+        out.setdefault("strategy_stage", plan.get("strategy_stage", ""))
+        out.setdefault("global_score_components", plan.get("global_score_components") or {})
+        return out
 
     def _write_json_list(path: Path, items: list[dict]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -338,7 +350,7 @@ def create_app() -> FastAPI:
             _log_portal_event("submit_failed", {"error_code": code, "task_id": result.get("task_id", "")}, request)
             if code.startswith("temporal_"):
                 raise HTTPException(status_code=503, detail=result)
-            if code == "invalid_plan":
+            if code in {"invalid_plan", "semantic_mapping_failed", "strategy_guard_blocked"}:
                 raise HTTPException(status_code=400, detail=result)
             raise HTTPException(status_code=500, detail=result)
         _log_portal_event("submit_ok", {"task_id": result.get("task_id", ""), "status": result.get("status", "")}, request)
@@ -357,7 +369,7 @@ def create_app() -> FastAPI:
             return []
         if status:
             tasks = [t for t in tasks if t.get("status") == status]
-        result = tasks[-limit:]
+        result = [_task_view(t) for t in tasks[-limit:]]
         _log_portal_event("tasks_list", {"status": status, "count": len(result)}, request)
         return result
 
@@ -372,7 +384,7 @@ def create_app() -> FastAPI:
         for t in tasks:
             if t.get("task_id") == task_id:
                 _log_portal_event("task_get", {"task_id": task_id, "status": t.get("status", "")}, request)
-                return t
+                return _task_view(t)
         _log_portal_event("task_not_found", {"task_id": task_id}, request)
         raise HTTPException(status_code=404, detail="task not found")
 
@@ -745,6 +757,176 @@ def create_app() -> FastAPI:
     @app.get("/console/fabric/compass/signals")
     def compass_signals():
         return compass.active_signals()
+
+    # ── Console — Strategy / Semantics / Model Control Plane ────────────────
+
+    @app.get("/console/strategies")
+    def list_strategies(cluster_id: str | None = None, stage: str | None = None):
+        strategies = playbook.list_strategies(cluster_id=cluster_id, stage=stage)
+        cluster_rows = {row.get("cluster_id", ""): row for row in playbook.list_clusters()}
+        for row in strategies:
+            cid = str(row.get("cluster_id") or "")
+            cluster = cluster_rows.get(cid) or {}
+            row["cluster_display_name"] = cluster.get("display_name", cid)
+            row["task_type_compat"] = cluster.get("task_type_compat", "")
+        return strategies
+
+    @app.post("/console/strategies/{strategy_id}/promote")
+    async def promote_strategy(strategy_id: str, request: Request):
+        body = await request.json()
+        next_stage = str(body.get("next_stage") or "champion")
+        reason = str(body.get("reason") or "")
+        decided_by = str(body.get("decided_by") or "console")
+        row = playbook.get_strategy(strategy_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="strategy not found")
+        prev_stage = str(row.get("stage") or "candidate")
+        promotion_id = playbook.promote_strategy(
+            strategy_id=strategy_id,
+            decision="promote_manual",
+            prev_stage=prev_stage,
+            next_stage=next_stage,
+            reason=reason,
+            decided_by=decided_by,
+        )
+        nerve.emit(
+            "strategy_promoted",
+            {"strategy_id": strategy_id, "prev_stage": prev_stage, "next_stage": next_stage, "promotion_id": promotion_id},
+        )
+        return {"ok": True, "strategy_id": strategy_id, "promotion_id": promotion_id, "prev_stage": prev_stage, "next_stage": next_stage}
+
+    @app.post("/console/strategies/{strategy_id}/rollback")
+    async def rollback_strategy(strategy_id: str, request: Request):
+        body = await request.json()
+        reason = str(body.get("reason") or "manual_rollback")
+        decided_by = str(body.get("decided_by") or "console")
+        row = playbook.get_strategy(strategy_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="strategy not found")
+        prev_stage = str(row.get("stage") or "unknown")
+        promotion_id = playbook.promote_strategy(
+            strategy_id=strategy_id,
+            decision="rollback_manual",
+            prev_stage=prev_stage,
+            next_stage="champion",
+            reason=reason,
+            decided_by=decided_by,
+        )
+        nerve.emit(
+            "strategy_rolled_back",
+            {"strategy_id": strategy_id, "prev_stage": prev_stage, "next_stage": "champion", "promotion_id": promotion_id},
+        )
+        return {"ok": True, "strategy_id": strategy_id, "promotion_id": promotion_id, "prev_stage": prev_stage, "next_stage": "champion"}
+
+    @app.get("/console/semantics")
+    def console_semantics():
+        catalog = {}
+        rules = {}
+        try:
+            catalog = json.loads(semantic_catalog_path.read_text(encoding="utf-8")) if semantic_catalog_path.exists() else {}
+        except Exception as exc:
+            logger.warning("Failed to load semantic catalog: %s", exc)
+        try:
+            rules = json.loads(semantic_rules_path.read_text(encoding="utf-8")) if semantic_rules_path.exists() else {}
+        except Exception as exc:
+            logger.warning("Failed to load semantic mapping rules: %s", exc)
+        return {
+            "catalog": catalog,
+            "mapping_rules": rules,
+            "clusters_db": playbook.list_clusters(),
+        }
+
+    @app.get("/console/model-policy")
+    def get_model_policy():
+        if not model_policy_path.exists():
+            return {}
+        try:
+            return json.loads(model_policy_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Failed to read model policy: %s", exc)
+            raise HTTPException(status_code=500, detail="model policy parse failed")
+
+    @app.put("/console/model-policy")
+    async def set_model_policy(request: Request):
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="policy body must be a JSON object")
+        current = {}
+        if model_policy_path.exists():
+            try:
+                current = json.loads(model_policy_path.read_text(encoding="utf-8"))
+            except Exception:
+                current = {}
+        version = str(body.get("_version") or current.get("_version") or "1.0.0")
+        body["_version"] = version
+        body["_updated"] = _utc()[:10]
+        model_policy_path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
+        nerve.emit("fabric_updated", {"fabric": "model_policy", "path": str(model_policy_path)})
+        return {"ok": True, "path": str(model_policy_path), "_version": version}
+
+    @app.get("/console/model-usage")
+    def model_usage(since: str | None = None, until: str | None = None, limit: int = 1000):
+        records = cortex.usage_between(since=since, until=until, limit=limit)
+        by_provider: dict[str, dict[str, int]] = {}
+        by_model: dict[str, dict[str, int]] = {}
+        by_routine: dict[str, dict[str, int]] = {}
+
+        for row in records:
+            provider = str(row.get("provider") or "unknown")
+            model = str(row.get("model") or "unknown")
+            routine = str(row.get("routine") or "unknown")
+            in_t = int(row.get("in_tokens") or 0)
+            out_t = int(row.get("out_tokens") or 0)
+            success = bool(row.get("success"))
+
+            p = by_provider.setdefault(provider, {"calls": 0, "errors": 0, "in_tokens": 0, "out_tokens": 0})
+            p["calls"] += 1
+            p["in_tokens"] += in_t
+            p["out_tokens"] += out_t
+            if not success:
+                p["errors"] += 1
+
+            m = by_model.setdefault(model, {"calls": 0, "errors": 0, "in_tokens": 0, "out_tokens": 0})
+            m["calls"] += 1
+            m["in_tokens"] += in_t
+            m["out_tokens"] += out_t
+            if not success:
+                m["errors"] += 1
+
+            r = by_routine.setdefault(routine, {"calls": 0, "errors": 0, "in_tokens": 0, "out_tokens": 0})
+            r["calls"] += 1
+            r["in_tokens"] += in_t
+            r["out_tokens"] += out_t
+            if not success:
+                r["errors"] += 1
+
+        # Semantic-cluster aggregation (task-plane view, complements trace-plane usage).
+        tasks_path = state / "tasks.json"
+        try:
+            task_rows = json.loads(tasks_path.read_text(encoding="utf-8")) if tasks_path.exists() else []
+        except Exception as exc:
+            logger.warning("Failed to read tasks for model usage cluster view: %s", exc)
+            task_rows = []
+        by_semantic_cluster: dict[str, int] = {}
+        for row in task_rows if isinstance(task_rows, list) else []:
+            plan_row = row.get("plan") if isinstance(row.get("plan"), dict) else {}
+            cluster = str(
+                row.get("semantic_cluster")
+                or plan_row.get("cluster_id")
+                or ""
+            )
+            if cluster:
+                by_semantic_cluster[cluster] = by_semantic_cluster.get(cluster, 0) + 1
+
+        return {
+            "records": records,
+            "summary": {
+                "by_provider": by_provider,
+                "by_model": by_model,
+                "by_routine": by_routine,
+                "by_semantic_cluster": by_semantic_cluster,
+            },
+        }
 
     # ── Console — Policy ─────────────────────────────────────────────────────
 
