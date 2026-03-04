@@ -50,13 +50,23 @@
 
 3. Execution Layer（执行层）
 - Temporal + OpenClaw 执行能力图。
+- Router 通过 **Weave 机制**将语义意图动态编织为可执行 DAG（Weave Plan）。
 - Spine/Fabric 记录证据并驱动下一轮策略更新。
+
+#### Weave 机制定义
+
+**Weave** 是 Daemon 的动态执行图规划机制，不依赖任何第三方图框架（非 Python langgraph 库）。
+
+- **核心职责**：Router agent 基于 `semantic_fingerprint` 与 `intent_contract`，调用 `router_weave_plan` skill 动态生成步骤 DAG（Weave Plan JSON）。
+- **与 `semantic_to_capability_graph()` 的关系**：`semantic_to_capability_graph()` 完成语义→能力图的高层映射；Weave 在此之后生成具体可执行的步骤序列（agent、instruction、depends_on、shard 合同）供 Temporal 消费。两者串联，不互相替代。
+- **学习闭环**：Spine.learn 提炼执行证据 → 写入 Playbook → Spine.relay 导出到 `workspace/router/memory/weave_patterns/` → Router 下次规划时读取，实现 Weave Plan 自我演化。
+- **命名规范**：所有相关 skill 以 `weave` 为前缀（`router_weave_plan`、`router_weave_revise`）；学习模式存储目录统一为 `weave_patterns/`。禁止在新代码中使用 `langgraph` 命名。
 
 ### 3.2 端到端数据流（固定实现顺序）
 
 1. `/submit` 接收请求并做 fail-closed 前置校验。
 2. `router_intake` 产出 `semantic_fingerprint`、`intent_contract`。
-3. `semantic_to_capability_graph()` 生成可执行能力图。
+3. `semantic_to_capability_graph()` 生成能力图；Router `router_weave_plan` skill 产出具体 Weave Plan。
 4. Dispatch 读取 champion 策略并注入参数（模型、超时、重试、预算、质量合同）。
 5. Temporal 执行；Worker 通过事件桥回传结构化事件。
 6. `spine.record` 写评估与 trace 摘要。
