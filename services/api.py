@@ -472,6 +472,77 @@ def create_app() -> FastAPI:
         _log_portal_event("outcome_file_access", {"path": path}, request)
         return FileResponse(full)
 
+    # ── User feedback (Portal) ────────────────────────────────────────────────
+
+    @app.post("/feedback/{task_id}")
+    async def submit_feedback(task_id: str, request: Request):
+        """Record user rating on a delivered outcome. Feeds back into Playbook evaluation."""
+        body = await request.json()
+        rating = body.get("rating")
+        try:
+            rating = int(rating)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="rating must be an integer 1-5")
+        if not (1 <= rating <= 5):
+            raise HTTPException(status_code=400, detail="rating must be 1-5")
+
+        comment = str(body.get("comment") or "")[:500]
+        aspects = body.get("aspects") or {}
+
+        # Find task record to get method_id and task_type.
+        tasks_path = state / "tasks.json"
+        tasks = []
+        try:
+            tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
+        except Exception as exc:
+            logger.warning("Failed to read tasks.json for feedback: %s", exc)
+        task_record = next((t for t in tasks if t.get("task_id") == task_id), None)
+
+        score = rating / 5.0
+        task_type = ""
+        if task_record:
+            plan = task_record.get("plan") or {}
+            task_type = str(plan.get("task_type") or "")
+            method_id = plan.get("method_id")
+            if method_id:
+                outcome = "success" if rating >= 3 else "failure"
+                playbook.evaluate(
+                    method_id=method_id,
+                    task_id=task_id,
+                    outcome=outcome,
+                    score=score,
+                    detail={"rating": rating, "comment": comment, "aspects": aspects, "source": "user_feedback"},
+                )
+
+        # Persist feedback aspects as Compass prefs for the learning system.
+        if aspects and task_type:
+            for aspect_key, aspect_val in aspects.items():
+                try:
+                    v = float(aspect_val)
+                    if 0.0 <= v <= 1.0:
+                        compass.set_pref(
+                            f"feedback.{task_type}.{aspect_key}", str(round(v, 4)),
+                            source="user_feedback", changed_by="user",
+                        )
+                except (TypeError, ValueError):
+                    pass
+
+        # Write to feedback JSONL.
+        feedback_path = telemetry_dir / "outcome_feedback.jsonl"
+        _append_jsonl(feedback_path, {
+            "task_id": task_id,
+            "rating": rating,
+            "score": score,
+            "comment": comment,
+            "aspects": aspects,
+            "task_type": task_type,
+            "created_utc": _utc(),
+        })
+
+        nerve.emit("user_feedback_received", {"task_id": task_id, "rating": rating, "score": score})
+        _log_portal_event("feedback_submitted", {"task_id": task_id, "rating": rating}, request)
+        return {"ok": True, "task_id": task_id, "score": score}
+
     # ── Console — System overview ──────────────────────────────────────────────
 
     @app.get("/console/overview")
