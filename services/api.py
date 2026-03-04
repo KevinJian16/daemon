@@ -121,6 +121,7 @@ def create_app() -> FastAPI:
     semantic_catalog_path = home / "config" / "semantics" / "capability_catalog.json"
     semantic_rules_path = home / "config" / "semantics" / "mapping_rules.json"
     model_policy_path = home / "config" / "model_policy.json"
+    model_registry_path = home / "config" / "model_registry.json"
 
     app = FastAPI(title="Daemon API", version="0.1.0")
     temporal_client: TemporalClient | None = None
@@ -252,6 +253,61 @@ def create_app() -> FastAPI:
             return "semantics.mapping_rules", semantic_rules_path
         raise ValueError(f"unknown_semantic_target:{target}")
 
+    def _model_target_spec(target: str) -> tuple[str, Path]:
+        t = str(target or "").strip().lower()
+        if t in {"policy", "model-policy", "model_policy"}:
+            return "model_policy", model_policy_path
+        if t in {"registry", "model-registry", "model_registry"}:
+            return "model_registry", model_registry_path
+        raise ValueError(f"unknown_model_target:{target}")
+
+    def _model_registry_aliases(payload: dict) -> set[str]:
+        models = payload.get("models") if isinstance(payload.get("models"), list) else []
+        aliases: set[str] = set()
+        for row in models:
+            if not isinstance(row, dict):
+                continue
+            alias = str(row.get("alias") or "").strip()
+            if alias:
+                aliases.add(alias)
+        return aliases
+
+    def _validate_model_registry(payload: dict) -> None:
+        models = payload.get("models") if isinstance(payload.get("models"), list) else None
+        if models is None:
+            raise ValueError("model_registry.models must be a list")
+        if not models:
+            raise ValueError("model_registry.models must not be empty")
+        aliases: set[str] = set()
+        for i, row in enumerate(models):
+            if not isinstance(row, dict):
+                raise ValueError(f"model_registry.models[{i}] must be an object")
+            alias = str(row.get("alias") or "").strip()
+            provider = str(row.get("provider") or "").strip()
+            model_id = str(row.get("model_id") or "").strip()
+            if not alias:
+                raise ValueError(f"model_registry.models[{i}].alias is required")
+            if alias in aliases:
+                raise ValueError(f"model_registry duplicate alias: {alias}")
+            aliases.add(alias)
+            if not provider:
+                raise ValueError(f"model_registry.models[{i}].provider is required")
+            if not model_id:
+                raise ValueError(f"model_registry.models[{i}].model_id is required")
+
+    def _validate_model_policy(payload: dict, aliases: set[str]) -> None:
+        if not aliases:
+            raise ValueError("model_registry_aliases_empty")
+        default_alias = str(payload.get("default_alias") or "").strip()
+        if default_alias and default_alias not in aliases:
+            raise ValueError(f"model_policy.default_alias not found in registry: {default_alias}")
+        for key in ("by_capability", "by_semantic_cluster", "by_risk_level"):
+            mapping = payload.get(key) if isinstance(payload.get(key), dict) else {}
+            for k, v in mapping.items():
+                alias = str(v or "").strip()
+                if alias and alias not in aliases:
+                    raise ValueError(f"model_policy.{key}[{k}] alias not found: {alias}")
+
     def _write_semantic_target(target: str, payload: dict, changed_by: str, reason: str) -> dict:
         cfg_key, path = _semantic_target_spec(target)
         if not isinstance(payload, dict):
@@ -352,17 +408,28 @@ def create_app() -> FastAPI:
                 gate = json.loads(gate_path.read_text())
             except Exception as exc:
                 logger.warning("Failed to read gate.json: %s", exc)
+        model_registry_valid = False
+        if model_registry_path.exists():
+            try:
+                reg = json.loads(model_registry_path.read_text(encoding="utf-8"))
+                if isinstance(reg, dict):
+                    _validate_model_registry(reg)
+                    model_registry_valid = True
+            except Exception:
+                model_registry_valid = False
         dependencies = {
             "temporal_connected": temporal_client is not None,
             "cortex_available": bool(cortex and cortex.is_available()),
             "model_policy_exists": model_policy_path.exists(),
             "model_registry_exists": (home / "config" / "model_registry.json").exists(),
+            "model_registry_valid": model_registry_valid,
             "openclaw_config_exists": (oc_home / "openclaw.json").exists(),
         }
         dependencies_ready = (
             dependencies["cortex_available"]
             and dependencies["model_policy_exists"]
             and dependencies["model_registry_exists"]
+            and dependencies["model_registry_valid"]
         )
         return {
             "ok": True,
@@ -1019,11 +1086,41 @@ def create_app() -> FastAPI:
             logger.warning("Failed to read model policy: %s", exc)
             raise HTTPException(status_code=500, detail="model policy parse failed")
 
+    @app.get("/console/model-registry")
+    def get_model_registry():
+        if not model_registry_path.exists():
+            return {}
+        try:
+            data = json.loads(model_registry_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                _validate_model_registry(data)
+            return data
+        except ValueError as exc:
+            raise HTTPException(status_code=500, detail=f"model registry invalid: {exc}")
+        except Exception as exc:
+            logger.warning("Failed to read model registry: %s", exc)
+            raise HTTPException(status_code=500, detail="model registry parse failed")
+
     @app.put("/console/model-policy")
     async def set_model_policy(request: Request):
         body = await request.json()
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="policy body must be a JSON object")
+        registry = {}
+        if model_registry_path.exists():
+            try:
+                registry = json.loads(model_registry_path.read_text(encoding="utf-8"))
+                if isinstance(registry, dict):
+                    _validate_model_registry(registry)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail={"ok": False, "error": f"model_registry_invalid:{exc}"})
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail={"ok": False, "error": f"model_registry_unreadable:{exc}"})
+        aliases = _model_registry_aliases(registry if isinstance(registry, dict) else {})
+        try:
+            _validate_model_policy(body, aliases)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"ok": False, "error": str(exc), "error_code": "invalid_model_policy"})
         current = {}
         if model_policy_path.exists():
             try:
@@ -1038,19 +1135,101 @@ def create_app() -> FastAPI:
         nerve.emit("fabric_updated", {"fabric": "model_policy", "path": str(model_policy_path)})
         return {"ok": True, "path": str(model_policy_path), "_version": version, "config_version": cv_version}
 
+    @app.put("/console/model-registry")
+    async def set_model_registry(request: Request):
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="registry body must be a JSON object")
+        try:
+            _validate_model_registry(body)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"ok": False, "error": str(exc), "error_code": "invalid_model_registry"})
+        aliases = _model_registry_aliases(body)
+        current_policy = {}
+        if model_policy_path.exists():
+            try:
+                current_policy = json.loads(model_policy_path.read_text(encoding="utf-8"))
+            except Exception:
+                current_policy = {}
+        if isinstance(current_policy, dict) and current_policy:
+            try:
+                _validate_model_policy(current_policy, aliases)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"ok": False, "error": str(exc), "error_code": "model_policy_incompatible_with_registry"},
+                )
+        body["_updated"] = _utc()[:10]
+        model_registry_path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
+        cv_version = compass.record_config_version("model_registry", body, changed_by="console", reason="model_registry_update")
+        nerve.emit("fabric_updated", {"fabric": "model_registry", "path": str(model_registry_path)})
+        return {"ok": True, "path": str(model_registry_path), "config_version": cv_version}
+
     @app.get("/console/model-policy/versions")
     def model_policy_versions(limit: int = 50):
         return compass.versions("model_policy", limit=max(1, min(limit, 200)))
+
+    @app.get("/console/model-registry/versions")
+    def model_registry_versions(limit: int = 50):
+        return compass.versions("model_registry", limit=max(1, min(limit, 200)))
 
     @app.post("/console/model-policy/rollback/{version}")
     def model_policy_rollback(version: int):
         value = compass.version_value("model_policy", version)
         if value is None or not isinstance(value, dict):
             raise HTTPException(status_code=404, detail="model policy version not found")
+        registry = {}
+        if model_registry_path.exists():
+            try:
+                registry = json.loads(model_registry_path.read_text(encoding="utf-8"))
+                if isinstance(registry, dict):
+                    _validate_model_registry(registry)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"model registry invalid: {exc}")
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"model registry unreadable: {exc}")
+        aliases = _model_registry_aliases(registry if isinstance(registry, dict) else {})
+        try:
+            _validate_model_policy(value, aliases)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={"ok": False, "error": str(exc), "error_code": "invalid_model_policy"},
+            )
         value["_updated"] = _utc()[:10]
         model_policy_path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
         cv_version = compass.record_config_version("model_policy", value, changed_by="console", reason=f"rollback_to:{version}")
         nerve.emit("fabric_updated", {"fabric": "model_policy", "path": str(model_policy_path), "rollback_from_version": version})
+        return {"ok": True, "rolled_back_to": version, "config_version": cv_version}
+
+    @app.post("/console/model-registry/rollback/{version}")
+    def model_registry_rollback(version: int):
+        value = compass.version_value("model_registry", version)
+        if value is None or not isinstance(value, dict):
+            raise HTTPException(status_code=404, detail="model registry version not found")
+        try:
+            _validate_model_registry(value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"ok": False, "error": str(exc), "error_code": "invalid_model_registry"})
+        aliases = _model_registry_aliases(value)
+        current_policy = {}
+        if model_policy_path.exists():
+            try:
+                current_policy = json.loads(model_policy_path.read_text(encoding="utf-8"))
+            except Exception:
+                current_policy = {}
+        if isinstance(current_policy, dict) and current_policy:
+            try:
+                _validate_model_policy(current_policy, aliases)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"ok": False, "error": str(exc), "error_code": "model_policy_incompatible_with_registry"},
+                )
+        value["_updated"] = _utc()[:10]
+        model_registry_path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+        cv_version = compass.record_config_version("model_registry", value, changed_by="console", reason=f"rollback_to:{version}")
+        nerve.emit("fabric_updated", {"fabric": "model_registry", "path": str(model_registry_path), "rollback_from_version": version})
         return {"ok": True, "rolled_back_to": version, "config_version": cv_version}
 
     @app.get("/console/model-usage")
