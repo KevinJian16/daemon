@@ -66,6 +66,8 @@
   <button onclick="show('fabric')">Fabric</button>
   <button onclick="show('policy')">Policy</button>
   <button onclick="show('traces')">Traces</button>
+  <button onclick="show('agents')">Agents</button>
+  <button onclick="show('schedules')">Schedules</button>
 </nav>
 
 <main>
@@ -148,6 +150,28 @@
   </table>
 </div>
 
+<!-- AGENT MANAGER -->
+<div id="panel-agents" class="panel">
+  <div class="card">
+    <h3>OpenClaw Agents</h3>
+    <table>
+      <thead><tr><th>Agent</th><th>Skills</th><th>Workspace</th></tr></thead>
+      <tbody id="agents-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- SCHEDULE MANAGER -->
+<div id="panel-schedules" class="panel">
+  <div class="card">
+    <h3>Spine Schedules</h3>
+    <table>
+      <thead><tr><th>Routine</th><th>Mode</th><th>Schedule</th><th>Last Run</th><th>Next Run</th><th>Action</th></tr></thead>
+      <tbody id="schedules-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
 </main>
 
 <script>
@@ -163,6 +187,8 @@ function show(panel) {
   else if (panel === 'fabric') showFabric('memory');
   else if (panel === 'policy') loadPolicy();
   else if (panel === 'traces') loadTraces();
+  else if (panel === 'agents') loadAgents();
+  else if (panel === 'schedules') loadSchedules();
 }
 
 async function api(path) {
@@ -290,6 +316,31 @@ async function loadTraces() {
   ).join('') || '<tr><td colspan="6" style="color:var(--muted)">No traces found</td></tr>';
 }
 
+async function loadAgents() {
+  const agents = await api('/console/agents');
+  document.getElementById('agents-tbody').innerHTML = agents.map(a =>
+    `<tr>
+      <td>${esc(a.id)}</td>
+      <td>${a.skills_count}</td>
+      <td><span class="badge ${a.workspace_exists ? 'ok' : 'error'}">${a.workspace_exists ? 'ready' : 'missing'}</span></td>
+    </tr>`
+  ).join('') || '<tr><td colspan="3" style="color:var(--muted)">No agents found</td></tr>';
+}
+
+async function loadSchedules() {
+  const routines = await api('/console/schedules');
+  document.getElementById('schedules-tbody').innerHTML = routines.map(r =>
+    `<tr>
+      <td>${r.routine}</td>
+      <td><span class="badge ${r.mode}">${r.mode}</span></td>
+      <td style="color:var(--muted)">${r.schedule || '—'}</td>
+      <td style="color:var(--muted)">${r.last_run_utc ? r.last_run_utc.replace('T',' ').replace('Z','') : 'never'}</td>
+      <td style="color:var(--muted)">${r.next_run_utc ? r.next_run_utc.replace('T',' ').replace('Z','') : '—'}</td>
+      <td><button class="action" onclick="triggerRoutine('${r.routine.replace('spine.','')}')" style="font-size:11px;padding:3px 8px">▶ Run</button></td>
+    </tr>`
+  ).join('') || '<tr><td colspan="6" style="color:var(--muted)">No schedules</td></tr>';
+}
+
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function refreshAll() {
   const active = document.querySelector('.panel.active');
@@ -297,6 +348,8 @@ function refreshAll() {
   else if (active?.id === 'panel-spine') loadSpine();
   else if (active?.id === 'panel-policy') loadPolicy();
   else if (active?.id === 'panel-traces') loadTraces();
+  else if (active?.id === 'panel-agents') loadAgents();
+  else if (active?.id === 'panel-schedules') loadSchedules();
 }
 
 // Auto-load on start.

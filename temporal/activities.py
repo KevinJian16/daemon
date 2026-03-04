@@ -21,9 +21,9 @@ def _daemon_home() -> Path:
     return Path(os.environ.get("DAEMON_HOME", Path(__file__).parent.parent))
 
 
-def _openclaw_home() -> Path | None:
+def _openclaw_home() -> Path:
     v = os.environ.get("OPENCLAW_HOME")
-    return Path(v) if v else None
+    return Path(v) if v else _daemon_home() / "openclaw"
 
 
 def _load_openclaw_config(oc_home: Path) -> dict:
@@ -50,11 +50,10 @@ class DaemonActivities:
         self._home = _daemon_home()
         self._oc_home = _openclaw_home()
         self._oc_cfg: dict | None = None
-        if self._oc_home:
-            try:
-                self._oc_cfg = _load_openclaw_config(self._oc_home)
-            except Exception:
-                pass
+        try:
+            self._oc_cfg = _load_openclaw_config(self._oc_home)
+        except Exception as exc:
+            activity.logger.warning("Failed to load openclaw config from %s: %s", self._oc_home, exc)
 
     # ── OpenClaw step ─────────────────────────────────────────────────────────
 
@@ -237,8 +236,8 @@ class DaemonActivities:
             if snap_path.exists():
                 try:
                     context[snap_name.replace(".json", "")] = json.loads(snap_path.read_text())
-                except Exception:
-                    pass
+                except Exception as exc:
+                    activity.logger.warning("Failed to load snapshot %s: %s", snap_name, exc)
         return context
 
     def _write_step_output(self, run_root: str, step_id: str, content: str) -> str:
@@ -315,7 +314,8 @@ class DaemonActivities:
         index_path = self._home / "outcome" / "index.json"
         try:
             index = json.loads(index_path.read_text())
-        except Exception:
+        except Exception as exc:
+            activity.logger.warning("Failed to read outcome index %s: %s", index_path, exc)
             index = []
         entry = {
             "path": str(outcome_path.relative_to(self._home / "outcome")),
@@ -332,7 +332,8 @@ class DaemonActivities:
         tasks_path = self._home / "state" / "tasks.json"
         try:
             tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
-        except Exception:
+        except Exception as exc:
+            activity.logger.warning("Failed to read tasks.json %s: %s", tasks_path, exc)
             tasks = []
         task_id = str(plan.get("task_id") or "")
         for task in tasks:

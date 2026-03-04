@@ -19,3 +19,4 @@ logs/
 .coverage
 htmlcov/
 .DS_Store
+node_modules

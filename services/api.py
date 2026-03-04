@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, FileResponse
@@ -29,9 +32,9 @@ def _daemon_home() -> Path:
     return Path(os.environ.get("DAEMON_HOME", Path(__file__).parent.parent))
 
 
-def _openclaw_home() -> Path | None:
+def _openclaw_home() -> Path:
     v = os.environ.get("OPENCLAW_HOME")
-    return Path(v) if v else None
+    return Path(v) if v else _daemon_home() / "openclaw"
 
 
 def create_app() -> FastAPI:
@@ -83,8 +86,8 @@ def create_app() -> FastAPI:
         if gate_path.exists():
             try:
                 gate = json.loads(gate_path.read_text())
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to read gate.json: %s", exc)
         return {"ok": True, "gate": gate["status"]}
 
     # ── Task submission (Portal) ───────────────────────────────────────────────
@@ -104,7 +107,8 @@ def create_app() -> FastAPI:
             return []
         try:
             tasks = json.loads(tasks_path.read_text())
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to read tasks.json: %s", exc)
             return []
         if status:
             tasks = [t for t in tasks if t.get("status") == status]
@@ -115,7 +119,8 @@ def create_app() -> FastAPI:
         tasks_path = state / "tasks.json"
         try:
             tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to read tasks.json: %s", exc)
             tasks = []
         for t in tasks:
             if t.get("task_id") == task_id:
@@ -147,7 +152,8 @@ def create_app() -> FastAPI:
         index_path = home / "outcome" / "index.json"
         try:
             index = json.loads(index_path.read_text()) if index_path.exists() else []
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to read outcome index: %s", exc)
             index = []
         return list(reversed(index))[:limit]
 
@@ -167,12 +173,13 @@ def create_app() -> FastAPI:
         if gate_path.exists():
             try:
                 gate = json.loads(gate_path.read_text())
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to read gate.json: %s", exc)
         tasks_path = state / "tasks.json"
         try:
             tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to read tasks.json: %s", exc)
             tasks = []
         running = [t for t in tasks if t.get("status") == "running"]
         return {
@@ -295,6 +302,32 @@ def create_app() -> FastAPI:
     @app.post("/console/schedules/{routine}/trigger")
     async def trigger_schedule(routine: str):
         return await spine_trigger(routine)
+
+    # ── Console — Agent manager ───────────────────────────────────────────────
+
+    @app.get("/console/agents")
+    def list_agents():
+        cfg_path = oc_home / "openclaw.json"
+        if not cfg_path.exists():
+            return []
+        try:
+            cfg = json.loads(cfg_path.read_text())
+        except Exception as exc:
+            logger.warning("Failed to read openclaw.json: %s", exc)
+            return []
+        agents = cfg.get("agents", {}).get("list", [])
+        result = []
+        for agent in agents:
+            agent_id = agent.get("id", "")
+            workspace = oc_home / "workspace" / agent_id
+            skills_dir = workspace / "skills"
+            skills_count = len(list(skills_dir.glob("*.json"))) if skills_dir.exists() else 0
+            result.append({
+                "id": agent_id,
+                "workspace_exists": workspace.exists(),
+                "skills_count": skills_count,
+            })
+        return result
 
     # ── Console — Priority management ─────────────────────────────────────────
 

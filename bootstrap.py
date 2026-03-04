@@ -23,9 +23,9 @@ def _daemon_home() -> Path:
     return Path(os.environ.get("DAEMON_HOME", Path(__file__).parent))
 
 
-def _openclaw_home() -> Path | None:
+def _openclaw_home() -> Path:
     v = os.environ.get("OPENCLAW_HOME")
-    return Path(v) if v else None
+    return Path(v) if v else _daemon_home() / "openclaw"
 
 
 def bootstrap(daemon_home: Path | None = None, openclaw_home: Path | None = None, force: bool = False) -> dict:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import traceback
@@ -9,6 +10,8 @@ from collections.abc import Callable
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 def _utc() -> str:
@@ -39,14 +42,14 @@ class Cortex:
                 import openai
                 self._clients["openai"] = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
             except ImportError:
-                pass
+                logger.debug("openai package not installed — provider skipped")
 
         if os.getenv("ANTHROPIC_API_KEY"):
             try:
                 import anthropic
                 self._clients["anthropic"] = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
             except ImportError:
-                pass
+                logger.debug("anthropic package not installed — provider skipped")
 
         if os.getenv("DEEPSEEK_API_KEY"):
             try:
@@ -56,7 +59,7 @@ class Cortex:
                     base_url="https://api.deepseek.com/v1",
                 )
             except ImportError:
-                pass
+                logger.debug("openai package not installed — deepseek provider skipped")
 
         if os.getenv("MINIMAX_API_KEY") and os.getenv("MINIMAX_GROUP_ID"):
             self._clients["minimax"] = {
@@ -122,9 +125,7 @@ class Cortex:
             client = self._clients["openai"]
             resp = client.embeddings.create(model="text-embedding-3-small", input=texts)
             return [item.embedding for item in resp.data]
-        if "deepseek" in self._clients:
-            # DeepSeek doesn't have embeddings — fall through.
-            pass
+        # DeepSeek and MiniMax do not support embeddings; only OpenAI does.
         raise CortexError("no embedding provider available (need openai)")
 
     def try_or_degrade(self, fn: Callable[[], Any], fallback: Callable[[], Any]) -> Any:

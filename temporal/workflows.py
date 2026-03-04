@@ -287,5 +287,5 @@ class GraphDispatchWorkflow:
                 schedule_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(maximum_attempts=1),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            workflow.logger.warning("Failed to update task status for %s: %s", run_root, exc)

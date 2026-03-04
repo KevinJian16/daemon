@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from fabric.compass import CompassFabric
@@ -30,8 +33,8 @@ class DialogService:
             if cfg_path.exists():
                 try:
                     self._oc_cfg = json.loads(cfg_path.read_text())
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Failed to load openclaw config from %s: %s", cfg_path, exc)
 
     def new_session(self, user_id: str = "default") -> str:
         session_id = f"dialog_{uuid.uuid4().hex[:10]}"
@@ -97,8 +100,8 @@ class DialogService:
                     # Check for plan extraction.
                     plan = self._extract_plan(content)
                     return {"ok": True, "content": content, "session_id": session_id, "plan": plan}
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.error("Dialog chat error for session %s: %s", session_id, exc)
 
         return {"ok": False, "error": "dialog_timeout", "session_id": session_id}
 
@@ -116,6 +119,6 @@ class DialogService:
             plan = json.loads(raw)
             if isinstance(plan, dict) and plan.get("steps"):
                 return plan
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("_extract_plan: failed to parse JSON plan: %s", exc)
         return None
