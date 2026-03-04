@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 import uuid
@@ -15,6 +16,15 @@ def _utc() -> str:
 
 def _new_id(prefix: str = "m") -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+_STAGE_TRANSITIONS: dict[str, set[str]] = {
+    "candidate": {"shadow", "retired"},
+    "shadow": {"challenger", "retired"},
+    "challenger": {"champion", "retired"},
+    "champion": {"challenger", "retired"},
+    "retired": set(),
+}
 
 
 SCHEMA = """
@@ -547,22 +557,104 @@ class PlaybookFabric:
         """Record a promotion/rollback decision and update stage."""
         pid = _new_id("prom")
         now = _utc()
+        retired_ids: list[str] = []
+        rollback_point: dict | None = None
+        demoted_events: list[dict] = []
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT cluster_id FROM strategy_candidates WHERE strategy_id=?", (strategy_id,)
+                "SELECT cluster_id, stage, sample_n FROM strategy_candidates WHERE strategy_id=?", (strategy_id,)
             ).fetchone()
             if not row:
                 raise ValueError(f"Unknown strategy_id: {strategy_id}")
             cluster_id = row["cluster_id"]
+            current_stage = str(row["stage"] or "")
+            if current_stage != str(prev_stage or ""):
+                # Preserve caller-provided stage for audit, but enforce truth from DB.
+                prev_stage = current_stage
+
+            if not self._is_transition_allowed(current_stage, next_stage):
+                raise ValueError(f"invalid_stage_transition:{current_stage}->{next_stage}")
+
+            # Production cutover gate: champion promotion requires audit completeness
+            # except explicit rollback decisions.
+            if next_stage == "champion" and decision not in {"rollback_manual", "rollback_auto"}:
+                ok, reason_code = self._promotion_audit_ok(conn, strategy_id, cluster_id)
+                if not ok:
+                    raise ValueError(f"promotion_audit_incomplete:{reason_code}")
+
+            previous_champion_rows = conn.execute(
+                "SELECT strategy_id FROM strategy_candidates WHERE cluster_id=? AND stage='champion' AND strategy_id<>? ORDER BY updated_utc DESC",
+                (cluster_id, strategy_id),
+            ).fetchall()
+            previous_champion = conn.execute(
+                "SELECT strategy_id FROM strategy_candidates WHERE cluster_id=? AND stage='champion' ORDER BY updated_utc DESC LIMIT 1",
+                (cluster_id,),
+            ).fetchone()
+            previous_champion_id = str(previous_champion["strategy_id"]) if previous_champion else ""
+
             if next_stage == "champion":
                 conn.execute(
                     "UPDATE strategy_candidates SET stage='challenger', updated_utc=? WHERE cluster_id=? AND stage='champion' AND strategy_id<>?",
                     (now, cluster_id, strategy_id),
                 )
+                for item in previous_champion_rows:
+                    old_id = str(item["strategy_id"] or "")
+                    if not old_id:
+                        continue
+                    dem_pid = _new_id("prom")
+                    demoted_events.append(
+                        {
+                            "promotion_id": dem_pid,
+                            "strategy_id": old_id,
+                            "cluster_id": cluster_id,
+                            "decision": "demote_auto",
+                            "prev_stage": "champion",
+                            "next_stage": "challenger",
+                            "reason": f"champion_replaced_by:{strategy_id}",
+                            "decided_by": decided_by,
+                            "decided_utc": now,
+                        }
+                    )
+                    conn.execute(
+                        "INSERT INTO strategy_promotions(promotion_id,strategy_id,cluster_id,decision,prev_stage,next_stage,reason,decided_by,decided_utc) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (
+                            dem_pid,
+                            old_id,
+                            cluster_id,
+                            "demote_auto",
+                            "champion",
+                            "challenger",
+                            f"champion_replaced_by:{strategy_id}",
+                            decided_by,
+                            now,
+                        ),
+                    )
+                rollback_point = {
+                    "rollback_point_id": _new_id("rbp"),
+                    "cluster_id": cluster_id,
+                    "new_champion_strategy_id": strategy_id,
+                    "previous_champion_strategy_id": previous_champion_id,
+                    "promotion_id": pid,
+                    "created_utc": now,
+                    "reason": reason or "",
+                }
+
+            retired_utc = now if next_stage == "retired" else None
             conn.execute(
-                "UPDATE strategy_candidates SET stage=?, updated_utc=?, promoted_utc=? WHERE strategy_id=?",
-                (next_stage, now, now if next_stage in ("champion", "shadow", "challenger") else None, strategy_id),
+                "UPDATE strategy_candidates SET stage=?, updated_utc=?, promoted_utc=?, retired_utc=? WHERE strategy_id=?",
+                (
+                    next_stage,
+                    now,
+                    now if next_stage in ("champion", "shadow", "challenger") else None,
+                    retired_utc,
+                    strategy_id,
+                ),
             )
+
+            # Enforce: each semantic cluster keeps at most 3 challengers.
+            if next_stage in {"challenger", "champion"}:
+                retired_ids = self._trim_challengers(conn, cluster_id, keep_limit=3)
+
             conn.execute(
                 "INSERT INTO strategy_promotions(promotion_id,strategy_id,cluster_id,decision,prev_stage,next_stage,reason,decided_by,decided_utc) VALUES(?,?,?,?,?,?,?,?,?)",
                 (pid, strategy_id, cluster_id, decision, prev_stage, next_stage, reason, decided_by, now),
@@ -572,6 +664,16 @@ class PlaybookFabric:
             "decision": decision, "prev_stage": prev_stage, "next_stage": next_stage,
             "reason": reason, "decided_by": decided_by,
         })
+        for evt in demoted_events:
+            self._append_strategy_event("promotion_decision", evt)
+        for rid in retired_ids:
+            self._append_strategy_event(
+                "challenger_retired_by_limit",
+                {"cluster_id": cluster_id, "strategy_id": rid, "keep_limit": 3, "reason": "challenger_cap_exceeded"},
+            )
+        if rollback_point and rollback_point.get("previous_champion_strategy_id"):
+            self._append_rollback_point(rollback_point)
+            self._append_strategy_event("rollback_point_created", rollback_point)
         return pid
 
     def spawn_candidate_from_champion(self, cluster_id: str, stage: str = "candidate") -> dict | None:
@@ -665,9 +767,67 @@ class PlaybookFabric:
             out.append(d)
         return out
 
+    def strategy_audit_status(self, strategy_id: str) -> dict:
+        """Return champion-promotion audit readiness for a strategy."""
+        row = self.get_strategy(strategy_id)
+        if not row:
+            raise ValueError(f"Unknown strategy_id: {strategy_id}")
+        cluster_id = str(row.get("cluster_id") or "")
+        with self._connect() as conn:
+            ok, reason_code = self._promotion_audit_ok(conn, strategy_id, cluster_id)
+            total_exp = conn.execute(
+                "SELECT COUNT(*) as n FROM strategy_experiments WHERE strategy_id=?",
+                (strategy_id,),
+            ).fetchone()["n"]
+            shadow_exp = conn.execute(
+                "SELECT COUNT(*) as n FROM strategy_experiments WHERE strategy_id=? AND is_shadow=1",
+                (strategy_id,),
+            ).fetchone()["n"]
+        comparison_count = self._shadow_comparison_count(strategy_id)
+        missing: list[str] = []
+        if reason_code != "ok":
+            missing.append(reason_code)
+        return {
+            "strategy_id": strategy_id,
+            "cluster_id": cluster_id,
+            "stage": str(row.get("stage") or ""),
+            "sample_n": int(row.get("sample_n") or 0),
+            "experiments_total": int(total_exp or 0),
+            "experiments_shadow": int(shadow_exp or 0),
+            "shadow_comparisons": int(comparison_count),
+            "promotable_to_champion": bool(ok),
+            "missing_checks": missing,
+        }
+
+    def list_rollback_points(self, cluster_id: str | None = None, limit: int = 200) -> list[dict]:
+        daemon_home = Path(os.environ.get("DAEMON_HOME", Path(__file__).parent.parent))
+        path = daemon_home / "state" / "telemetry" / "strategy_rollback_points.jsonl"
+        if not path.exists():
+            return []
+        rows: list[dict] = []
+        try:
+            for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+                if cluster_id and str(payload.get("cluster_id") or "") != cluster_id:
+                    continue
+                rows.append(row)
+                if len(rows) >= max(1, min(limit, 2000)):
+                    break
+        except Exception:
+            return []
+        return rows
+
     def _append_strategy_event(self, event: str, payload: dict) -> None:
         """Append to state/telemetry/strategy_events.jsonl (mandatory audit log)."""
-        import os
         daemon_home = Path(os.environ.get("DAEMON_HOME", Path(__file__).parent.parent))
         telemetry_dir = daemon_home / "state" / "telemetry"
         telemetry_dir.mkdir(parents=True, exist_ok=True)
@@ -678,6 +838,87 @@ class PlaybookFabric:
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Failed to write strategy event: %s", exc)
+
+    def _append_rollback_point(self, payload: dict) -> None:
+        daemon_home = Path(os.environ.get("DAEMON_HOME", Path(__file__).parent.parent))
+        telemetry_dir = daemon_home / "state" / "telemetry"
+        telemetry_dir.mkdir(parents=True, exist_ok=True)
+        entry = {"event": "rollback_point", "payload": payload, "created_utc": _utc()}
+        try:
+            with (telemetry_dir / "strategy_rollback_points.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Failed to write rollback point: %s", exc)
+
+    def _is_transition_allowed(self, current_stage: str, next_stage: str) -> bool:
+        allowed = _STAGE_TRANSITIONS.get(current_stage)
+        if allowed is None:
+            return False
+        return next_stage in allowed
+
+    def _promotion_audit_ok(self, conn: sqlite3.Connection, strategy_id: str, cluster_id: str) -> tuple[bool, str]:
+        row = conn.execute(
+            "SELECT sample_n, stage FROM strategy_candidates WHERE strategy_id=?",
+            (strategy_id,),
+        ).fetchone()
+        if not row:
+            return False, "strategy_not_found"
+        sample_n = int(row["sample_n"] or 0)
+        stage = str(row["stage"] or "")
+        if sample_n <= 0:
+            return False, "sample_n_insufficient"
+        if stage not in {"challenger", "shadow"}:
+            return False, "stage_not_promotable"
+        shadow_exp = conn.execute(
+            "SELECT COUNT(*) as n FROM strategy_experiments WHERE strategy_id=? AND is_shadow=1",
+            (strategy_id,),
+        ).fetchone()
+        if int(shadow_exp["n"] or 0) <= 0:
+            return False, "shadow_experiment_missing"
+        if self._shadow_comparison_count(strategy_id) <= 0:
+            return False, "shadow_comparison_missing"
+        if not cluster_id:
+            return False, "cluster_missing"
+        return True, "ok"
+
+    def _shadow_comparison_count(self, strategy_id: str) -> int:
+        daemon_home = Path(os.environ.get("DAEMON_HOME", Path(__file__).parent.parent))
+        path = daemon_home / "state" / "telemetry" / "shadow_comparisons.jsonl"
+        if not path.exists():
+            return 0
+        count = 0
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if str(row.get("shadow_strategy_id") or "") == strategy_id:
+                    count += 1
+        except Exception:
+            return 0
+        return count
+
+    def _trim_challengers(self, conn: sqlite3.Connection, cluster_id: str, keep_limit: int = 3) -> list[str]:
+        rows = conn.execute(
+            "SELECT strategy_id FROM strategy_candidates WHERE cluster_id=? AND stage='challenger' ORDER BY updated_utc DESC",
+            (cluster_id,),
+        ).fetchall()
+        if len(rows) <= keep_limit:
+            return []
+        retire_rows = rows[keep_limit:]
+        now = _utc()
+        retired_ids = [str(r["strategy_id"]) for r in retire_rows]
+        for rid in retired_ids:
+            conn.execute(
+                "UPDATE strategy_candidates SET stage='retired', updated_utc=?, retired_utc=? WHERE strategy_id=?",
+                (now, now, rid),
+            )
+        return retired_ids
 
     def stats(self) -> dict:
         with self._connect() as conn:

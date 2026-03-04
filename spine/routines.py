@@ -704,15 +704,17 @@ class SpineRoutines:
             )[0]
 
             if not champion:
-                self.playbook.promote_strategy(
+                ok_promote = self._promote_with_guard(
                     strategy_id=str(best.get("strategy_id") or ""),
                     decision="promote_auto",
                     prev_stage=str(best.get("stage") or "candidate"),
                     next_stage="champion",
                     reason="no_champion_present",
                     decided_by="spine.judge",
+                    cluster_id=cluster_id,
                 )
-                promotions += 1
+                if ok_promote:
+                    promotions += 1
                 continue
 
             champion_id = str(champion.get("strategy_id") or "")
@@ -757,23 +759,17 @@ class SpineRoutines:
             champion_scores = list(m_ch.get("scores", []))
             degraded = self._is_window_degraded(champion_scores, window_size, rollback_delta)
             if degraded and mean_ch - mean_best >= rollback_delta and confidence >= conf_threshold:
-                self.playbook.promote_strategy(
-                    strategy_id=champion_id,
-                    decision="rollback_auto",
-                    prev_stage="champion",
-                    next_stage="challenger",
-                    reason="champion_two_window_degradation",
-                    decided_by="spine.judge",
-                )
-                self.playbook.promote_strategy(
+                ok_promote = self._promote_with_guard(
                     strategy_id=best_id,
-                    decision="promote_auto",
+                    decision="rollback_auto",
                     prev_stage=str(best.get("stage") or "candidate"),
                     next_stage="champion",
-                    reason="rollback_replacement",
+                    reason=f"champion_two_window_degradation;replace:{champion_id}",
                     decided_by="spine.judge",
+                    cluster_id=cluster_id,
                 )
-                rollbacks += 1
+                if ok_promote:
+                    rollbacks += 1
                 continue
 
             promote_ok = (
@@ -782,23 +778,17 @@ class SpineRoutines:
                 and confidence >= conf_threshold
             )
             if promote_ok:
-                self.playbook.promote_strategy(
+                ok_promote = self._promote_with_guard(
                     strategy_id=best_id,
                     decision="promote_auto",
                     prev_stage=str(best.get("stage") or "candidate"),
                     next_stage="champion",
                     reason=f"global_delta={round(mean_best - mean_ch, 4)},confidence={round(confidence, 4)}",
                     decided_by="spine.judge",
+                    cluster_id=cluster_id,
                 )
-                self.playbook.promote_strategy(
-                    strategy_id=champion_id,
-                    decision="demote_auto",
-                    prev_stage="champion",
-                    next_stage="challenger",
-                    reason="champion_replaced",
-                    decided_by="spine.judge",
-                )
-                promotions += 1
+                if ok_promote:
+                    promotions += 1
 
         return {
             "clusters_checked": checked,
@@ -811,6 +801,42 @@ class SpineRoutines:
             "confidence_threshold": conf_threshold,
             "window_size": window_size,
         }
+
+    def _promote_with_guard(
+        self,
+        *,
+        strategy_id: str,
+        decision: str,
+        prev_stage: str,
+        next_stage: str,
+        reason: str,
+        decided_by: str,
+        cluster_id: str,
+    ) -> bool:
+        try:
+            self.playbook.promote_strategy(
+                strategy_id=strategy_id,
+                decision=decision,
+                prev_stage=prev_stage,
+                next_stage=next_stage,
+                reason=reason,
+                decided_by=decided_by,
+            )
+            return True
+        except Exception as exc:
+            self.playbook._append_strategy_event(
+                "promotion_failed",
+                {
+                    "strategy_id": strategy_id,
+                    "cluster_id": cluster_id,
+                    "decision": decision,
+                    "prev_stage": prev_stage,
+                    "next_stage": next_stage,
+                    "reason": reason,
+                    "error": str(exc)[:300],
+                },
+            )
+            return False
 
     def _strategy_cluster_metrics(self, cluster_id: str) -> dict[str, dict]:
         rows = self.playbook.list_experiments(cluster_id=cluster_id, limit=2000)

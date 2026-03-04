@@ -1187,17 +1187,25 @@ async function viewStrategyDetail(sidKey) {
   if (!strategyId || !target) return;
   target.textContent = 'Loading strategy detail…';
   try {
-    const [experiments, promotions] = await Promise.all([
+    const [experiments, promotions, audit] = await Promise.all([
       api('/console/strategies/' + encodeURIComponent(strategyId) + '/experiments?limit=200'),
       api('/console/strategies/' + encodeURIComponent(strategyId) + '/promotions?limit=100'),
+      api('/console/strategies/' + encodeURIComponent(strategyId) + '/audit'),
     ]);
+    let rollbackPoints = [];
+    const clusterId = audit && audit.cluster_id ? String(audit.cluster_id) : '';
+    if (clusterId) {
+      rollbackPoints = await api('/console/strategies/rollback-points?cluster_id=' + encodeURIComponent(clusterId) + '&limit=50');
+    }
     target.textContent = JSON.stringify(
       {
         strategy_id: strategyId,
+        audit: audit || {},
         experiments_count: Array.isArray(experiments) ? experiments.length : 0,
         promotions_count: Array.isArray(promotions) ? promotions.length : 0,
         latest_experiments: (experiments || []).slice(0, 30),
         promotions: promotions || [],
+        rollback_points: rollbackPoints || [],
       },
       null,
       2

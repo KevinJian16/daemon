@@ -806,14 +806,28 @@ def create_app() -> FastAPI:
         if not row:
             raise HTTPException(status_code=404, detail="strategy not found")
         prev_stage = str(row.get("stage") or "candidate")
-        promotion_id = playbook.promote_strategy(
-            strategy_id=strategy_id,
-            decision="promote_manual",
-            prev_stage=prev_stage,
-            next_stage=next_stage,
-            reason=reason,
-            decided_by=decided_by,
-        )
+        try:
+            promotion_id = playbook.promote_strategy(
+                strategy_id=strategy_id,
+                decision="promote_manual",
+                prev_stage=prev_stage,
+                next_stage=next_stage,
+                reason=reason,
+                decided_by=decided_by,
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            if msg.startswith("invalid_stage_transition:"):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"ok": False, "error_code": "invalid_stage_transition", "error": msg},
+                )
+            if msg.startswith("promotion_audit_incomplete:"):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"ok": False, "error_code": "strategy_guard_blocked", "error": msg},
+                )
+            raise HTTPException(status_code=400, detail={"ok": False, "error": msg})
         nerve.emit(
             "strategy_promoted",
             {"strategy_id": strategy_id, "prev_stage": prev_stage, "next_stage": next_stage, "promotion_id": promotion_id},
@@ -829,14 +843,23 @@ def create_app() -> FastAPI:
         if not row:
             raise HTTPException(status_code=404, detail="strategy not found")
         prev_stage = str(row.get("stage") or "unknown")
-        promotion_id = playbook.promote_strategy(
-            strategy_id=strategy_id,
-            decision="rollback_manual",
-            prev_stage=prev_stage,
-            next_stage="champion",
-            reason=reason,
-            decided_by=decided_by,
-        )
+        try:
+            promotion_id = playbook.promote_strategy(
+                strategy_id=strategy_id,
+                decision="rollback_manual",
+                prev_stage=prev_stage,
+                next_stage="champion",
+                reason=reason,
+                decided_by=decided_by,
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            if msg.startswith("invalid_stage_transition:"):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"ok": False, "error_code": "invalid_stage_transition", "error": msg},
+                )
+            raise HTTPException(status_code=400, detail={"ok": False, "error": msg})
         nerve.emit(
             "strategy_rolled_back",
             {"strategy_id": strategy_id, "prev_stage": prev_stage, "next_stage": "champion", "promotion_id": promotion_id},
@@ -856,6 +879,17 @@ def create_app() -> FastAPI:
         if not row:
             raise HTTPException(status_code=404, detail="strategy not found")
         return playbook.list_promotions(strategy_id=strategy_id, limit=limit)
+
+    @app.get("/console/strategies/{strategy_id}/audit")
+    def strategy_audit(strategy_id: str):
+        try:
+            return playbook.strategy_audit_status(strategy_id)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="strategy not found")
+
+    @app.get("/console/strategies/rollback-points")
+    def strategy_rollback_points(cluster_id: str | None = None, limit: int = 200):
+        return playbook.list_rollback_points(cluster_id=cluster_id, limit=limit)
 
     @app.get("/console/semantics")
     def console_semantics():
