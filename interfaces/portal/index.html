@@ -82,6 +82,33 @@
   .degraded { background: #451a03; color: var(--yellow); }
   button.sm { background: var(--surface); border: 1px solid var(--border); color: var(--muted); padding: 4px 10px; border-radius: 3px; cursor: pointer; font-size: 11px; }
   button.sm:hover { color: var(--text); border-color: var(--accent); }
+  /* Feedback trigger */
+  #feedback-trigger { margin-top: 20px; display: none; }
+  #feedback-trigger button { background: var(--surface); border: 1px solid var(--border); color: var(--muted); padding: 8px 18px; border-radius: 6px; cursor: pointer; font-size: 13px; transition: border-color .15s, color .15s; }
+  #feedback-trigger button:hover { color: var(--text); border-color: var(--accent); }
+  /* Feedback modal */
+  #feedback-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.65); z-index: 100; align-items: center; justify-content: center; }
+  #feedback-modal.open { display: flex; }
+  #fmodal-box { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; width: min(560px, 94vw); padding: 32px; display: flex; flex-direction: column; gap: 24px; position: relative; }
+  #fmodal-close { position: absolute; top: 14px; right: 16px; background: none; border: none; color: var(--muted); font-size: 20px; cursor: pointer; line-height: 1; }
+  #fmodal-close:hover { color: var(--text); }
+  #fmodal-progress { font-size: 11px; color: var(--muted); font-family: var(--mono); letter-spacing: 1px; }
+  #fmodal-question { font-size: 18px; font-weight: 600; line-height: 1.4; }
+  #fmodal-options { display: flex; flex-direction: column; gap: 10px; }
+  .fopt { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; cursor: pointer; transition: border-color .15s, background .15s; }
+  .fopt:hover { border-color: var(--accent); background: rgba(99,102,241,.08); }
+  .fopt.selected { border-color: var(--accent); background: rgba(99,102,241,.15); }
+  .fopt-label { font-weight: 600; font-size: 14px; margin-bottom: 3px; }
+  .fopt-desc { font-size: 12px; color: var(--muted); }
+  #fmodal-final { display: none; flex-direction: column; gap: 12px; }
+  #fmodal-comment { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 10px 14px; border-radius: 6px; font-size: 13px; resize: vertical; min-height: 64px; font-family: var(--font); }
+  #fmodal-comment:focus { outline: none; border-color: var(--accent); }
+  #fmodal-actions { display: flex; gap: 10px; align-items: center; }
+  #fmodal-submit { background: var(--accent); color: white; border: none; padding: 9px 22px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; }
+  #fmodal-submit:disabled { opacity: .4; cursor: default; }
+  #fmodal-back { background: none; border: 1px solid var(--border); color: var(--muted); padding: 9px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  #fmodal-back:hover { color: var(--text); }
+  #fmodal-status { font-size: 13px; }
 </style>
 </head>
 <body>
@@ -133,6 +160,9 @@
     <div id="outcomes-preview">
       <div class="empty" id="preview-empty">Select an outcome to view</div>
       <div id="preview-content" style="display:none"></div>
+      <div id="feedback-trigger">
+        <button onclick="openFeedbackModal()">✦ Rate this outcome</button>
+      </div>
     </div>
   </div>
 </div>
@@ -171,10 +201,30 @@
   </div>
 </div>
 
+<!-- FEEDBACK MODAL -->
+<div id="feedback-modal">
+  <div id="fmodal-box">
+    <button id="fmodal-close" onclick="closeFeedbackModal()">✕</button>
+    <div id="fmodal-progress"></div>
+    <div id="fmodal-question"></div>
+    <div id="fmodal-options"></div>
+    <div id="fmodal-final">
+      <div style="font-size:13px;color:var(--muted)">任何补充想法？（选填）</div>
+      <textarea id="fmodal-comment" placeholder="具体说说哪里好、哪里需要改进…"></textarea>
+      <div id="fmodal-actions">
+        <button id="fmodal-back" onclick="fbBack()">← 返回</button>
+        <button id="fmodal-submit" onclick="submitFeedback()">提交反馈</button>
+        <span id="fmodal-status"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 const API = '';
 let sessionId = null;
 let detectedPlan = null;
+let currentTaskId = null;
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -329,7 +379,7 @@ async function loadOutcomes() {
       return;
     }
     container.innerHTML = items.map((o, i) => `
-      <div class="outcome-item" data-path-key="${encodeURIComponent(String(o.path||''))}" onclick="viewOutcome('${encodeURIComponent(String(o.path||''))}', this)">
+      <div class="outcome-item" data-path-key="${encodeURIComponent(String(o.path||''))}" data-task-id="${esc(o.task_id||'')}" onclick="viewOutcome('${encodeURIComponent(String(o.path||''))}', this)">
         <div class="title">${esc(o.title || o.task_id || '—')}</div>
         <div class="meta">${esc(o.task_type || '')} · ${((o.delivered_utc||o.archived_utc||'').replace('T',' ').replace('Z',''))}</div>
       </div>`).join('');
@@ -343,11 +393,16 @@ async function viewOutcome(pathKey, el) {
   document.querySelectorAll('.outcome-item').forEach(i => i.classList.remove('selected'));
   if (el) el.classList.add('selected');
 
+  // Track task_id for feedback.
+  currentTaskId = el ? (el.dataset.taskId || null) : null;
+
   const empty = document.getElementById('preview-empty');
   const content = document.getElementById('preview-content');
+  const trigger = document.getElementById('feedback-trigger');
   empty.style.display = 'none';
   content.style.display = 'block';
   content.innerHTML = '<p style="color:var(--muted)">Loading…</p>';
+  trigger.style.display = 'none';
 
   try {
     const normalized = path.replace(/^\//, '').replace(/\/+$/, '');
@@ -374,12 +429,16 @@ async function viewOutcome(pathKey, el) {
         const mr = await fetch(API + '/outcome/' + normalized + '/manifest.json');
         if (mr.ok) {
           const manifest = await mr.json();
+          // Fill task_id from manifest if not already set.
+          if (!currentTaskId && manifest.task_id) currentTaskId = manifest.task_id;
           content.innerHTML = `<pre>${esc(JSON.stringify(manifest, null, 2))}</pre>`;
         } else {
           content.innerHTML = '<p style="color:var(--muted)">No preview available</p>';
         }
       }
     }
+    // Show feedback trigger whenever there is something to rate.
+    if (currentTaskId) trigger.style.display = 'block';
   } catch(e) {
     content.innerHTML = `<p style="color:var(--red)">Error: ${esc(e.message)}</p>`;
   }
@@ -463,6 +522,126 @@ async function loadTasks() {
       </tr>`).join('');
   } catch(e) {
     tbody.innerHTML = `<tr><td colspan="6" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+// ── Feedback Q&A ──────────────────────────────────────────────────────────────
+
+let fbQuestions = [];
+let fbStep = 0;
+let fbAnswers = {};
+
+async function openFeedbackModal() {
+  if (!currentTaskId) return;
+  fbStep = 0;
+  fbAnswers = {};
+  fbQuestions = [];
+
+  // Reset modal state.
+  document.getElementById('fmodal-final').style.display = 'none';
+  document.getElementById('fmodal-options').style.display = 'flex';
+  document.getElementById('fmodal-question').style.display = 'block';
+  document.getElementById('fmodal-comment').value = '';
+  document.getElementById('fmodal-status').textContent = '';
+  document.getElementById('fmodal-submit').disabled = false;
+  document.getElementById('fmodal-submit').textContent = '提交反馈';
+  document.getElementById('feedback-modal').classList.add('open');
+
+  // Show loading state while questions are generated.
+  document.getElementById('fmodal-progress').textContent = '正在生成问题…';
+  document.getElementById('fmodal-question').textContent = '';
+  document.getElementById('fmodal-options').innerHTML =
+    '<div style="color:var(--muted);font-size:13px;padding:8px 0">正在根据这份产出生成专属反馈问题，请稍候…</div>';
+
+  try {
+    fbQuestions = await apiFetch(`/feedback/${encodeURIComponent(currentTaskId)}/questions`);
+  } catch(e) {
+    document.getElementById('fmodal-options').innerHTML =
+      `<div style="color:var(--red);font-size:13px">加载问题失败: ${esc(e.message)}</div>`;
+    return;
+  }
+  renderFbStep();
+}
+
+function closeFeedbackModal() {
+  document.getElementById('feedback-modal').classList.remove('open');
+}
+
+function renderFbStep() {
+  const q = fbQuestions[fbStep];
+  const total = fbQuestions.length;
+  document.getElementById('fmodal-progress').textContent = `问题 ${fbStep + 1} / ${total}`;
+  document.getElementById('fmodal-question').textContent = q.q;
+  const opts = document.getElementById('fmodal-options');
+  opts.innerHTML = q.opts.map((o, i) => `
+    <div class="fopt" onclick="fbSelect(${i})">
+      <div class="fopt-label">${esc(o.label)}</div>
+      <div class="fopt-desc">${esc(o.desc)}</div>
+    </div>`).join('');
+}
+
+function fbSelect(optIdx) {
+  const q = fbQuestions[fbStep];
+  const opt = q.opts[optIdx];
+  fbAnswers[q.key] = opt.val;
+  if (q.isRating) fbAnswers._rating = opt.val;
+
+  // Briefly highlight selection then advance.
+  const cards = document.querySelectorAll('.fopt');
+  if (cards[optIdx]) cards[optIdx].classList.add('selected');
+  setTimeout(() => {
+    fbStep++;
+    if (fbStep >= fbQuestions.length) {
+      // Show final comment step.
+      document.getElementById('fmodal-progress').textContent = '最后一步';
+      document.getElementById('fmodal-question').style.display = 'none';
+      document.getElementById('fmodal-options').style.display = 'none';
+      document.getElementById('fmodal-final').style.display = 'flex';
+    } else {
+      renderFbStep();
+    }
+  }, 180);
+}
+
+function fbBack() {
+  if (fbStep > 0) {
+    fbStep = Math.max(0, fbStep - 1);
+    document.getElementById('fmodal-final').style.display = 'none';
+    document.getElementById('fmodal-options').style.display = 'flex';
+    document.getElementById('fmodal-question').style.display = 'block';
+    renderFbStep();
+  }
+}
+
+async function submitFeedback() {
+  if (!currentTaskId) return;
+  const rating = fbAnswers._rating || 3;
+  const aspects = Object.fromEntries(
+    Object.entries(fbAnswers).filter(([k]) => k !== '_rating')
+  );
+  const comment = document.getElementById('fmodal-comment').value.trim();
+  const btn = document.getElementById('fmodal-submit');
+  const status = document.getElementById('fmodal-status');
+  btn.disabled = true;
+  btn.textContent = '提交中…';
+  try {
+    await apiFetch(`/feedback/${encodeURIComponent(currentTaskId)}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({rating, comment, aspects}),
+    });
+    status.style.color = 'var(--green)';
+    status.textContent = '✓ 已收到，谢谢';
+    btn.textContent = '已提交';
+    // Update trigger button to reflect submitted state.
+    const trigger = document.getElementById('feedback-trigger');
+    if (trigger) trigger.innerHTML = '<span style="color:var(--muted);font-size:12px">✓ 反馈已提交</span>';
+    setTimeout(closeFeedbackModal, 1200);
+  } catch(e) {
+    status.style.color = 'var(--red)';
+    status.textContent = '✗ ' + e.message;
+    btn.disabled = false;
+    btn.textContent = '提交反馈';
   }
 }
 

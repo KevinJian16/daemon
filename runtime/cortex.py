@@ -21,7 +21,24 @@ def _utc() -> str:
 
 
 # Provider priorities applied when no Compass routing is available.
-_DEFAULT_PROVIDER_ORDER = ["deepseek", "anthropic", "openai", "minimax"]
+# MiniMax is first — it is the high-frequency workhorse; Zhipu/Qwen/DeepSeek handle heavy analysis.
+_DEFAULT_PROVIDER_ORDER = ["minimax", "zhipu", "qwen", "deepseek", "openai", "anthropic"]
+
+# Path to model registry for alias resolution.
+_REGISTRY_PATH = Path(__file__).parent.parent / "config" / "model_registry.json"
+
+
+def _load_registry() -> dict[str, dict]:
+    """Return {alias: {provider, model_id}} from model_registry.json."""
+    try:
+        data = json.loads(_REGISTRY_PATH.read_text(encoding="utf-8"))
+        return {
+            m["alias"]: m
+            for m in data.get("models", [])
+            if not m.get("inactive")
+        }
+    except Exception:
+        return {}
 
 
 class CortexError(Exception):
@@ -80,6 +97,26 @@ class Cortex:
             except ImportError:
                 logger.debug("anthropic package not installed — minimax provider skipped")
 
+        if os.getenv("ZHIPU_API_KEY"):
+            try:
+                import openai
+                self._clients["zhipu"] = openai.OpenAI(
+                    api_key=os.environ["ZHIPU_API_KEY"],
+                    base_url=os.getenv("ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/"),
+                )
+            except ImportError:
+                logger.debug("openai package not installed — zhipu provider skipped")
+
+        if os.getenv("DASHSCOPE_API_KEY"):
+            try:
+                import openai
+                self._clients["qwen"] = openai.OpenAI(
+                    api_key=os.environ["DASHSCOPE_API_KEY"],
+                    base_url=os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+                )
+            except ImportError:
+                logger.debug("openai package not installed — qwen provider skipped")
+
     def _provider_order(self) -> list[str]:
         if self._compass:
             primary = self._compass.get_pref("model_primary", "")
@@ -92,7 +129,36 @@ class Cortex:
         return bool(self._clients)
 
     def complete(self, prompt: str, model: str | None = None, max_tokens: int = 2048, temperature: float = 0.3) -> str:
-        """Generate a completion. Tries providers in priority order."""
+        """Generate a completion. Tries providers in priority order.
+
+        ``model`` may be a registry alias (e.g. "fast", "analysis") or a literal
+        model ID (e.g. "deepseek-reasoner").  Aliases are resolved against
+        config/model_registry.json; if the resolved provider is available it is
+        called directly (skipping the provider loop).
+        """
+        # Resolve alias → (provider, model_id) if applicable.
+        resolved_provider: str | None = None
+        resolved_model: str | None = model
+        if model:
+            registry = _load_registry()
+            if model in registry:
+                entry = registry[model]
+                resolved_provider = entry["provider"]
+                resolved_model = entry["model_id"]
+
+        # Direct call when alias resolved to an available provider.
+        if resolved_provider and resolved_provider in self._clients:
+            t0 = time.time()
+            try:
+                result, in_t, out_t = self._call(resolved_provider, prompt, resolved_model, max_tokens, temperature)
+                self._record_usage(resolved_provider, resolved_model or resolved_provider, in_t, out_t,
+                                   round(time.time() - t0, 2), True, prompt_preview=prompt[:300], output_preview=result[:300])
+                return result
+            except Exception as e:
+                self._record_usage(resolved_provider, resolved_model or resolved_provider, 0, 0,
+                                   round(time.time() - t0, 2), False, str(e)[:200], prompt_preview=prompt[:300])
+                # Fall through to provider loop as fallback.
+
         providers = self._provider_order()
         if not providers:
             raise CortexError("no LLM providers configured")
@@ -101,7 +167,7 @@ class Cortex:
         for provider in providers:
             t0 = time.time()
             try:
-                result, in_tokens, out_tokens = self._call(provider, prompt, model, max_tokens, temperature)
+                result, in_tokens, out_tokens = self._call(provider, prompt, resolved_model, max_tokens, temperature)
                 elapsed = time.time() - t0
                 self._record_usage(
                     provider,
@@ -214,11 +280,15 @@ class Cortex:
         if provider == "openai":
             return self._call_openai(self._clients["openai"], prompt, model or "gpt-4o-mini", max_tokens, temperature)
         if provider == "deepseek":
-            return self._call_deepseek(self._clients["deepseek"], prompt, model or "deepseek-reasoner", max_tokens, temperature)
+            return self._call_deepseek(self._clients["deepseek"], prompt, model or "deepseek-chat", max_tokens, temperature)
         if provider == "anthropic":
             return self._call_anthropic(self._clients["anthropic"], prompt, model or "claude-haiku-4-5-20251001", max_tokens, temperature)
         if provider == "minimax":
             return self._call_anthropic(self._clients["minimax"], prompt, model or "MiniMax-M2.5", max_tokens, temperature)
+        if provider == "zhipu":
+            return self._call_zhipu(self._clients["zhipu"], prompt, model or "glm-z1-flash", max_tokens, temperature)
+        if provider == "qwen":
+            return self._call_openai(self._clients["qwen"], prompt, model or "qwen-max", max_tokens, temperature)
         raise CortexError(f"unknown provider: {provider}")
 
     def _call_openai(self, client: Any, prompt: str, model: str, max_tokens: int, temperature: float) -> tuple[str, int, int]:
@@ -249,6 +319,23 @@ class Cortex:
         in_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
         out_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
         return text, in_tokens, out_tokens
+
+    def _call_zhipu(self, client: Any, prompt: str, model: str, max_tokens: int, temperature: float) -> tuple[str, int, int]:
+        """Call Zhipu (GLM-Z1 series). Strips <think>...</think> reasoning blocks from output."""
+        import re as _re
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        text = resp.choices[0].message.content or ""
+        # GLM-Z1 reasoning models wrap chain-of-thought in <think>...</think>.
+        # Strip complete blocks first, then any incomplete/unclosed block at the end.
+        text = _re.sub(r"<think>[\s\S]*?</think>", "", text, flags=_re.IGNORECASE)
+        text = _re.sub(r"<think>[\s\S]*$", "", text, flags=_re.IGNORECASE).strip()
+        usage = resp.usage
+        return text, int(getattr(usage, "prompt_tokens", 0) or 0), int(getattr(usage, "completion_tokens", 0) or 0)
 
     def _call_anthropic(self, client: Any, prompt: str, model: str, max_tokens: int, temperature: float) -> tuple[str, int, int]:
         resp = client.messages.create(

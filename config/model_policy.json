@@ -1,34 +1,34 @@
 {
   "_comment": "Model routing policy — maps capabilities/clusters to model aliases. Single source of truth consumed by Cortex and OpenClaw via relay-generated snapshot.",
-  "_version": "1.0.0",
+  "_version": "1.1.0",
   "_updated": "2026-03-04",
-  "default_alias": "analysis",
+  "default_alias": "fast",
   "by_capability": {
-    "witness": "analysis",
-    "learn": "analysis",
-    "distill": "analysis",
-    "focus": "analysis",
-    "judge": "chat",
-    "relay": "chat",
-    "record": "chat",
-    "intake": "chat",
-    "tend": "chat",
-    "pulse": "chat"
+    "intake":   "fast",
+    "record":   "fast",
+    "tend":     "fast",
+    "pulse":    "fast",
+    "judge":    "fast",
+    "relay":    "fast",
+    "witness":  "analysis",
+    "learn":    "analysis",
+    "distill":  "analysis",
+    "focus":    "analysis"
   },
   "by_semantic_cluster": {
-    "clst_research_report": "analysis",
-    "clst_knowledge_synthesis": "analysis",
-    "clst_dev_project": "analysis",
-    "clst_personal_plan": "chat"
+    "clst_research_report":     "analysis",
+    "clst_knowledge_synthesis": "glm",
+    "clst_dev_project":         "qwen",
+    "clst_personal_plan":       "fast"
   },
   "by_risk_level": {
-    "high": "analysis",
+    "high":   "analysis",
     "medium": "analysis",
-    "low": "chat"
+    "low":    "fast"
   },
   "budget_limits": {
-    "deepseek_tokens_per_day": 2000000,
-    "minimax_tokens_per_day": 1000000
+    "minimax_tokens_per_day":  2000000,
+    "deepseek_tokens_per_day": 500000
   },
-  "fallback_chain": ["deepseek", "minimax"]
+  "fallback_chain": ["minimax", "zhipu", "deepseek"]
 }

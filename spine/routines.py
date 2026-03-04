@@ -230,6 +230,7 @@ class SpineRoutines:
                         "observations": ["string"],
                         "attention_signals": [{"domain": "string", "trend": "string", "severity": "normal|high|critical"}],
                     },
+                    model="analysis",
                 )
 
             def _stats_fallback() -> dict:
@@ -298,6 +299,7 @@ class SpineRoutines:
                         "duplicates": [{"keep": "unit_id", "merge_from": ["unit_id"]}],
                         "links": [{"from_id": "unit_id", "to_id": "unit_id", "relation": "supports|contradicts|extends"}],
                     },
+                    model="analysis",
                 )
 
             def _string_fallback() -> dict:
@@ -361,6 +363,7 @@ class SpineRoutines:
                         "new_candidates": [{"name": "string", "category": "string", "description": "string", "rationale": "string"}],
                         "skill_evolution_proposals": [{"skill": "string", "proposed_change": "string", "evidence": "string"}],
                     },
+                    model="analysis",
                 )
 
             def _skip_fallback() -> dict:
@@ -440,6 +443,7 @@ class SpineRoutines:
                     schema={
                         "adjustments": [{"domain": "string", "new_weight": 0.5, "reason": "string"}],
                     },
+                    model="analysis",
                 )
 
             def _no_adjustment_fallback() -> dict:

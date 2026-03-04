@@ -474,6 +474,113 @@ def create_app() -> FastAPI:
 
     # ── User feedback (Portal) ────────────────────────────────────────────────
 
+    @app.get("/feedback/{task_id}/questions")
+    async def get_feedback_questions(task_id: str):
+        """Generate task-specific feedback questions via Cortex (LLM).
+        Falls back to a minimal default set if Cortex is unavailable.
+        """
+        # Load task context.
+        tasks_path = state / "tasks.json"
+        task_record: dict = {}
+        try:
+            tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
+            task_record = next((t for t in tasks if t.get("task_id") == task_id), {})
+        except Exception:
+            pass
+
+        plan = task_record.get("plan") or {}
+        title = str(plan.get("title") or task_id)
+        task_type = str(plan.get("task_type") or "general")
+
+        # Load outcome content snippet.
+        content_snippet = ""
+        try:
+            index_path = home / "outcome" / "index.json"
+            index = json.loads(index_path.read_text()) if index_path.exists() else []
+            entry = next((e for e in reversed(index) if e.get("task_id") == task_id), None)
+            if entry:
+                out_path = home / "outcome" / entry["path"]
+                for fname in ("report.md", "report.html"):
+                    p = out_path / fname
+                    if p.exists():
+                        raw = p.read_text(encoding="utf-8", errors="ignore")
+                        # Strip HTML tags if HTML.
+                        if fname.endswith(".html"):
+                            import re as _re
+                            raw = _re.sub(r"<[^>]+>", " ", raw)
+                        content_snippet = raw[:800].strip()
+                        break
+        except Exception:
+            pass
+
+        _DEFAULT_QUESTIONS = [
+            {
+                "key": "overall", "isRating": True,
+                "q": "整体来看，这份产出如何？",
+                "opts": [
+                    {"label": "非常满意", "val": 5, "desc": "超出预期，可以直接使用"},
+                    {"label": "基本满意", "val": 4, "desc": "符合需求，稍作打磨即可"},
+                    {"label": "一般",     "val": 3, "desc": "方向正确，但内容有待改进"},
+                    {"label": "不满意",   "val": 1, "desc": "与预期差距较大，需要重做"},
+                ],
+            },
+            {
+                "key": "depth",
+                "q": "内容深度如何？",
+                "opts": [
+                    {"label": "深度恰当",   "val": 1.0, "desc": "详略得当，信息密度合适"},
+                    {"label": "太浅",       "val": 0.2, "desc": "缺少分析或细节"},
+                    {"label": "太冗长",     "val": 0.6, "desc": "内容偏多，核心不突出"},
+                ],
+            },
+            {
+                "key": "relevance",
+                "q": "内容是否切合你的实际需求？",
+                "opts": [
+                    {"label": "非常切合", "val": 1.0, "desc": "准确理解并回应了我的意图"},
+                    {"label": "部分偏差", "val": 0.5, "desc": "主干对路，但细节有偏离"},
+                    {"label": "理解有误", "val": 0.1, "desc": "没有抓住我真正想要的"},
+                ],
+            },
+        ]
+
+        if not cortex or not cortex.is_available():
+            return _DEFAULT_QUESTIONS
+
+        prompt = (
+            "你是一个AI产出评估专家。根据以下任务信息，生成3-4个针对性反馈问题。\n\n"
+            f"任务类型: {task_type}\n"
+            f"任务标题: {title}\n"
+        )
+        if content_snippet:
+            prompt += f"内容摘要（前800字）:\n{content_snippet}\n\n"
+        prompt += (
+            "要求：\n"
+            "1. 第一个问题必须是整体满意度（key=\"overall\", isRating=true），选项val为整数1-5\n"
+            "2. 其余2-3个问题根据这份产出的具体内容和任务类型量身定制，不要用泛泛的通用问题\n"
+            "3. 每个问题3-4个选项，其余问题val为0.0-1.0的小数\n"
+            "4. 所有问题和选项必须用中文\n"
+            "5. 仅返回JSON数组，不要解释或其他内容\n\n"
+            "格式：\n"
+            '[{"key":"overall","isRating":true,"q":"...","opts":[{"label":"...","val":5,"desc":"..."},...]},'
+            '{"key":"unique_key","q":"...","opts":[{"label":"...","val":1.0,"desc":"..."},...]}]'
+        )
+
+        try:
+            raw = (cortex.complete(prompt, max_tokens=800) or "").strip()
+            # Extract JSON array from response.
+            import re as _re
+            m = _re.search(r"\[[\s\S]*\]", raw)
+            if m:
+                questions = json.loads(m.group(0))
+                # Validate minimal structure.
+                if isinstance(questions, list) and questions:
+                    return questions
+        except Exception as exc:
+            logger.warning("Feedback question generation failed: %s", exc)
+
+        return _DEFAULT_QUESTIONS
+
     @app.post("/feedback/{task_id}")
     async def submit_feedback(task_id: str, request: Request):
         """Record user rating on a delivered outcome. Feeds back into Playbook evaluation."""
