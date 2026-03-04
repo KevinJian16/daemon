@@ -156,7 +156,7 @@ class DeliveryService:
                 return {"ok": False, "error_code": "forbidden_marker", "detail": f"Contains forbidden marker: {marker}"}
 
         min_words = int(profile.get("min_word_count") or 0)
-        words = len(content.split())
+        words = self._effective_word_count(content)
         if min_words and words < min_words:
             return {"ok": False, "error_code": "word_count_too_low", "detail": f"{words} < {min_words}"}
 
@@ -187,7 +187,7 @@ class DeliveryService:
             if marker.lower() in content.lower():
                 return 0.0  # Hard fail
 
-        words = len(content.split())
+        words = self._effective_word_count(content)
         min_words = int(structural.get("min_word_count") or profile.get("min_word_count") or 0)
         word_score = min(words / min_words, 1.0) if min_words else 1.0
 
@@ -211,6 +211,15 @@ class DeliveryService:
             bilingual_score = 1.0
 
         return (word_score + section_score + item_score + bilingual_score) / 4.0
+
+    def _effective_word_count(self, content: str) -> int:
+        """Estimate word count robustly for mixed Chinese/English text."""
+        text = str(content or "")
+        whitespace_tokens = len(text.split())
+        latin_tokens = len(re.findall(r"[A-Za-z0-9]+(?:[-_'][A-Za-z0-9]+)*", text))
+        cjk_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
+        cjk_tokens = (cjk_chars + 1) // 2
+        return max(whitespace_tokens, latin_tokens + cjk_tokens)
 
     def _evidence_score(self, plan: dict, step_results: list[dict]) -> float:
         """Evidence completeness 0-1 based on evidence_unit_ids or step outputs."""

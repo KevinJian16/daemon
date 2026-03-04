@@ -60,14 +60,25 @@ class OpenClawAdapter:
         except Exception as e:
             return f"error: {str(e)[:80]}"
 
-    def send(self, session_key: str, message: str) -> dict:
+    def send(self, session_key: str, message: str, agent_id: str | None = None) -> dict:
         """Send a message to an Agent session."""
-        return self._invoke("sessions_send", {"session_key": session_key, "message": message})
+        args: dict[str, Any] = {"sessionKey": session_key, "message": message}
+        if agent_id:
+            args["agentId"] = agent_id
+        result = self._invoke("sessions_send", args)
+        details = self._extract_details(result)
+        self._raise_on_status("sessions_send", details)
+        return details or result
 
     def history(self, session_key: str, limit: int = 1) -> list[dict]:
         """Read recent messages from an Agent session."""
-        result = self._invoke("sessions_history", {"session_key": session_key, "limit": limit})
-        return result.get("messages") or result.get("history") or []
+        result = self._invoke("sessions_history", {"sessionKey": session_key, "limit": limit})
+        details = self._extract_details(result)
+        self._raise_on_status("sessions_history", details)
+        rows = (details or {}).get("messages") or (result or {}).get("messages") or []
+        if not isinstance(rows, list):
+            return []
+        return [self._normalize_message(m) for m in rows if isinstance(m, dict)]
 
     def session_key(self, agent_id: str, task_id: str, step_id: str) -> str:
         return f"agent:{agent_id}:task:{task_id}:{step_id}"
@@ -77,13 +88,53 @@ class OpenClawAdapter:
             f"{self._gateway_url}/tools/invoke",
             json={"tool": tool, "args": args},
             headers=self._headers,
-            timeout=30,
+            timeout=120,
         )
         resp.raise_for_status()
         data = resp.json()
         if not data.get("ok") and data.get("error"):
             raise OpenClawError(f"Gateway tool error [{tool}]: {data['error']}")
         return data.get("result") or data
+
+    def _extract_details(self, result: dict | None) -> dict:
+        if not isinstance(result, dict):
+            return {}
+        details = result.get("details")
+        if isinstance(details, dict):
+            return details
+        return result
+
+    def _raise_on_status(self, tool: str, details: dict) -> None:
+        status = str(details.get("status") or "").strip().lower()
+        if status in {"error", "forbidden", "failed"}:
+            msg = str(details.get("error") or details.get("message") or status)
+            raise OpenClawError(f"Gateway tool status error [{tool}]: {msg}")
+
+    def _normalize_message(self, row: dict) -> dict:
+        role = str(row.get("role") or "")
+        content_text = self._content_text(row.get("content"))
+        if not content_text:
+            content_text = str(row.get("text") or row.get("errorMessage") or "")
+        return {
+            "role": role,
+            "content": content_text,
+            "text": content_text,
+            "timestamp": row.get("timestamp"),
+            "raw": row,
+        }
+
+    def _content_text(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    txt = item.get("text")
+                    if isinstance(txt, str) and txt.strip():
+                        parts.append(txt)
+            return "\n".join(parts).strip()
+        return ""
 
     # ── Snapshot relay ────────────────────────────────────────────────────────
 

@@ -66,7 +66,7 @@ class DaemonActivities:
             if context_payload
             else instruction
         )
-        await asyncio.to_thread(self._openclaw.send, session_key, composed_message)
+        await asyncio.to_thread(self._openclaw.send, session_key, composed_message, agent_id)
 
         # Poll for completion.
         deadline = time.time() + timeout_s
@@ -76,7 +76,7 @@ class DaemonActivities:
         while time.time() < deadline:
             await asyncio.sleep(poll_interval)
             try:
-                messages = await asyncio.to_thread(self._openclaw.history, session_key, 1)
+                messages = await asyncio.to_thread(self._openclaw.history, session_key, 8)
             except Exception as exc:
                 activity.logger.warning("history poll failed for %s: %s", session_key, exc)
                 poll_interval = min(poll_interval * 1.2, 30)
@@ -84,16 +84,40 @@ class DaemonActivities:
             if not isinstance(messages, list):
                 messages = []
 
-            latest = messages[-1] if messages else {}
-            content = latest.get("content") or latest.get("text") or ""
-            role = latest.get("role") or ""
+            newest_assistant = None
+            for msg in reversed(messages):
+                if not isinstance(msg, dict):
+                    continue
+                role = str(msg.get("role") or "").strip().lower()
+                if role != "assistant":
+                    continue
+                content = str(msg.get("content") or msg.get("text") or "").strip()
+                if not content:
+                    continue
+                newest_assistant = msg
+                break
 
-            if role == "assistant" and content and content != last_content:
-                last_content = content
-                # Check for completion signals.
-                if any(signal in content.lower() for signal in ["[done]", "[complete]", "task complete", "completed successfully"]):
-                    output_path = self._write_step_output(run_root, step_id, content)
-                    return {"status": "ok", "step_id": step_id, "agent": agent_id, "session_key": session_key, "output_path": output_path}
+            if newest_assistant:
+                content = str(newest_assistant.get("content") or newest_assistant.get("text") or "").strip()
+                if content and content != last_content:
+                    last_content = content
+                    raw = newest_assistant.get("raw") if isinstance(newest_assistant.get("raw"), dict) else {}
+                    stop_reason = str(raw.get("stopReason") or "").strip().lower()
+                    has_done_signal = any(
+                        signal in content.lower()
+                        for signal in ["[done]", "[complete]", "task complete", "completed successfully"]
+                    )
+                    # OpenClaw sessions_send is turn-based in current runtime: a concrete assistant turn
+                    # with terminal stopReason is sufficient to mark the step complete.
+                    if has_done_signal or stop_reason in {"stop", "end_turn"}:
+                        output_path = self._write_step_output(run_root, step_id, content)
+                        return {
+                            "status": "ok",
+                            "step_id": step_id,
+                            "agent": agent_id,
+                            "session_key": session_key,
+                            "output_path": output_path,
+                        }
 
             poll_interval = min(poll_interval * 1.2, 30)
 
@@ -217,7 +241,12 @@ class DaemonActivities:
             self._update_outcome_index(outcome_path, plan)
 
         # Update task status.
-        self._update_task_status(run_root, plan, "completed_shadow" if is_shadow else "completed")
+        self._update_task_status(
+            run_root,
+            plan,
+            "completed_shadow" if is_shadow else "completed",
+            outcome_path=str(outcome_path),
+        )
 
         # Emit cross-process events for API process.
         task_id = str(plan.get("task_id") or "")
@@ -346,7 +375,7 @@ class DaemonActivities:
 
         # Minimum word count.
         min_words = int(profile.get("min_word_count") or 0)
-        word_count = len(content.split())
+        word_count = self._effective_word_count(content)
         if min_words and word_count < min_words:
             return {"ok": False, "error_code": "word_count_too_low", "detail": f"{word_count} < {min_words}"}
 
@@ -444,7 +473,7 @@ class DaemonActivities:
             if str(marker).lower() in content.lower():
                 return 0.0
 
-        words = len(content.split())
+        words = self._effective_word_count(content)
         min_words = int(structural.get("min_word_count") or profile.get("min_word_count") or 0)
         word_score = min(words / min_words, 1.0) if min_words else 1.0
 
@@ -468,6 +497,20 @@ class DaemonActivities:
             bilingual_score = 1.0
 
         return max(0.0, min(1.0, (word_score + section_score + item_score + bilingual_score) / 4.0))
+
+    def _effective_word_count(self, content: str) -> int:
+        """Estimate word count robustly for mixed Chinese/English text.
+
+        - Latin tokens count by word regex.
+        - CJK tokens are approximated as 1 token per 2 Han characters.
+        - Final count uses max(whitespace split, regex estimate) to avoid undercount.
+        """
+        text = str(content or "")
+        whitespace_tokens = len(text.split())
+        latin_tokens = len(re.findall(r"[A-Za-z0-9]+(?:[-_'][A-Za-z0-9]+)*", text))
+        cjk_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
+        cjk_tokens = (cjk_chars + 1) // 2
+        return max(whitespace_tokens, latin_tokens + cjk_tokens)
 
     def _evidence_score(self, plan: dict, step_results: list[dict]) -> float:
         evidence_ids = plan.get("evidence_unit_ids")
@@ -656,7 +699,7 @@ class DaemonActivities:
         # Keep last 1000 entries.
         index_path.write_text(json.dumps(index[-1000:], ensure_ascii=False, indent=2))
 
-    def _update_task_status(self, run_root: str, plan: dict, status: str) -> None:
+    def _update_task_status(self, run_root: str, plan: dict, status: str, outcome_path: str | None = None) -> None:
         tasks_path = self._home / "state" / "tasks.json"
         try:
             tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
@@ -664,13 +707,23 @@ class DaemonActivities:
             activity.logger.warning("Failed to read tasks.json %s: %s", tasks_path, exc)
             tasks = []
         task_id = str(plan.get("task_id") or "")
+        last_error = str(plan.get("last_error") or "")
         for task in tasks:
             if task.get("task_id") == task_id:
                 task["status"] = status
                 task["updated_utc"] = _utc()
+                if last_error:
+                    task["last_error"] = last_error
+                if outcome_path:
+                    task["outcome_path"] = outcome_path
                 break
         else:
-            tasks.append({"task_id": task_id, "status": status, "updated_utc": _utc(), "run_root": run_root})
+            row = {"task_id": task_id, "status": status, "updated_utc": _utc(), "run_root": run_root}
+            if last_error:
+                row["last_error"] = last_error
+            if outcome_path:
+                row["outcome_path"] = outcome_path
+            tasks.append(row)
         tasks_path.parent.mkdir(parents=True, exist_ok=True)
         # Write atomically via temp file to avoid partial writes.
         tmp = tasks_path.with_suffix(".tmp")

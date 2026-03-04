@@ -654,7 +654,7 @@ class SpineRoutines:
                 f"http://127.0.0.1:{port}/tools/invoke",
                 json={
                     "tool": "sessions_history",
-                    "args": {"session_key": "agent:collect:task:probe:gateway", "limit": 1},
+                    "args": {"sessionKey": "agent:collect:task:probe:gateway", "limit": 1},
                 },
                 headers={**headers, "Content-Type": "application/json"},
                 timeout=5,

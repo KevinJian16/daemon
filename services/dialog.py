@@ -69,11 +69,20 @@ class DialogService:
         try:
             resp = httpx.post(
                 f"{gw_url}/tools/invoke",
-                json={"tool": "sessions_send", "args": {"session_key": oc_session_key, "message": message}},
+                json={
+                    "tool": "sessions_send",
+                    "args": {"sessionKey": oc_session_key, "agentId": "router", "message": message},
+                },
                 headers=headers,
                 timeout=30,
             )
             resp.raise_for_status()
+            send_result = resp.json().get("result") or {}
+            send_details = send_result.get("details") or {}
+            send_status = str(send_details.get("status") or "").strip().lower()
+            if send_status in {"error", "forbidden", "failed"}:
+                err = str(send_details.get("error") or send_details.get("message") or send_status)
+                return {"ok": False, "error": err}
         except Exception as e:
             return {"ok": False, "error": str(e)[:200]}
 
@@ -85,15 +94,20 @@ class DialogService:
             try:
                 hist = httpx.post(
                     f"{gw_url}/tools/invoke",
-                    json={"tool": "sessions_history", "args": {"session_key": oc_session_key, "limit": 1}},
+                    json={"tool": "sessions_history", "args": {"sessionKey": oc_session_key, "limit": 1}},
                     headers=headers,
                     timeout=15,
                 )
                 hist.raise_for_status()
                 data = hist.json()
-                messages = (data.get("result") or {}).get("messages") or []
+                result = data.get("result") or {}
+                details = result.get("details") or {}
+                status = str(details.get("status") or "").strip().lower()
+                if status in {"error", "forbidden", "failed"}:
+                    continue
+                messages = details.get("messages") or result.get("messages") or []
                 latest = messages[-1] if messages else {}
-                content = latest.get("content") or ""
+                content = self._extract_message_text(latest)
                 if latest.get("role") == "assistant" and content and content != last_content:
                     last_content = content
                     session["messages"].append({"role": "assistant", "content": content, "timestamp": _utc()})
@@ -123,3 +137,24 @@ class DialogService:
         except Exception as exc:
             logger.debug("_extract_plan: failed to parse JSON plan: %s", exc)
         return None
+
+    def _extract_message_text(self, msg: dict) -> str:
+        raw = msg.get("content")
+        if isinstance(raw, str):
+            return raw
+        if isinstance(raw, list):
+            chunks = []
+            for item in raw:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        chunks.append(text)
+            if chunks:
+                return "\n".join(chunks).strip()
+        text = msg.get("text")
+        if isinstance(text, str):
+            return text
+        err = msg.get("errorMessage")
+        if isinstance(err, str):
+            return err
+        return ""

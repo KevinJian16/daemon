@@ -26,6 +26,7 @@ class GraphDispatchWorkflow:
         plan = inp.plan or {}
         steps = plan.get("steps") or plan.get("graph", {}).get("steps") or []
         if not isinstance(steps, list) or not steps:
+            await self._mark_task_status(inp.run_root, plan, "failed", "missing steps")
             raise ApplicationError("missing steps", non_retryable=True)
 
         concurrency = plan.get("concurrency") or {}
@@ -37,9 +38,11 @@ class GraphDispatchWorkflow:
         id_set: set[str] = set()
         for i, st in enumerate(steps):
             if not isinstance(st, dict):
+                await self._mark_task_status(inp.run_root, plan, "failed", f"invalid step at index {i}")
                 raise ApplicationError(f"invalid step at index {i}", non_retryable=True)
             sid = self._step_id(st, i)
             if sid in id_set:
+                await self._mark_task_status(inp.run_root, plan, "failed", f"duplicate step id: {sid}")
                 raise ApplicationError(f"duplicate step id: {sid}", non_retryable=True)
             id_set.add(sid)
             step_list.append({**st, "id": sid})
@@ -53,9 +56,11 @@ class GraphDispatchWorkflow:
         for sid, st in step_by_id.items():
             ds = set(self._deps(st))
             if sid in ds:
+                await self._mark_task_status(inp.run_root, plan, "failed", f"step {sid} depends on itself")
                 raise ApplicationError(f"step {sid} depends on itself", non_retryable=True)
             unknown = [d for d in ds if d not in step_by_id]
             if unknown:
+                await self._mark_task_status(inp.run_root, plan, "failed", f"step {sid}: unknown deps {unknown}")
                 raise ApplicationError(f"step {sid}: unknown deps {unknown}", non_retryable=True)
             deps[sid] = ds
             for d in ds:
@@ -65,13 +70,17 @@ class GraphDispatchWorkflow:
         indeg = {sid: len(d) for sid, d in deps.items()}
         q = [sid for sid, n in indeg.items() if n == 0]
         seen = 0
-        for cur in list(q):
+        idx = 0
+        while idx < len(q):
+            cur = q[idx]
+            idx += 1
             seen += 1
             for nxt in rev.get(cur, set()):
                 indeg[nxt] -= 1
                 if indeg[nxt] == 0:
                     q.append(nxt)
         if seen != len(step_by_id):
+            await self._mark_task_status(inp.run_root, plan, "failed", "cycle detected in DAG")
             raise ApplicationError("cycle detected in DAG", non_retryable=True)
 
         # Execution loop.
@@ -127,7 +136,8 @@ class GraphDispatchWorkflow:
                     results_by_id[sid] = res
                     completed.add(sid)
 
-        except ApplicationError:
+        except ApplicationError as e:
+            await self._mark_task_status(inp.run_root, plan, "failed", str(e)[:200])
             raise
         except Exception as e:
             await self._mark_task_status(inp.run_root, plan, "failed", str(e)[:200])
