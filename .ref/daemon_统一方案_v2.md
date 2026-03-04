@@ -124,23 +124,37 @@
 
 ### 4.3 Model Control Plane
 
-1. 新增配置
-- `config/model_registry.json`
-- `config/model_policy.json`
+1. 配置文件
+- `config/model_registry.json` — 别名 → provider/model_id 映射，含上下文窗口与能力注记
+- `config/model_policy.json` — 路由策略：by_capability / by_semantic_cluster / by_risk_level / agent_model_map
 
-2. 路由维度
-- `by_capability`
-- `by_semantic_cluster`
-- `by_risk_level`
+2. 路由维度（优先级由高到低）
+- `by_capability`：Spine routine 级别路由（witness → analysis，quality_gate → review，code_execute → qwen）
+- `by_semantic_cluster`：任务簇级别路由（clst_dev_project → qwen，clst_knowledge_synthesis → glm）
+- `by_risk_level`：风险级别路由（high → review，medium → analysis，low → fast）
+- `agent_model_map`：OpenClaw agent 静态默认，与 openclaw.json 保持同步
 
-3. 统一别名
-- Cortex 与 OpenClaw 使用同一模型意图别名。
-- 禁止同策略在两个层使用不同 provider 语义。
+3. 确定的模型别名与分配
 
-4. 预算与熔断
-- provider 限额写入 Compass。
-- 命中熔断时触发 `provider_budget_exceeded` 并按策略回退顺序切换。
-- 回退不可伪成功，必须携带 `fallback_chain`。
+| 别名 | Provider | 模型 | 负责 Agent / 场景 |
+|---|---|---|---|
+| `fast` | MiniMax | MiniMax-M2.5 | router / collect / build / apply — 编排与高频 ops |
+| `analysis` | DeepSeek | deepseek-reasoner (R1) | analyze — witness / learn / distill / clst_research_report |
+| `review` | Qwen | qwen-max | review — quality_gate_hard / review_mentor_rubric |
+| `qwen` | Qwen | qwen-max | opencode 子进程 — clst_dev_project 实际代码生成 |
+| `glm` | 智谱 | glm-z1-flash | render — 双语渲染 / clst_knowledge_synthesis |
+| `fallback` | MiniMax | MiniMax-M2.5 | 任意 provider 不可用时的兜底 |
+
+**opencode 子进程**独立于 OpenClaw agent，模型配置位于 `~/.config/opencode/opencode.json`，使用 `qwen` 别名（qwen-max）。
+
+4. 统一别名约定
+- Cortex 与 OpenClaw 使用同一模型意图别名，禁止同策略在两层使用不同 provider 语义。
+- `review` 与 `qwen` 别名当前均指向 qwen-max，未来可独立演化。
+
+5. 预算与熔断
+- 各 provider 每日 token 限额写入 Compass（minimax 200万，qwen 100万，deepseek/zhipu 各 50万）。
+- 命中熔断触发 `provider_budget_exceeded`，按 fallback_chain 顺序切换：minimax → qwen → zhipu → deepseek。
+- 回退不可伪成功，必须携带 `fallback_chain` 字段。
 
 ### 4.4 执行与质量治理
 

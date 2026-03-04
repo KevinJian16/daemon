@@ -1,13 +1,13 @@
 {
   "_comment": "Model registry — canonical model definitions used by both Cortex and OpenClaw via model_policy_snapshot.",
-  "_version": "1.1.0",
-  "_updated": "2026-03-04",
+  "_version": "1.2.0",
+  "_updated": "2026-03-05",
   "models": [
     {
       "alias": "fast",
       "provider": "minimax",
       "model_id": "MiniMax-M2.5",
-      "description": "High-frequency workhorse: all OpenClaw agent tasks, dialog, intake, relay, judge, record, tend, pulse",
+      "description": "High-frequency workhorse: router/collect/build-agent/apply orchestration, dialog, intake, relay, judge, record, tend, pulse",
       "context_window": 1000000,
       "supports_temperature": true
     },
@@ -15,23 +15,23 @@
       "alias": "analysis",
       "provider": "deepseek",
       "model_id": "deepseek-reasoner",
-      "description": "Deep analytical tasks: witness, learn, distill, focus, research clusters",
+      "description": "Deep reasoning: analyze agent — witness, learn, distill, focus, clst_research_report. Note: 65K context, no temperature.",
       "context_window": 65536,
       "supports_temperature": false
     },
     {
       "alias": "review",
-      "provider": "zhipu",
-      "model_id": "glm-z1-flash",
-      "description": "Quality review and structured output — GLM5 large-context",
-      "context_window": 128000,
+      "provider": "qwen",
+      "model_id": "qwen-max",
+      "description": "Quality gate and rubric scoring: review agent — quality_gate_hard, review_mentor_rubric. Strong structured output, bilingual.",
+      "context_window": 32768,
       "supports_temperature": true
     },
     {
       "alias": "glm",
       "provider": "zhipu",
       "model_id": "glm-z1-flash",
-      "description": "GLM5 (Z1 series) — analytical and bilingual tasks, large context",
+      "description": "Bilingual rendering: render agent — formal writing, zh/en split, clst_knowledge_synthesis. 128K context.",
       "context_window": 128000,
       "supports_temperature": true
     },
@@ -39,7 +39,7 @@
       "alias": "qwen",
       "provider": "qwen",
       "model_id": "qwen-max",
-      "description": "Qwen3-Max — analytical and coding tasks, thinking via reasoning_content field",
+      "description": "Dev/coding tasks: opencode subprocess (clst_dev_project). Same model as review alias.",
       "context_window": 32768,
       "supports_temperature": true
     },

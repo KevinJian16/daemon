@@ -1,19 +1,22 @@
 {
   "_comment": "Model routing policy — maps capabilities/clusters to model aliases. Single source of truth consumed by Cortex and OpenClaw via relay-generated snapshot.",
-  "_version": "1.1.0",
-  "_updated": "2026-03-04",
+  "_version": "1.2.0",
+  "_updated": "2026-03-05",
   "default_alias": "fast",
   "by_capability": {
-    "intake":   "fast",
-    "record":   "fast",
-    "tend":     "fast",
-    "pulse":    "fast",
-    "judge":    "fast",
-    "relay":    "fast",
-    "witness":  "analysis",
-    "learn":    "analysis",
-    "distill":  "analysis",
-    "focus":    "analysis"
+    "intake":        "fast",
+    "record":        "fast",
+    "tend":          "fast",
+    "pulse":         "fast",
+    "judge":         "fast",
+    "relay":         "fast",
+    "witness":       "analysis",
+    "learn":         "analysis",
+    "distill":       "analysis",
+    "focus":         "analysis",
+    "quality_gate":  "review",
+    "rubric_review": "review",
+    "code_execute":  "qwen"
   },
   "by_semantic_cluster": {
     "clst_research_report":     "analysis",
@@ -22,13 +25,26 @@
     "clst_personal_plan":       "fast"
   },
   "by_risk_level": {
-    "high":   "analysis",
+    "high":   "review",
     "medium": "analysis",
     "low":    "fast"
   },
-  "budget_limits": {
-    "minimax_tokens_per_day":  2000000,
-    "deepseek_tokens_per_day": 500000
+  "agent_model_map": {
+    "_comment": "Authoritative per-agent OpenClaw model assignment. Mirrors openclaw.json agent overrides.",
+    "router":   "fast",
+    "collect":  "fast",
+    "analyze":  "analysis",
+    "build":    "fast",
+    "review":   "review",
+    "render":   "glm",
+    "apply":    "fast",
+    "opencode": "qwen"
   },
-  "fallback_chain": ["minimax", "zhipu", "deepseek"]
+  "budget_limits": {
+    "minimax_tokens_per_day":   2000000,
+    "deepseek_tokens_per_day":  500000,
+    "qwen_tokens_per_day":      1000000,
+    "zhipu_tokens_per_day":     500000
+  },
+  "fallback_chain": ["minimax", "qwen", "zhipu", "deepseek"]
 }
