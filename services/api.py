@@ -877,6 +877,30 @@ def create_app() -> FastAPI:
             cluster = cluster_rows.get(cid) or {}
             row["cluster_display_name"] = cluster.get("display_name", cid)
             row["task_type_compat"] = cluster.get("task_type_compat", "")
+            sid = str(row.get("strategy_id") or "")
+            if not sid:
+                row["risk_level"] = "unknown"
+                row["risk_reasons"] = []
+                row["release_audit_closed"] = False
+                continue
+            try:
+                audit = playbook.strategy_audit_status(sid)
+            except Exception:
+                row["risk_level"] = "high"
+                row["risk_reasons"] = ["audit_lookup_failed"]
+                row["release_audit_closed"] = False
+                continue
+            missing_checks = audit.get("missing_checks") if isinstance(audit.get("missing_checks"), list) else []
+            missing_count = len(missing_checks)
+            if missing_count == 0:
+                risk_level = "low"
+            elif missing_count <= 2:
+                risk_level = "medium"
+            else:
+                risk_level = "high"
+            row["release_audit_closed"] = bool(audit.get("release_audit_closed", False))
+            row["risk_level"] = risk_level
+            row["risk_reasons"] = missing_checks
         return strategies
 
     @app.get("/console/strategies/shadow-report")

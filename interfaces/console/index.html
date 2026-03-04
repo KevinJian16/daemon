@@ -251,7 +251,7 @@
       <button class="action" onclick="loadStrategies()">Refresh</button>
     </div>
     <table>
-      <thead><tr><th>Strategy ID</th><th>Cluster</th><th>Stage</th><th>Global</th><th>Samples</th><th>Updated</th><th>Action</th></tr></thead>
+      <thead><tr><th>Strategy ID</th><th>Cluster</th><th>Stage</th><th>Risk</th><th>Global</th><th>Samples</th><th>Updated</th><th>Action</th></tr></thead>
       <tbody id="strategies-tbody"><tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr></tbody>
     </table>
   </div>
@@ -1167,7 +1167,7 @@ async function loadStrategies() {
   if (cluster) qs.push('cluster_id=' + encodeURIComponent(cluster));
   if (stage) qs.push('stage=' + encodeURIComponent(stage));
   if (qs.length) url += '?' + qs.join('&');
-  tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted)">Loading…</td></tr>';
   shadowBody.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr>';
   try {
     const [rows, shadowRows] = await Promise.all([
@@ -1184,6 +1184,7 @@ async function loadStrategies() {
         <td style="color:var(--muted);font-size:11px">${esc(sid)}</td>
         <td>${esc(r.cluster_display_name || r.cluster_id || '')}<br><span style="color:var(--muted);font-size:10px">${esc(r.cluster_id || '')}</span></td>
         <td><span class="badge ${r.stage === 'champion' ? 'ok' : r.stage === 'challenger' ? 'degraded' : 'hybrid'}">${stageBadge}</span></td>
+        <td><span class="badge ${(r.risk_level || '') === 'low' ? 'ok' : (r.risk_level || '') === 'medium' ? 'degraded' : 'error'}">${esc(r.risk_level || 'unknown')}</span></td>
         <td>${r.global_score != null ? Number(r.global_score).toFixed(4) : '—'}</td>
         <td>${Number(r.sample_n || 0)}</td>
         <td style="color:var(--muted)">${(r.updated_utc || '').replace('T',' ').replace('Z','')}</td>
@@ -1194,7 +1195,7 @@ async function loadStrategies() {
           ${rollbackBtn}
         </td>
       </tr>`;
-    }).join('') || '<tr><td colspan="7" style="color:var(--muted)">No strategies</td></tr>';
+    }).join('') || '<tr><td colspan="8" style="color:var(--muted)">No strategies</td></tr>';
 
     shadowBody.innerHTML = (shadowRows || []).map(r => `
       <tr>
@@ -1208,7 +1209,7 @@ async function loadStrategies() {
       </tr>
     `).join('') || '<tr><td colspan="7" style="color:var(--muted)">No shadow reports</td></tr>';
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
     shadowBody.innerHTML = `<tr><td colspan="7" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
   }
 }
