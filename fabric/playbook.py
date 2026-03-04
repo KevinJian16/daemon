@@ -602,6 +602,34 @@ class PlaybookFabric:
             rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
+    def list_experiments(
+        self,
+        strategy_id: str | None = None,
+        cluster_id: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        sql = "SELECT * FROM strategy_experiments WHERE 1=1"
+        params: list[Any] = []
+        if strategy_id:
+            sql += " AND strategy_id=?"
+            params.append(strategy_id)
+        if cluster_id:
+            sql += " AND cluster_id=?"
+            params.append(cluster_id)
+        sql += " ORDER BY created_utc DESC LIMIT ?"
+        params.append(max(1, min(limit, 5000)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        out: list[dict] = []
+        for row in rows:
+            d = dict(row)
+            try:
+                d["score_components"] = json.loads(d.get("score_components") or "{}")
+            except Exception:
+                d["score_components"] = {}
+            out.append(d)
+        return out
+
     def _append_strategy_event(self, event: str, payload: dict) -> None:
         """Append to state/telemetry/strategy_events.jsonl (mandatory audit log)."""
         import os

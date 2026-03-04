@@ -79,6 +79,9 @@
   <button onclick="show('policy', this)">Policy</button>
   <button onclick="show('traces', this)">Traces</button>
   <button onclick="show('cortex', this)">Cortex</button>
+  <button onclick="show('strategies', this)">Strategies</button>
+  <button onclick="show('semantics', this)">Semantics</button>
+  <button onclick="show('model', this)">Model</button>
   <button onclick="show('agents', this)">Agents</button>
   <button onclick="show('skill-evolution', this)">Skill Evolution</button>
   <button onclick="show('schedules', this)">Schedules</button>
@@ -232,6 +235,59 @@
   </div>
 </div>
 
+<!-- STRATEGY CONTROL -->
+<div id="panel-strategies" class="panel">
+  <div class="card">
+    <div class="search-row">
+      <input id="strategy-cluster-filter" placeholder="cluster_id (optional)" style="width:260px">
+      <select id="strategy-stage-filter">
+        <option value="">All stages</option>
+        <option value="champion">champion</option>
+        <option value="challenger">challenger</option>
+        <option value="shadow">shadow</option>
+        <option value="candidate">candidate</option>
+        <option value="retired">retired</option>
+      </select>
+      <button class="action" onclick="loadStrategies()">Refresh</button>
+    </div>
+    <table>
+      <thead><tr><th>Strategy ID</th><th>Cluster</th><th>Stage</th><th>Global</th><th>Samples</th><th>Updated</th><th>Action</th></tr></thead>
+      <tbody id="strategies-tbody"><tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h3>Shadow Comparison Report</h3>
+    <table>
+      <thead><tr><th>Task</th><th>Shadow Of</th><th>Cluster</th><th>Shadow</th><th>Champion</th><th>Delta</th><th>UTC</th></tr></thead>
+      <tbody id="shadow-report-tbody"><tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- SEMANTIC CONTROL -->
+<div id="panel-semantics" class="panel">
+  <div class="card">
+    <h3>Semantic Registry</h3>
+    <pre id="semantics-detail">Loading…</pre>
+  </div>
+</div>
+
+<!-- MODEL CONTROL -->
+<div id="panel-model" class="panel">
+  <div class="card">
+    <div class="search-row">
+      <button class="action" onclick="loadModelControl()">Refresh</button>
+      <button class="action" style="background:#14532d" onclick="saveModelPolicy()">Save Policy</button>
+    </div>
+    <h3>Model Policy</h3>
+    <textarea id="model-policy-editor" class="editor" style="min-height:240px"></textarea>
+  </div>
+  <div class="card">
+    <h3>Model Usage (Aggregated)</h3>
+    <pre id="model-usage-summary">Loading…</pre>
+  </div>
+</div>
+
 <!-- AGENT MANAGER -->
 <div id="panel-agents" class="panel">
   <div class="card">
@@ -324,6 +380,7 @@ let activePlaybookMethod = null;
 let currentPolicyScope = 'quality';
 let currentPolicyType = 'default';
 let currentPolicyVersions = [];
+let currentModelPolicy = {};
 
 function show(panel, el) {
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
@@ -336,6 +393,9 @@ function show(panel, el) {
   else if (panel === 'policy') loadPolicy();
   else if (panel === 'traces') loadTraces();
   else if (panel === 'cortex') loadCortexUsage();
+  else if (panel === 'strategies') loadStrategies();
+  else if (panel === 'semantics') loadSemantics();
+  else if (panel === 'model') loadModelControl();
   else if (panel === 'agents') loadAgents();
   else if (panel === 'skill-evolution') loadSkillEvolution();
   else if (panel === 'schedules') loadSchedules();
@@ -1065,6 +1125,136 @@ async function loadCortexUsage() {
   }
 }
 
+async function loadStrategies() {
+  const tbody = document.getElementById('strategies-tbody');
+  const shadowBody = document.getElementById('shadow-report-tbody');
+  const cluster = document.getElementById('strategy-cluster-filter')?.value?.trim() || '';
+  const stage = document.getElementById('strategy-stage-filter')?.value || '';
+  let url = '/console/strategies';
+  const qs = [];
+  if (cluster) qs.push('cluster_id=' + encodeURIComponent(cluster));
+  if (stage) qs.push('stage=' + encodeURIComponent(stage));
+  if (qs.length) url += '?' + qs.join('&');
+  tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr>';
+  shadowBody.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr>';
+  try {
+    const [rows, shadowRows] = await Promise.all([
+      api(url),
+      api('/console/strategies/shadow-report?limit=200'),
+    ]);
+    tbody.innerHTML = (rows || []).map(r => {
+      const sid = String(r.strategy_id || '');
+      const stageBadge = esc(r.stage || '');
+      return `<tr>
+        <td style="color:var(--muted);font-size:11px">${esc(sid)}</td>
+        <td>${esc(r.cluster_display_name || r.cluster_id || '')}<br><span style="color:var(--muted);font-size:10px">${esc(r.cluster_id || '')}</span></td>
+        <td><span class="badge ${r.stage === 'champion' ? 'ok' : r.stage === 'challenger' ? 'degraded' : 'hybrid'}">${stageBadge}</span></td>
+        <td>${r.global_score != null ? Number(r.global_score).toFixed(4) : '—'}</td>
+        <td>${Number(r.sample_n || 0)}</td>
+        <td style="color:var(--muted)">${(r.updated_utc || '').replace('T',' ').replace('Z','')}</td>
+        <td>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#14532d" onclick="promoteStrategy('${encodeURIComponent(sid)}')">Promote</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackStrategy('${encodeURIComponent(sid)}')">Rollback</button>
+        </td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="7" style="color:var(--muted)">No strategies</td></tr>';
+
+    shadowBody.innerHTML = (shadowRows || []).map(r => `
+      <tr>
+        <td style="color:var(--muted);font-size:11px">${esc(r.task_id || '')}</td>
+        <td style="color:var(--muted);font-size:11px">${esc(r.shadow_of || '')}</td>
+        <td>${esc(r.cluster_id || '')}</td>
+        <td>${Number(r.shadow_global_score || 0).toFixed(4)}</td>
+        <td>${Number(r.champion_global_score || 0).toFixed(4)}</td>
+        <td><span class="badge ${Number(r.delta_global_score || 0) >= 0 ? 'ok' : 'error'}">${Number(r.delta_global_score || 0).toFixed(4)}</span></td>
+        <td style="color:var(--muted)">${(r.created_utc || '').replace('T',' ').replace('Z','')}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="7" style="color:var(--muted)">No shadow reports</td></tr>';
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+    shadowBody.innerHTML = `<tr><td colspan="7" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function promoteStrategy(sidKey) {
+  const strategyId = decodeURIComponent(sidKey || '');
+  if (!strategyId) return;
+  const nextStage = prompt(`Promote ${strategyId} to stage (default champion):`, 'champion') || 'champion';
+  const reason = prompt('Promotion reason:', 'manual_promotion') || 'manual_promotion';
+  try {
+    await apiWrite('/console/strategies/' + encodeURIComponent(strategyId) + '/promote', 'POST', {
+      next_stage: nextStage,
+      reason,
+      decided_by: 'console',
+    });
+    await loadStrategies();
+  } catch (e) {
+    alert('Promote failed: ' + e.message);
+  }
+}
+
+async function rollbackStrategy(sidKey) {
+  const strategyId = decodeURIComponent(sidKey || '');
+  if (!strategyId) return;
+  const reason = prompt('Rollback reason:', 'manual_rollback') || 'manual_rollback';
+  try {
+    await apiWrite('/console/strategies/' + encodeURIComponent(strategyId) + '/rollback', 'POST', {
+      reason,
+      decided_by: 'console',
+    });
+    await loadStrategies();
+  } catch (e) {
+    alert('Rollback failed: ' + e.message);
+  }
+}
+
+async function loadSemantics() {
+  const target = document.getElementById('semantics-detail');
+  target.textContent = 'Loading semantic data…';
+  try {
+    const res = await api('/console/semantics');
+    target.textContent = JSON.stringify(res, null, 2);
+  } catch (e) {
+    target.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function loadModelControl() {
+  const editor = document.getElementById('model-policy-editor');
+  const summary = document.getElementById('model-usage-summary');
+  editor.value = '';
+  summary.textContent = 'Loading model usage…';
+  try {
+    const [policy, usage] = await Promise.all([
+      api('/console/model-policy'),
+      api('/console/model-usage?limit=1000'),
+    ]);
+    currentModelPolicy = policy || {};
+    editor.value = JSON.stringify(currentModelPolicy, null, 2);
+    summary.textContent = JSON.stringify(usage?.summary || usage || {}, null, 2);
+  } catch (e) {
+    summary.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function saveModelPolicy() {
+  const editor = document.getElementById('model-policy-editor');
+  const raw = editor?.value || '{}';
+  let parsed = {};
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    alert('Policy JSON invalid: ' + e.message);
+    return;
+  }
+  try {
+    await apiWrite('/console/model-policy', 'PUT', parsed);
+    await loadModelControl();
+  } catch (e) {
+    alert('Save model policy failed: ' + e.message);
+  }
+}
+
 async function loadAgents() {
   const agents = await api('/console/agents');
   document.getElementById('agents-tbody').innerHTML = agents.map(a =>
@@ -1324,6 +1514,9 @@ function refreshAll() {
   else if (active?.id === 'panel-policy') loadPolicy();
   else if (active?.id === 'panel-traces') loadTraces();
   else if (active?.id === 'panel-cortex') loadCortexUsage();
+  else if (active?.id === 'panel-strategies') loadStrategies();
+  else if (active?.id === 'panel-semantics') loadSemantics();
+  else if (active?.id === 'panel-model') loadModelControl();
   else if (active?.id === 'panel-agents') loadAgents();
   else if (active?.id === 'panel-skill-evolution') loadSkillEvolution();
   else if (active?.id === 'panel-schedules') loadSchedules();

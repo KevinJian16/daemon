@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import time
 import uuid
 from pathlib import Path
@@ -296,7 +297,100 @@ class Dispatch:
             }
 
         self._nerve.emit("task_submitted", {"task_id": task_id, "run_root": run_root})
+        await self._maybe_submit_shadow(plan, parent_task_id=task_id)
         return {"ok": True, "task_id": task_id, "status": "running", "run_root": run_root}
+
+    async def _maybe_submit_shadow(self, plan: dict, parent_task_id: str) -> None:
+        """Submit a shadow run on a non-champion strategy without impacting primary delivery."""
+        if plan.get("is_shadow"):
+            return
+        if not self._temporal:
+            return
+        ratio = self._shadow_ratio()
+        if ratio <= 0:
+            return
+        if random.random() > ratio:
+            return
+
+        cluster_id = str(plan.get("cluster_id") or "")
+        champion_strategy_id = str(plan.get("strategy_id") or "")
+        candidate = self._pick_shadow_candidate(cluster_id, champion_strategy_id)
+        if not candidate:
+            return
+
+        shadow_task_id = f"{parent_task_id}_shadow_{uuid.uuid4().hex[:6]}"
+        shadow_plan = dict(plan)
+        shadow_plan["task_id"] = shadow_task_id
+        shadow_plan["is_shadow"] = True
+        shadow_plan["shadow_of"] = parent_task_id
+        shadow_plan["strategy_id"] = candidate.get("strategy_id", "")
+        shadow_plan["strategy_stage"] = "shadow"
+        shadow_plan["shadow_champion_strategy_id"] = champion_strategy_id
+        shadow_plan["delivery_mode"] = "shadow"
+
+        spec = candidate.get("spec") if isinstance(candidate.get("spec"), dict) else {}
+        if spec:
+            if isinstance(spec.get("concurrency"), dict):
+                current = shadow_plan.get("concurrency") if isinstance(shadow_plan.get("concurrency"), dict) else {}
+                shadow_plan["concurrency"] = {**spec.get("concurrency", {}), **current}
+            if isinstance(spec.get("timeout_hints"), dict):
+                current_hints = shadow_plan.get("timeout_hints") if isinstance(shadow_plan.get("timeout_hints"), dict) else {}
+                shadow_plan["timeout_hints"] = {**spec.get("timeout_hints", {}), **current_hints}
+
+        run_root = self._make_run_root(shadow_task_id, is_shadow=True)
+        self._record_task(shadow_plan, "running_shadow", run_root)
+        try:
+            workflow_id = f"daemon-shadow-{shadow_task_id}"
+            await self._temporal.submit(workflow_id, shadow_plan, run_root)
+        except Exception as exc:
+            logger.warning("Shadow submit failed for %s: %s", shadow_task_id, exc)
+            self._record_task({**shadow_plan, "last_error": str(exc)[:300]}, "failed_submission", run_root)
+            return
+
+        self._nerve.emit(
+            "shadow_submitted",
+            {
+                "task_id": shadow_task_id,
+                "shadow_of": parent_task_id,
+                "strategy_id": shadow_plan.get("strategy_id", ""),
+                "cluster_id": cluster_id,
+            },
+        )
+
+    def _shadow_ratio(self) -> float:
+        raw = self._compass.get_pref("strategy_shadow_ratio", "0.10")
+        try:
+            ratio = float(raw)
+        except Exception:
+            return 0.10
+        return max(0.0, min(1.0, ratio))
+
+    def _pick_shadow_candidate(self, cluster_id: str, champion_strategy_id: str) -> dict | None:
+        if not cluster_id:
+            return None
+        all_rows = self._playbook.list_strategies(cluster_id=cluster_id)
+        if not all_rows:
+            return None
+        preferred = [
+            r
+            for r in all_rows
+            if str(r.get("strategy_id") or "") != champion_strategy_id
+            and str(r.get("stage") or "") in {"shadow", "challenger"}
+        ]
+        fallback = [
+            r
+            for r in all_rows
+            if str(r.get("strategy_id") or "") != champion_strategy_id
+            and str(r.get("stage") or "") in {"candidate"}
+        ]
+        candidates = preferred or fallback
+        if not candidates:
+            return None
+        return sorted(
+            candidates,
+            key=lambda x: (float(x.get("global_score") or 0.0), int(x.get("sample_n") or 0)),
+            reverse=True,
+        )[0]
 
     def _annotate_capability_graph(self, plan: dict, cluster_id: str) -> None:
         """Ensure each DAG node carries capability_id + quality_contract_id."""
@@ -381,8 +475,8 @@ class Dispatch:
         except Exception as exc:
             logger.warning("Failed to update replay state for %s: %s", task_id, exc)
 
-    def _make_run_root(self, task_id: str) -> str:
-        runs_dir = self._state / "runs" / task_id
+    def _make_run_root(self, task_id: str, is_shadow: bool = False) -> str:
+        runs_dir = (self._state / "runs_shadow" / task_id) if is_shadow else (self._state / "runs" / task_id)
         runs_dir.mkdir(parents=True, exist_ok=True)
         return str(runs_dir)
 

@@ -152,6 +152,7 @@ class DaemonActivities:
         home = self._home
         state = home / "state"
         compass = CompassFabric(state / "compass.db")
+        is_shadow = bool(plan.get("is_shadow", False))
 
         task_type = str(plan.get("task_type") or "default").strip()
         profile = compass.get_quality_profile(task_type)
@@ -172,14 +173,16 @@ class DaemonActivities:
                 "detail": check_result["detail"],
             }
 
-        # Archive to outcome/.
-        outcome_path = self._archive_outcome(run_root, plan, render_path, step_results)
-
-        # Update outcome index.
-        self._update_outcome_index(outcome_path, plan)
+        if is_shadow:
+            outcome_path = self._archive_shadow_outcome(run_root, plan, render_path, step_results)
+        else:
+            # Archive to outcome/.
+            outcome_path = self._archive_outcome(run_root, plan, render_path, step_results)
+            # Update outcome index.
+            self._update_outcome_index(outcome_path, plan)
 
         # Update task status.
-        self._update_task_status(run_root, plan, "completed")
+        self._update_task_status(run_root, plan, "completed_shadow" if is_shadow else "completed")
 
         # Emit cross-process events for API process.
         task_id = str(plan.get("task_id") or "")
@@ -187,9 +190,10 @@ class DaemonActivities:
             "task_id": task_id,
             "plan": plan,
             "step_results": step_results,
-            "outcome": {"ok": True, "score": 1.0, "outcome_path": str(outcome_path)},
+            "outcome": {"ok": True, "score": 1.0, "outcome_path": str(outcome_path), "is_shadow": is_shadow},
         }
-        self._event_bridge.emit("delivery_completed", delivery_payload)
+        if not is_shadow:
+            self._event_bridge.emit("delivery_completed", delivery_payload)
         self._event_bridge.emit("task_completed", delivery_payload)
         activity.logger.info(f"Delivery completed for task {task_id}; bridge events emitted")
 
@@ -198,6 +202,7 @@ class DaemonActivities:
             "outcome_path": str(outcome_path),
             "task_id": task_id,
             "delivered_utc": _utc(),
+            "is_shadow": is_shadow,
         }
 
     # ── Task status ───────────────────────────────────────────────────────────
@@ -337,6 +342,40 @@ class DaemonActivities:
         self._generate_pdf_best_effort(dest, render_path)
 
         return dest
+
+    def _archive_shadow_outcome(self, run_root: str, plan: dict, render_path: Path, step_results: list[dict]) -> Path:
+        task_id = str(plan.get("task_id") or uuid.uuid4().hex[:8])
+        shadow_of = str(plan.get("shadow_of") or "")
+        strategy_id = str(plan.get("strategy_id") or "")
+        dest = self._home / "state" / "shadow_outcomes" / task_id
+        dest.mkdir(parents=True, exist_ok=True)
+
+        suffix = render_path.suffix or ".html"
+        dest_file = dest / f"report{suffix}"
+        dest_file.write_text(render_path.read_text())
+        manifest = {
+            "task_id": task_id,
+            "shadow_of": shadow_of,
+            "strategy_id": strategy_id,
+            "task_type": str(plan.get("task_type") or ""),
+            "run_root": run_root,
+            "steps": len(step_results),
+            "delivered_utc": _utc(),
+            "is_shadow": True,
+        }
+        (dest / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
+        self._generate_pdf_best_effort(dest, render_path)
+        self._append_shadow_audit(manifest)
+        return dest
+
+    def _append_shadow_audit(self, manifest: dict) -> None:
+        path = self._home / "state" / "telemetry" / "shadow_delivery.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(manifest, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            activity.logger.warning("Failed to append shadow audit: %s", exc)
 
     def _update_outcome_index(self, outcome_path: Path, plan: dict) -> None:
         index_path = self._home / "outcome" / "index.json"

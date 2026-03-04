@@ -771,6 +771,31 @@ def create_app() -> FastAPI:
             row["task_type_compat"] = cluster.get("task_type_compat", "")
         return strategies
 
+    @app.get("/console/strategies/shadow-report")
+    def shadow_report(limit: int = 200):
+        path = state / "telemetry" / "shadow_comparisons.jsonl"
+        if not path.exists():
+            return []
+        rows: list[dict] = []
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except Exception as exc:
+            logger.warning("Failed to read shadow report file: %s", exc)
+            return []
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+            if len(rows) >= max(1, min(limit, 2000)):
+                break
+        return rows
+
     @app.post("/console/strategies/{strategy_id}/promote")
     async def promote_strategy(strategy_id: str, request: Request):
         body = await request.json()

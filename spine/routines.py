@@ -5,6 +5,7 @@ import json
 import logging
 import time
 import calendar
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -198,6 +199,16 @@ class SpineRoutines:
                     global_score=strategy_global_score,
                     trace_id=ctx.trace_id,
                 )
+                if bool(plan.get("is_shadow")):
+                    self._write_shadow_comparison(
+                        task_id=task_id,
+                        shadow_of=str(plan.get("shadow_of") or ""),
+                        cluster_id=cluster_id,
+                        strategy_id=strategy_id,
+                        champion_strategy_id=str(plan.get("shadow_champion_strategy_id") or ""),
+                        global_score=strategy_global_score,
+                        global_components=strategy_components,
+                    )
                 ctx.step(
                     "strategy_recorded",
                     {
@@ -651,9 +662,11 @@ class SpineRoutines:
             return f"error: {str(e)[:80]}"
 
     def _judge_strategies(self) -> dict:
-        min_samples = int(self.compass.get_pref("strategy_min_samples", "12") or 12)
+        min_samples = int(self.compass.get_pref("strategy_min_samples", "20") or 20)
         promote_delta = float(self.compass.get_pref("strategy_promote_delta", "0.03") or 0.03)
         rollback_delta = float(self.compass.get_pref("strategy_rollback_delta", "0.08") or 0.08)
+        conf_threshold = float(self.compass.get_pref("strategy_confidence_threshold", "0.95") or 0.95)
+        window_size = int(self.compass.get_pref("strategy_eval_window", "5") or 5)
 
         clusters = self.playbook.list_clusters()
         strategies = self.playbook.list_strategies()
@@ -664,25 +677,31 @@ class SpineRoutines:
 
         promotions = 0
         rollbacks = 0
+        confidence_blocked = 0
         checked = 0
+
         for c in clusters:
             cluster_id = str(c.get("cluster_id") or "")
             rows = by_cluster.get(cluster_id, [])
             if not rows:
                 continue
             checked += 1
+            metrics = self._strategy_cluster_metrics(cluster_id)
 
             champions = [r for r in rows if str(r.get("stage") or "") == "champion"]
             champion = sorted(champions, key=lambda x: str(x.get("updated_utc") or ""), reverse=True)[0] if champions else None
             candidates = [
                 r for r in rows
                 if str(r.get("stage") or "") in {"shadow", "challenger", "candidate"}
-                and r.get("global_score") is not None
-                and int(r.get("sample_n") or 0) >= min_samples
+                and int((metrics.get(str(r.get("strategy_id") or ""), {}) or {}).get("n", 0)) >= min_samples
             ]
             if not candidates:
                 continue
-            best = sorted(candidates, key=lambda x: float(x.get("global_score") or 0.0), reverse=True)[0]
+            best = sorted(
+                candidates,
+                key=lambda x: float((metrics.get(str(x.get("strategy_id") or ""), {}) or {}).get("mean", 0.0)),
+                reverse=True,
+            )[0]
 
             if not champion:
                 self.playbook.promote_strategy(
@@ -696,21 +715,58 @@ class SpineRoutines:
                 promotions += 1
                 continue
 
-            champion_score = float(champion.get("global_score") or 0.0)
-            best_score = float(best.get("global_score") or 0.0)
-            champion_n = int(champion.get("sample_n") or 0)
+            champion_id = str(champion.get("strategy_id") or "")
+            best_id = str(best.get("strategy_id") or "")
+            if not champion_id or not best_id or champion_id == best_id:
+                continue
+            m_ch = metrics.get(champion_id, {})
+            m_best = metrics.get(best_id, {})
+            if int(m_ch.get("n", 0)) < min_samples:
+                continue
 
-            if champion_n >= min_samples and (champion_score - best_score) >= rollback_delta:
+            mean_ch = float(m_ch.get("mean", 0.0))
+            mean_best = float(m_best.get("mean", 0.0))
+            var_ch = float(m_ch.get("var", 0.0))
+            var_best = float(m_best.get("var", 0.0))
+            n_ch = int(m_ch.get("n", 0))
+            n_best = int(m_best.get("n", 0))
+            se = math.sqrt(max((var_best / max(n_best, 1)) + (var_ch / max(n_ch, 1)), 1e-9))
+            z = (mean_best - mean_ch) / se if se > 0 else 0.0
+            confidence = self._normal_cdf(z)
+
+            comp_ch = m_ch.get("components", {})
+            comp_best = m_best.get("components", {})
+            quality_ok = float(comp_best.get("quality", 0.0)) >= float(comp_ch.get("quality", 0.0)) + 0.03
+            stability_ok = float(comp_best.get("stability", 0.0)) >= float(comp_ch.get("stability", 0.0)) - 0.01
+            latency_ok = float(comp_best.get("latency", 0.0)) >= float(comp_ch.get("latency", 0.0)) - 0.20
+            cost_ok = float(comp_best.get("cost", 0.0)) >= float(comp_ch.get("cost", 0.0)) - 0.25
+
+            if confidence < conf_threshold:
+                confidence_blocked += 1
+                self.playbook._append_strategy_event(
+                    "promotion_guard_blocked",
+                    {
+                        "cluster_id": cluster_id,
+                        "champion": champion_id,
+                        "candidate": best_id,
+                        "reason": "promotion_confidence_low",
+                        "confidence": round(confidence, 4),
+                    },
+                )
+
+            champion_scores = list(m_ch.get("scores", []))
+            degraded = self._is_window_degraded(champion_scores, window_size, rollback_delta)
+            if degraded and mean_ch - mean_best >= rollback_delta and confidence >= conf_threshold:
                 self.playbook.promote_strategy(
-                    strategy_id=str(champion.get("strategy_id") or ""),
+                    strategy_id=champion_id,
                     decision="rollback_auto",
                     prev_stage="champion",
                     next_stage="challenger",
-                    reason="champion_significant_degradation",
+                    reason="champion_two_window_degradation",
                     decided_by="spine.judge",
                 )
                 self.playbook.promote_strategy(
-                    strategy_id=str(best.get("strategy_id") or ""),
+                    strategy_id=best_id,
                     decision="promote_auto",
                     prev_stage=str(best.get("stage") or "candidate"),
                     next_stage="champion",
@@ -720,17 +776,22 @@ class SpineRoutines:
                 rollbacks += 1
                 continue
 
-            if best_score >= champion_score + promote_delta:
+            promote_ok = (
+                mean_best >= mean_ch + promote_delta
+                and quality_ok and stability_ok and latency_ok and cost_ok
+                and confidence >= conf_threshold
+            )
+            if promote_ok:
                 self.playbook.promote_strategy(
-                    strategy_id=str(best.get("strategy_id") or ""),
+                    strategy_id=best_id,
                     decision="promote_auto",
                     prev_stage=str(best.get("stage") or "candidate"),
                     next_stage="champion",
-                    reason=f"score_delta>={promote_delta}",
+                    reason=f"global_delta={round(mean_best - mean_ch, 4)},confidence={round(confidence, 4)}",
                     decided_by="spine.judge",
                 )
                 self.playbook.promote_strategy(
-                    strategy_id=str(champion.get("strategy_id") or ""),
+                    strategy_id=champion_id,
                     decision="demote_auto",
                     prev_stage="champion",
                     next_stage="challenger",
@@ -743,10 +804,69 @@ class SpineRoutines:
             "clusters_checked": checked,
             "promotions": promotions,
             "rollbacks": rollbacks,
+            "confidence_blocked": confidence_blocked,
             "min_samples": min_samples,
             "promote_delta": promote_delta,
             "rollback_delta": rollback_delta,
+            "confidence_threshold": conf_threshold,
+            "window_size": window_size,
         }
+
+    def _strategy_cluster_metrics(self, cluster_id: str) -> dict[str, dict]:
+        rows = self.playbook.list_experiments(cluster_id=cluster_id, limit=2000)
+        by_sid: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            sid = str(row.get("strategy_id") or "")
+            if not sid:
+                continue
+            rec = by_sid.setdefault(
+                sid,
+                {"scores": [], "quality": [], "stability": [], "latency": [], "cost": []},
+            )
+            rec["scores"].append(float(row.get("global_score") or 0.0))
+            comp = row.get("score_components") if isinstance(row.get("score_components"), dict) else {}
+            rec["quality"].append(float(comp.get("quality", 0.0)))
+            rec["stability"].append(float(comp.get("stability", 0.0)))
+            rec["latency"].append(float(comp.get("latency", 0.0)))
+            rec["cost"].append(float(comp.get("cost", 0.0)))
+
+        out: dict[str, dict] = {}
+        for sid, vals in by_sid.items():
+            scores = vals.get("scores", [])
+            if not scores:
+                continue
+            n = len(scores)
+            mean = sum(scores) / max(n, 1)
+            var = sum((x - mean) ** 2 for x in scores) / max(n - 1, 1)
+            out[sid] = {
+                "n": n,
+                "mean": mean,
+                "var": var,
+                "scores": scores,
+                "components": {
+                    "quality": sum(vals.get("quality", [])) / max(len(vals.get("quality", [])), 1),
+                    "stability": sum(vals.get("stability", [])) / max(len(vals.get("stability", [])), 1),
+                    "latency": sum(vals.get("latency", [])) / max(len(vals.get("latency", [])), 1),
+                    "cost": sum(vals.get("cost", [])) / max(len(vals.get("cost", [])), 1),
+                },
+            }
+        return out
+
+    def _is_window_degraded(self, scores: list[float], window_size: int, delta: float) -> bool:
+        if len(scores) < max(window_size * 2, 2):
+            return False
+        # scores are newest first from list_experiments; convert to chronological for stable windows.
+        ordered = list(reversed(scores))
+        prev = ordered[-2 * window_size:-window_size]
+        curr = ordered[-window_size:]
+        if not prev or not curr:
+            return False
+        prev_mean = sum(prev) / len(prev)
+        curr_mean = sum(curr) / len(curr)
+        return (prev_mean - curr_mean) >= delta
+
+    def _normal_cdf(self, z: float) -> float:
+        return 0.5 * (1.0 + math.erf(float(z) / math.sqrt(2.0)))
 
     def _probe_temporal(self) -> str:
         try:
@@ -982,6 +1102,40 @@ class SpineRoutines:
             tmp.replace(tasks_path)
         except Exception as exc:
             logger.warning("Failed to write strategy updates to tasks.json: %s", exc)
+
+    def _write_shadow_comparison(
+        self,
+        task_id: str,
+        shadow_of: str,
+        cluster_id: str,
+        strategy_id: str,
+        champion_strategy_id: str,
+        global_score: float,
+        global_components: dict,
+    ) -> None:
+        champion = self.playbook.get_strategy(champion_strategy_id) if champion_strategy_id else None
+        champion_score = float(champion.get("global_score") or 0.0) if champion else 0.0
+        champion_components = champion.get("score_components", {}) if champion and isinstance(champion.get("score_components"), dict) else {}
+        row = {
+            "created_utc": _utc(),
+            "task_id": task_id,
+            "shadow_of": shadow_of,
+            "cluster_id": cluster_id,
+            "shadow_strategy_id": strategy_id,
+            "champion_strategy_id": champion_strategy_id,
+            "shadow_global_score": round(float(global_score or 0.0), 4),
+            "champion_global_score": round(champion_score, 4),
+            "delta_global_score": round(float(global_score or 0.0) - champion_score, 4),
+            "shadow_components": global_components,
+            "champion_components": champion_components,
+        }
+        path = self.state_dir / "telemetry" / "shadow_comparisons.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            logger.warning("Failed to write shadow comparison row: %s", exc)
 
     def _collect_openclaw_observations(self) -> dict:
         if not self.openclaw_home:
