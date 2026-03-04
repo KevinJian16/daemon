@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 class SpineRoutines:
-    """Container for all 10 Spine Routines. Each routine returns a result dict."""
+    """Container for all 11 Spine Routines. Each routine returns a result dict."""
 
     def __init__(
         self,
@@ -586,6 +586,19 @@ class SpineRoutines:
                 (router_mem / "runtime_hints.txt").write_text(hints)
                 ctx.step("runtime_hints_written", True)
 
+                # Write weave_patterns/index.json and structured runtime_hints.json.
+                weave_dir = router_mem / "weave_patterns"
+                weave_dir.mkdir(parents=True, exist_ok=True)
+                weave_index = self._build_weave_index(weave_dir)
+                (weave_dir / "index.json").write_text(
+                    json.dumps(weave_index, ensure_ascii=False, indent=2)
+                )
+                hints_json = self._build_runtime_hints_json(mem_snap, pb_snap, cp_snap, weave_index)
+                (router_mem / "runtime_hints.json").write_text(
+                    json.dumps(hints_json, ensure_ascii=False, indent=2)
+                )
+                ctx.step("weave_index_written", weave_index.get("total_patterns", 0))
+
             result = {"snapshots": 6, "skill_index": index_written, "model_policy_snapshot": True, "model_registry_snapshot": True}
             ctx.set_result(result)
         return result
@@ -618,11 +631,46 @@ class SpineRoutines:
             cleaned = self._clean_old_traces(max_age_days=7)
             ctx.step("traces_cleaned", cleaned)
 
+            # Check Weave pattern pressure; emit nerve event if over threshold.
+            weave_count = self._check_weave_pressure()
+            if weave_count is not None:
+                ctx.step("weave_pressure_checked", weave_count)
+
             result = {
                 "memory_archived": mem_result.get("archived", 0),
                 "signals_removed": signals_removed,
                 "tasks_replayed": replayed,
                 "traces_cleaned": cleaned,
+                "weave_pattern_count": weave_count,
+            }
+            ctx.set_result(result)
+        return result
+
+    # ── 11. librarian ─────────────────────────────────────────────────────────
+
+    def librarian(self) -> dict:
+        """Cache governance: recompute method tiers, prune stale Weave patterns, merge cold duplicates."""
+        with self.tracer.span("spine.librarian", trigger="cron") as ctx:
+            # Recompute value_score and reassign tiers by re-running judge().
+            judge_result = self.playbook.judge()
+            tiered = judge_result.get("tiered", {})
+            ctx.step("tiers_refreshed", tiered)
+
+            # Prune cold Weave patterns (archive >90 days, delete >180 days).
+            prune_result = self._prune_weave_patterns()
+            ctx.step("weave_pruned", prune_result)
+
+            # Merge cold-tier duplicate methods.
+            merge_result = self._librarian_merge_methods()
+            ctx.step("methods_merged", merge_result)
+
+            result = {
+                "hot": tiered.get("hot", 0),
+                "warm": tiered.get("warm", 0),
+                "cold": tiered.get("cold", 0),
+                "weave_patterns_archived": prune_result.get("archived", 0),
+                "weave_patterns_deleted": prune_result.get("deleted", 0),
+                "methods_merged": merge_result.get("merged", 0),
             }
             ctx.set_result(result)
         return result
@@ -1208,7 +1256,7 @@ class SpineRoutines:
     def _read_router_patterns(self, limit: int = 30) -> list[dict]:
         if not self.openclaw_home:
             return []
-        root = self.openclaw_home / "workspace" / "router" / "memory" / "langgraph_patterns"
+        root = self.openclaw_home / "workspace" / "router" / "memory" / "weave_patterns"
         if not root.exists():
             return []
         out: list[dict] = []
@@ -1398,3 +1446,126 @@ class SpineRoutines:
                 f.unlink()
                 cleaned += 1
         return cleaned
+
+    def _check_weave_pressure(self) -> int | None:
+        """Count Weave patterns; emit weave_pressure nerve event if over threshold (200)."""
+        if not self.openclaw_home:
+            return None
+        PRESSURE_THRESHOLD = 200
+        weave_dir = self.openclaw_home / "workspace" / "router" / "memory" / "weave_patterns"
+        if not weave_dir.exists():
+            return None
+        count = sum(1 for p in weave_dir.glob("*") if p.is_file() and p.name != "index.json")
+        if count >= PRESSURE_THRESHOLD:
+            self.nerve.emit("weave_pressure", {"pattern_count": count, "threshold": PRESSURE_THRESHOLD})
+        return count
+
+    def _prune_weave_patterns(self) -> dict:
+        """Archive cold Weave patterns (>90 days) and delete archived ones (>180 days)."""
+        if not self.openclaw_home:
+            return {"skipped": True, "archived": 0, "deleted": 0}
+        weave_dir = self.openclaw_home / "workspace" / "router" / "memory" / "weave_patterns"
+        if not weave_dir.exists():
+            return {"skipped": True, "archived": 0, "deleted": 0}
+        archive_dir = weave_dir / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        now_ts = time.time()
+        archived = 0
+        deleted = 0
+        for p in weave_dir.glob("*"):
+            if not p.is_file() or p.name in ("index.json",):
+                continue
+            age_days = (now_ts - p.stat().st_mtime) / 86400.0
+            if age_days >= 90:
+                dest = archive_dir / p.name
+                try:
+                    p.rename(dest)
+                    archived += 1
+                except Exception as exc:
+                    logger.warning("Failed to archive weave pattern %s: %s", p, exc)
+        for p in archive_dir.glob("*"):
+            if not p.is_file():
+                continue
+            age_days = (now_ts - p.stat().st_mtime) / 86400.0
+            if age_days >= 180:
+                try:
+                    p.unlink()
+                    deleted += 1
+                except Exception as exc:
+                    logger.warning("Failed to delete archived pattern %s: %s", p, exc)
+        return {"archived": archived, "deleted": deleted}
+
+    def _build_weave_index(self, weave_dir: Path) -> dict:
+        """Build an index.json summarising all files in the weave_patterns directory."""
+        patterns: list[dict] = []
+        now_ts = time.time()
+        for p in sorted(weave_dir.glob("*")):
+            if not p.is_file() or p.name == "index.json":
+                continue
+            stat = p.stat()
+            age_days = (now_ts - stat.st_mtime) / 86400.0
+            mtime_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime))
+            tier = "hot" if age_days < 14 else ("warm" if age_days < 60 else "cold")
+            patterns.append({
+                "path": p.name,
+                "size_bytes": stat.st_size,
+                "mtime_utc": mtime_utc,
+                "age_days": round(age_days, 1),
+                "tier": tier,
+            })
+        by_tier: dict[str, int] = {"hot": 0, "warm": 0, "cold": 0}
+        for pt in patterns:
+            by_tier[pt["tier"]] = by_tier.get(pt["tier"], 0) + 1
+        return {
+            "generated_utc": _utc(),
+            "total_patterns": len(patterns),
+            "by_tier": by_tier,
+            "patterns": patterns,
+        }
+
+    def _build_runtime_hints_json(self, mem_snap: dict, pb_snap: dict, cp_snap: dict, weave_index: dict) -> dict:
+        """Structured JSON runtime hints for router agent (supplements runtime_hints.txt)."""
+        top_methods = pb_snap.get("methods", [])[:5]
+        top_priorities = cp_snap.get("priorities", [])[:5]
+        hot_patterns = [p for p in weave_index.get("patterns", []) if p.get("tier") == "hot"][:10]
+        return {
+            "generated_utc": _utc(),
+            "top_priorities": [
+                {"domain": p.get("domain"), "weight": p.get("weight")} for p in top_priorities
+            ],
+            "best_methods": [
+                {"name": m.get("name"), "success_rate": m.get("success_rate"), "runs": m.get("total_runs")}
+                for m in top_methods
+            ],
+            "memory_summary": {
+                "active_units": len(mem_snap.get("units", [])),
+                "links": len(mem_snap.get("links", [])),
+            },
+            "weave_summary": {
+                "total_patterns": weave_index.get("total_patterns", 0),
+                "by_tier": weave_index.get("by_tier", {}),
+            },
+            "weave_hot_patterns": hot_patterns,
+        }
+
+    def _librarian_merge_methods(self) -> dict:
+        """Identify and merge cold-tier duplicate methods."""
+        candidates = self.playbook.merge_candidates()
+        if not candidates:
+            return {"merged": 0, "candidates": 0, "skipped": True}
+        merged = 0
+        for pair in candidates:
+            a = pair.get("method_a", {})
+            b = pair.get("method_b", {})
+            if a.get("tier") != "cold" or b.get("tier") != "cold":
+                continue
+            keep_id = str(pair.get("suggested_keep") or "")
+            merge_id = a["method_id"] if keep_id == b["method_id"] else b["method_id"]
+            if not keep_id or not merge_id:
+                continue
+            try:
+                self.playbook.merge(keep_id, [merge_id])
+                merged += 1
+            except Exception as exc:
+                logger.warning("Failed to merge methods %s←%s: %s", keep_id, merge_id, exc)
+        return {"merged": merged, "candidates": len(candidates)}

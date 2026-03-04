@@ -1,7 +1,9 @@
 """Playbook Fabric — procedural knowledge: DAG methods, strategies, evaluations."""
 from __future__ import annotations
 
+import calendar
 import json
+import math
 import os
 import sqlite3
 import time
@@ -17,6 +19,17 @@ def _utc() -> str:
 
 def _new_id(prefix: str = "m") -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def _days_since(iso_utc: str | None) -> float:
+    """Return fractional days since an ISO 8601 UTC timestamp, or 999 if not set."""
+    if not iso_utc:
+        return 999.0
+    try:
+        ts = calendar.timegm(time.strptime(iso_utc, "%Y-%m-%dT%H:%M:%SZ"))
+        return max(0.0, (time.time() - ts) / 86400.0)
+    except Exception:
+        return 999.0
 
 
 _STAGE_TRANSITIONS: dict[str, set[str]] = {
@@ -49,7 +62,12 @@ CREATE TABLE IF NOT EXISTS methods (
     total_runs   INTEGER NOT NULL DEFAULT 0,
     created_utc      TEXT NOT NULL,
     promoted_utc     TEXT,
-    retired_utc      TEXT
+    retired_utc      TEXT,
+    last_used_at TEXT,
+    avg_cost     REAL NOT NULL DEFAULT 0.0,
+    avg_steps    REAL NOT NULL DEFAULT 0.0,
+    tier         TEXT NOT NULL DEFAULT 'warm',
+    value_score  REAL
 );
 
 CREATE TABLE IF NOT EXISTS versions (
@@ -69,7 +87,9 @@ CREATE TABLE IF NOT EXISTS evaluations (
     score        REAL,
     detail_json  TEXT,
     analyzed     INTEGER NOT NULL DEFAULT 0,
-    evaluated_utc TEXT NOT NULL
+    evaluated_utc TEXT NOT NULL,
+    cost         REAL,
+    steps        REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_methods_status   ON methods(status);
@@ -230,6 +250,47 @@ class PlaybookFabric:
     def _init_db(self) -> None:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            # Migrate existing databases: add new columns if missing.
+            for table, col, defn in [
+                ("methods", "last_used_at", "TEXT"),
+                ("methods", "avg_cost",     "REAL DEFAULT 0.0"),
+                ("methods", "avg_steps",    "REAL DEFAULT 0.0"),
+                ("methods", "tier",         "TEXT DEFAULT 'warm'"),
+                ("methods", "value_score",  "REAL"),
+                ("evaluations", "cost",     "REAL"),
+                ("evaluations", "steps",    "REAL"),
+            ]:
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {defn}")
+                except sqlite3.OperationalError:
+                    pass  # Column already exists.
+
+    @staticmethod
+    def _compute_value_score(
+        success_rate: float,
+        total_runs: int,
+        last_used_at: str | None,
+        avg_cost: float,
+        avg_steps: float,
+    ) -> float:
+        """
+        value_score ∈ [0, 1]:
+          0.50 × success_rate
+        + 0.30 × usage_freshness  (exp decay over 60 days)
+        + 0.20 × cost_efficiency  (penalises high avg_cost per step)
+        Returns 0.0 for methods with no runs.
+        """
+        if total_runs < 1:
+            return 0.0
+        freshness = math.exp(-_days_since(last_used_at) / 60.0)
+        cost_per_step = avg_cost / max(avg_steps, 1.0)
+        efficiency = 1.0 / (1.0 + cost_per_step * 0.01)
+        return round(
+            0.50 * min(1.0, max(0.0, success_rate))
+            + 0.30 * freshness
+            + 0.20 * efficiency,
+            4,
+        )
 
     def register(self, name: str, category: str, spec: dict, description: str = "", status: str = "candidate") -> str:
         """Register a new method or bump version if name already exists."""
@@ -262,26 +323,59 @@ class PlaybookFabric:
             )
         return mid
 
-    def evaluate(self, method_id: str, task_id: str | None, outcome: str, score: float | None = None, detail: dict | None = None) -> str:
+    def evaluate(
+        self,
+        method_id: str,
+        task_id: str | None,
+        outcome: str,
+        score: float | None = None,
+        detail: dict | None = None,
+        *,
+        cost: float | None = None,
+        steps: float | None = None,
+    ) -> str:
         """Record one execution result for a method."""
         eid = _new_id("e")
+        now = _utc()
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO evaluations VALUES (?,?,?,?,?,?,?,?)",
-                (eid, method_id, task_id, outcome, score, json.dumps(detail) if detail else None, 0, _utc()),
+                "INSERT INTO evaluations VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (eid, method_id, task_id, outcome, score,
+                 json.dumps(detail) if detail else None, 0, now, cost, steps),
             )
             conn.execute(
-                "UPDATE methods SET total_runs = total_runs + 1 WHERE method_id=?", (method_id,)
+                "UPDATE methods SET total_runs = total_runs + 1, last_used_at = ? WHERE method_id=?",
+                (now, method_id),
             )
+            if cost is not None or steps is not None:
+                row = conn.execute(
+                    "SELECT total_runs, avg_cost, avg_steps FROM methods WHERE method_id=?",
+                    (method_id,),
+                ).fetchone()
+                if row:
+                    n = max(int(row["total_runs"]), 1)
+                    if cost is not None:
+                        new_avg = float(row["avg_cost"] or 0.0) + (cost - float(row["avg_cost"] or 0.0)) / n
+                        conn.execute("UPDATE methods SET avg_cost=? WHERE method_id=?",
+                                     (round(new_avg, 6), method_id))
+                    if steps is not None:
+                        new_avg = float(row["avg_steps"] or 0.0) + (steps - float(row["avg_steps"] or 0.0)) / n
+                        conn.execute("UPDATE methods SET avg_steps=? WHERE method_id=?",
+                                     (round(new_avg, 4), method_id))
         return eid
 
     def consult(self, task_type: str | None = None, category: str = "dag_pattern") -> list[dict]:
-        """Return active methods sorted by success_rate for planning."""
+        """Return active methods ordered by tier (hot→warm→cold) then value_score."""
         with self._conn() as conn:
             rows = conn.execute(
-                """SELECT method_id, name, category, description, spec_json, success_rate, total_runs, version
+                """SELECT method_id, name, category, description, spec_json, success_rate, total_runs, version,
+                          tier, value_score
                    FROM methods WHERE status='active' AND category=?
-                   ORDER BY COALESCE(success_rate, 0.5) DESC, total_runs DESC
+                   ORDER BY
+                     CASE tier WHEN 'hot' THEN 0 WHEN 'warm' THEN 1 ELSE 2 END,
+                     COALESCE(value_score, 0) DESC,
+                     COALESCE(success_rate, 0.5) DESC,
+                     total_runs DESC
                    LIMIT 10""",
                 (category,),
             ).fetchall()
@@ -355,16 +449,19 @@ class PlaybookFabric:
         return cur.rowcount > 0
 
     def judge(self) -> dict:
-        """Promote/retire methods based on deterministic evaluation thresholds."""
+        """Promote/retire methods and recompute value_score + tier for all active methods."""
         PROMOTE_MIN_RUNS = 6
         PROMOTE_MIN_RATE = 0.70
         RETIRE_MIN_RUNS = 8
         RETIRE_MAX_RATE = 0.35
         RETIRE_FAIL_STREAK = 4
+        HOT_THRESHOLD = 0.75
+        COLD_THRESHOLD = 0.35
 
         promoted: list[str] = []
         retired: list[str] = []
         refreshed: list[str] = []
+        tiered: dict[str, int] = {"hot": 0, "warm": 0, "cold": 0}
         now = _utc()
 
         with self._conn() as conn:
@@ -379,14 +476,13 @@ class PlaybookFabric:
                 stats_row = conn.execute(
                     """SELECT
                          COUNT(*) as runs,
-                         AVG(CASE WHEN outcome='success' THEN 1.0 ELSE 0.0 END) as sr,
-                         SUM(CASE WHEN outcome != 'success' THEN 1 ELSE 0 END) as fails
+                         AVG(CASE WHEN outcome='success' THEN 1.0 ELSE 0.0 END) as sr
                        FROM (SELECT outcome FROM evaluations WHERE method_id=? ORDER BY evaluated_utc DESC LIMIT 240)""",
                     (mid,),
                 ).fetchone()
                 runs = int(stats_row["runs"] or 0)
                 sr = stats_row["sr"]
-                # Consecutive fail streak from most recent.
+
                 streak_rows = conn.execute(
                     "SELECT outcome FROM evaluations WHERE method_id=? ORDER BY evaluated_utc DESC LIMIT 20",
                     (mid,),
@@ -411,28 +507,55 @@ class PlaybookFabric:
                         (now, mid),
                     )
                     promoted.append(mid)
-                    continue
+                    status = "active"
 
-                should_retire = (
-                    status == "active"
-                    and runs >= RETIRE_MIN_RUNS
-                    and (
-                        (sr is not None and float(sr) <= RETIRE_MAX_RATE)
-                        or fail_streak >= RETIRE_FAIL_STREAK
+                if status == "active":
+                    should_retire = (
+                        runs >= RETIRE_MIN_RUNS
+                        and (
+                            (sr is not None and float(sr) <= RETIRE_MAX_RATE)
+                            or fail_streak >= RETIRE_FAIL_STREAK
+                        )
                     )
+                    if should_retire:
+                        conn.execute(
+                            "UPDATE methods SET status='retired', retired_utc=? WHERE method_id=?",
+                            (now, mid),
+                        )
+                        retired.append(mid)
+
+            # Recompute value_score and assign tiers for all active methods.
+            active_rows = conn.execute(
+                "SELECT method_id, success_rate, total_runs, last_used_at, avg_cost, avg_steps "
+                "FROM methods WHERE status='active'"
+            ).fetchall()
+            for ar in active_rows:
+                mid = ar["method_id"]
+                vs = PlaybookFabric._compute_value_score(
+                    success_rate=float(ar["success_rate"] or 0.5),
+                    total_runs=int(ar["total_runs"] or 0),
+                    last_used_at=ar["last_used_at"],
+                    avg_cost=float(ar["avg_cost"] or 0.0),
+                    avg_steps=float(ar["avg_steps"] or 0.0),
                 )
-                if should_retire:
-                    conn.execute(
-                        "UPDATE methods SET status='retired', retired_utc=? WHERE method_id=?",
-                        (now, mid),
-                    )
-                    retired.append(mid)
+                if vs >= HOT_THRESHOLD:
+                    tier = "hot"
+                elif vs < COLD_THRESHOLD:
+                    tier = "cold"
+                else:
+                    tier = "warm"
+                conn.execute(
+                    "UPDATE methods SET value_score=?, tier=? WHERE method_id=?",
+                    (vs, tier, mid),
+                )
+                tiered[tier] = tiered.get(tier, 0) + 1
 
         return {
             "checked": len(rows),
             "refreshed": refreshed,
             "promoted": promoted,
             "retired": retired,
+            "tiered": tiered,
         }
 
     def unanalyzed_evaluations(self, limit: int = 100) -> list[dict]:
@@ -456,6 +579,87 @@ class PlaybookFabric:
         """Export active methods as a read-only snapshot."""
         methods = self.consult()
         return {"methods": methods, "exported_utc": _utc()}
+
+    def hot_methods(self, limit: int = 20) -> list[dict]:
+        """Return methods in the hot tier sorted by value_score descending."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """SELECT method_id, name, category, description, spec_json, success_rate, total_runs, version,
+                          tier, value_score, last_used_at, avg_cost, avg_steps
+                   FROM methods WHERE status='active' AND tier='hot'
+                   ORDER BY COALESCE(value_score, 0) DESC, total_runs DESC
+                   LIMIT ?""",
+                (max(1, min(limit, 200)),),
+            ).fetchall()
+        results = []
+        for r in rows:
+            m = dict(r)
+            m["spec"] = json.loads(m.pop("spec_json"))
+            results.append(m)
+        return results
+
+    def merge_candidates(self) -> list[dict]:
+        """Return pairs of active methods with similar names that may be redundant."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT method_id, name, value_score, total_runs, success_rate, tier "
+                "FROM methods WHERE status='active' ORDER BY name"
+            ).fetchall()
+        methods = [dict(r) for r in rows]
+        pairs: list[dict] = []
+        for i, a in enumerate(methods):
+            for b in methods[i + 1:]:
+                na = a["name"].lower().replace("_", " ")
+                nb = b["name"].lower().replace("_", " ")
+                prefix_len = sum(1 for ca, cb in zip(na, nb) if ca == cb)
+                if prefix_len >= 6 and na[:prefix_len] == nb[:prefix_len]:
+                    suggested_keep = (
+                        a["method_id"]
+                        if (a.get("value_score") or 0) >= (b.get("value_score") or 0)
+                        else b["method_id"]
+                    )
+                    pairs.append({
+                        "method_a": a,
+                        "method_b": b,
+                        "common_prefix": a["name"][:prefix_len],
+                        "suggested_keep": suggested_keep,
+                    })
+        return pairs
+
+    def merge(self, keep_id: str, merge_from_ids: list[str]) -> dict:
+        """Adopt evaluations from merge_from_ids into keep_id and retire the merged methods."""
+        if not merge_from_ids:
+            return {"kept": keep_id, "retired": [], "evals_moved": 0}
+        now = _utc()
+        evals_moved = 0
+        retired: list[str] = []
+        with self._conn() as conn:
+            for mid in merge_from_ids:
+                if mid == keep_id:
+                    continue
+                if not conn.execute("SELECT 1 FROM methods WHERE method_id=?", (mid,)).fetchone():
+                    continue
+                moved = conn.execute(
+                    "UPDATE evaluations SET method_id=? WHERE method_id=?",
+                    (keep_id, mid),
+                ).rowcount
+                evals_moved += moved
+                conn.execute(
+                    "UPDATE methods SET status='retired', retired_utc=? WHERE method_id=?",
+                    (now, mid),
+                )
+                retired.append(mid)
+            # Refresh stats for keep_id after absorbing evaluations.
+            stats = conn.execute(
+                "SELECT COUNT(*) as n, AVG(CASE WHEN outcome='success' THEN 1.0 ELSE 0.0 END) as sr "
+                "FROM evaluations WHERE method_id=?",
+                (keep_id,),
+            ).fetchone()
+            conn.execute(
+                "UPDATE methods SET total_runs=?, success_rate=? WHERE method_id=?",
+                (int(stats["n"] or 0), stats["sr"], keep_id),
+            )
+        return {"kept": keep_id, "retired": retired, "evals_moved": evals_moved}
 
     # ── V2 Strategy Layer ─────────────────────────────────────────────────────
 
