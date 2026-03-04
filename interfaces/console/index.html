@@ -274,6 +274,24 @@
     <h3>Semantic Registry</h3>
     <pre id="semantics-detail">Loading…</pre>
   </div>
+  <div class="card">
+    <div class="search-row">
+      <button class="action" onclick="loadSemantics()">Refresh</button>
+      <button class="action" style="background:#14532d" onclick="saveSemanticCatalog()">Save Catalog</button>
+      <button class="action" style="background:#14532d" onclick="saveSemanticRules()">Save Rules</button>
+    </div>
+    <h3>Capability Catalog</h3>
+    <textarea id="semantic-catalog-editor" class="editor" style="min-height:220px"></textarea>
+    <h3 style="margin-top:12px">Mapping Rules</h3>
+    <textarea id="semantic-rules-editor" class="editor" style="min-height:220px"></textarea>
+  </div>
+  <div class="card">
+    <h3>Semantic Config Versions</h3>
+    <table>
+      <thead><tr><th>Target</th><th>Version</th><th>Changed UTC</th><th>By</th><th>Reason</th><th>Action</th></tr></thead>
+      <tbody id="semantic-versions-tbody"><tr><td colspan="6" style="color:var(--muted)">Loading…</td></tr></tbody>
+    </table>
+  </div>
 </div>
 
 <!-- MODEL CONTROL -->
@@ -1290,12 +1308,100 @@ async function sandboxStrategy(sidKey, clusterKey, taskTypeKey) {
 
 async function loadSemantics() {
   const target = document.getElementById('semantics-detail');
+  const catalogEditor = document.getElementById('semantic-catalog-editor');
+  const rulesEditor = document.getElementById('semantic-rules-editor');
+  const versionsBody = document.getElementById('semantic-versions-tbody');
   target.textContent = 'Loading semantic data…';
+  if (catalogEditor) catalogEditor.value = '';
+  if (rulesEditor) rulesEditor.value = '';
+  if (versionsBody) versionsBody.innerHTML = '<tr><td colspan="6" style="color:var(--muted)">Loading…</td></tr>';
   try {
-    const res = await api('/console/semantics');
+    const [res, catalogVersions, ruleVersions] = await Promise.all([
+      api('/console/semantics'),
+      api('/console/semantics/catalog/versions?limit=30'),
+      api('/console/semantics/mapping-rules/versions?limit=30'),
+    ]);
     target.textContent = JSON.stringify(res, null, 2);
+    if (catalogEditor) {
+      catalogEditor.value = JSON.stringify(res?.catalog || {}, null, 2);
+    }
+    if (rulesEditor) {
+      rulesEditor.value = JSON.stringify(res?.mapping_rules || {}, null, 2);
+    }
+    if (versionsBody) {
+      const rows = [];
+      for (const v of (catalogVersions || [])) {
+        rows.push({target: 'catalog', ...v});
+      }
+      for (const v of (ruleVersions || [])) {
+        rows.push({target: 'mapping-rules', ...v});
+      }
+      rows.sort((a, b) => String(b.changed_utc || '').localeCompare(String(a.changed_utc || '')));
+      versionsBody.innerHTML = rows.map(v => `
+        <tr>
+          <td>${esc(v.target || '')}</td>
+          <td>${Number(v.version || 0)}</td>
+          <td style="color:var(--muted)">${esc((v.changed_utc || '').replace('T',' ').replace('Z',''))}</td>
+          <td>${esc(v.changed_by || '')}</td>
+          <td style="color:var(--muted)">${esc(v.reason || '')}</td>
+          <td><button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackSemanticVersion('${encodeURIComponent(v.target || '')}', ${Number(v.version || 0)})">Rollback</button></td>
+        </tr>
+      `).join('') || '<tr><td colspan="6" style="color:var(--muted)">No versions</td></tr>';
+    }
   } catch (e) {
     target.textContent = 'Error: ' + e.message;
+    if (versionsBody) {
+      versionsBody.innerHTML = `<tr><td colspan="6" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+    }
+  }
+}
+
+async function saveSemanticCatalog() {
+  const editor = document.getElementById('semantic-catalog-editor');
+  const raw = editor?.value || '{}';
+  let parsed = {};
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    alert('Catalog JSON invalid: ' + e.message);
+    return;
+  }
+  try {
+    await apiWrite('/console/semantics/catalog', 'PUT', parsed);
+    await loadSemantics();
+  } catch (e) {
+    alert('Save semantic catalog failed: ' + e.message);
+  }
+}
+
+async function saveSemanticRules() {
+  const editor = document.getElementById('semantic-rules-editor');
+  const raw = editor?.value || '{}';
+  let parsed = {};
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    alert('Rules JSON invalid: ' + e.message);
+    return;
+  }
+  try {
+    await apiWrite('/console/semantics/mapping-rules', 'PUT', parsed);
+    await loadSemantics();
+  } catch (e) {
+    alert('Save semantic rules failed: ' + e.message);
+  }
+}
+
+async function rollbackSemanticVersion(targetKey, version) {
+  const target = decodeURIComponent(targetKey || '');
+  const v = Number(version || 0);
+  if (!target || !v) return;
+  if (!confirm(`Rollback ${target} to version ${v}?`)) return;
+  try {
+    await apiWrite('/console/semantics/' + encodeURIComponent(target) + '/rollback/' + v, 'POST', {});
+    await loadSemantics();
+  } catch (e) {
+    alert('Semantic rollback failed: ' + e.message);
   }
 }
 

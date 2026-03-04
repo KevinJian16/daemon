@@ -244,6 +244,30 @@ def create_app() -> FastAPI:
         raw = f"{item.get('skill','')}|{item.get('proposed_change','')}|{item.get('evidence','')}"
         return "sev_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
+    def _semantic_target_spec(target: str) -> tuple[str, Path]:
+        t = str(target or "").strip().lower()
+        if t in {"catalog", "capability_catalog"}:
+            return "semantics.catalog", semantic_catalog_path
+        if t in {"mapping_rules", "rules"}:
+            return "semantics.mapping_rules", semantic_rules_path
+        raise ValueError(f"unknown_semantic_target:{target}")
+
+    def _write_semantic_target(target: str, payload: dict, changed_by: str, reason: str) -> dict:
+        cfg_key, path = _semantic_target_spec(target)
+        if not isinstance(payload, dict):
+            raise ValueError("payload_must_be_object")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        cv_version = compass.record_config_version(cfg_key, payload, changed_by=changed_by, reason=reason)
+        # Keep runtime semantics consistent without restart.
+        dispatch.reload_semantic_configs()
+        if cfg_key == "semantics.catalog":
+            clusters = payload.get("clusters") if isinstance(payload.get("clusters"), list) else []
+            if clusters:
+                playbook.seed_clusters(clusters)
+        nerve.emit("fabric_updated", {"fabric": "semantics", "target": cfg_key, "path": str(path)})
+        return {"ok": True, "target": cfg_key, "path": str(path), "config_version": cv_version}
+
     def _sync_skill_proposals() -> list[dict]:
         source = _read_json_list(skill_proposals_path)
         queue = _read_json_list(skill_queue_path)
@@ -940,6 +964,50 @@ def create_app() -> FastAPI:
             "mapping_rules": rules,
             "clusters_db": playbook.list_clusters(),
         }
+
+    @app.put("/console/semantics/catalog")
+    async def set_semantic_catalog(request: Request):
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="catalog body must be a JSON object")
+        try:
+            return _write_semantic_target("catalog", body, changed_by="console", reason="semantic_catalog_update")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"ok": False, "error": str(exc)})
+
+    @app.put("/console/semantics/mapping-rules")
+    async def set_semantic_rules(request: Request):
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="mapping rules body must be a JSON object")
+        try:
+            return _write_semantic_target("mapping_rules", body, changed_by="console", reason="semantic_mapping_rules_update")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"ok": False, "error": str(exc)})
+
+    @app.get("/console/semantics/{target}/versions")
+    def semantic_versions(target: str, limit: int = 50):
+        try:
+            cfg_key, _ = _semantic_target_spec(target)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return compass.versions(cfg_key, limit=max(1, min(limit, 200)))
+
+    @app.post("/console/semantics/{target}/rollback/{version}")
+    def semantic_rollback(target: str, version: int):
+        try:
+            cfg_key, _ = _semantic_target_spec(target)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        value = compass.version_value(cfg_key, version)
+        if value is None or not isinstance(value, dict):
+            raise HTTPException(status_code=404, detail="semantic config version not found")
+        try:
+            result = _write_semantic_target(target, value, changed_by="console", reason=f"rollback_to:{version}")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"ok": False, "error": str(exc)})
+        result["rolled_back_to"] = version
+        return result
 
     @app.get("/console/model-policy")
     def get_model_policy():

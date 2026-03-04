@@ -55,6 +55,10 @@ class Dispatch:
     def set_temporal_client(self, temporal_client) -> None:
         self._temporal = temporal_client
 
+    def reload_semantic_configs(self) -> None:
+        """Reload semantic catalog/rules from config files without restarting API."""
+        self._semantic = SemanticGenerator(cortex=self._cortex)
+
     def validate(self, plan: dict) -> tuple[bool, str]:
         """Validate a plan before submission. Returns (ok, error_message)."""
         steps = plan.get("steps") or plan.get("graph", {}).get("steps") or []
