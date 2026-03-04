@@ -469,7 +469,28 @@ class Cortex:
         if tokens <= 0:
             return True
         resource_key = f"{provider}_tokens"
-        return self._compass.consume_budget(resource_key, tokens)
+        ok = self._compass.consume_budget(resource_key, tokens)
+        if not ok:
+            self._emit_budget_signal(provider, tokens)
+        return ok
+
+    def _emit_budget_signal(self, provider: str, tokens: int) -> None:
+        if not self._compass:
+            return
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        dedupe_key = f"signal.provider_budget_exceeded.{provider}.{today}"
+        if self._compass.get_pref(dedupe_key, "") == "1":
+            return
+        try:
+            self._compass.add_signal(
+                domain="model_budget",
+                trend=f"provider_budget_exceeded:{provider}:{tokens}",
+                severity="high",
+                ttl_hours=24,
+            )
+            self._compass.set_pref(dedupe_key, "1", source="system", changed_by="cortex")
+        except Exception as exc:
+            logger.warning("Failed to emit provider budget signal: %s", exc)
 
     def _load_usage(self) -> None:
         if not self._usage_path.exists():

@@ -991,6 +991,7 @@ def create_app() -> FastAPI:
         by_provider: dict[str, dict[str, int]] = {}
         by_model: dict[str, dict[str, int]] = {}
         by_routine: dict[str, dict[str, int]] = {}
+        fallback_chain_hits: dict[str, int] = {}
 
         for row in records:
             provider = str(row.get("provider") or "unknown")
@@ -1020,6 +1021,11 @@ def create_app() -> FastAPI:
             r["out_tokens"] += out_t
             if not success:
                 r["errors"] += 1
+            chain = row.get("fallback_chain")
+            if isinstance(chain, list) and chain:
+                key = "->".join(str(x) for x in chain if str(x))
+                if key:
+                    fallback_chain_hits[key] = fallback_chain_hits.get(key, 0) + 1
 
         # Semantic-cluster aggregation (task-plane view, complements trace-plane usage).
         tasks_path = state / "tasks.json"
@@ -1062,6 +1068,7 @@ def create_app() -> FastAPI:
                 "by_semantic_cluster": by_semantic_cluster,
                 "by_capability": by_capability,
                 "by_risk_level": by_risk_level,
+                "fallback_chain_hits": fallback_chain_hits,
             },
         }
 
