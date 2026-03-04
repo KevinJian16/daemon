@@ -150,6 +150,12 @@ class Cortex:
         called directly (skipping the provider loop).
         """
         # Resolve alias → (provider, model_id) if applicable.
+        if not model:
+            policy = _load_policy()
+            default_alias = str(policy.get("default_alias") or "").strip()
+            if default_alias:
+                model = default_alias
+
         resolved_provider: str | None = None
         resolved_model: str | None = model
         attempted_chain: list[str] = []

@@ -146,7 +146,7 @@ class DaemonActivities:
 
     @activity.defn(name="activity_finalize_delivery")
     async def activity_finalize_delivery(self, run_root: str, plan: dict, step_results: list[dict]) -> dict:
-        """Structural quality gate + archive to outcome/ + Nerve emit."""
+        """Contract quality gate + drift check + archive + bridge emit."""
         from fabric.compass import CompassFabric
 
         home = self._home
@@ -155,12 +155,19 @@ class DaemonActivities:
         is_shadow = bool(plan.get("is_shadow", False))
 
         task_type = str(plan.get("task_type") or "default").strip()
+        cluster_id = str(plan.get("cluster_id") or "").strip()
         profile = compass.get_quality_profile(task_type)
+        contract = self._load_quality_contract(cluster_id, task_type)
 
         # Find render output.
         render_path = self._find_render_output(run_root, step_results)
         if not render_path:
-            return {"ok": False, "error_code": "render_output_missing", "detail": "No render output found"}
+            return {
+                "ok": False,
+                "error_code": "render_output_missing",
+                "detail": "No render output found",
+                **self._failure_meta(plan),
+            }
 
         content = render_path.read_text()
 
@@ -171,7 +178,35 @@ class DaemonActivities:
                 "ok": False,
                 "error_code": check_result["error_code"],
                 "detail": check_result["detail"],
+                **self._failure_meta(plan),
             }
+
+        # Contract score gate (semantic cluster contract + evidence score).
+        quality_score, score_components = self._quality_score(content, plan, step_results, contract, profile)
+        min_quality = float(contract.get("min_quality_score") or profile.get("min_quality_score") or 0.60)
+        if quality_score < min_quality:
+            return {
+                "ok": False,
+                "error_code": "quality_gate_failed",
+                "detail": f"quality_score={round(quality_score,4)} below min_quality_score={round(min_quality,4)}",
+                "quality_score": round(quality_score, 4),
+                "min_quality_score": min_quality,
+                "global_score_components": score_components,
+                **self._failure_meta(plan),
+            }
+
+        drift = self._quality_drift_check(plan, quality_score, contract)
+        if drift.get("blocked"):
+            return {
+                "ok": False,
+                "error_code": "quality_drift_detected",
+                "detail": str(drift.get("detail") or "quality drift detected"),
+                "quality_score": round(quality_score, 4),
+                "drift": drift,
+                "global_score_components": score_components,
+                **self._failure_meta(plan),
+            }
+        self._append_quality_score(plan, quality_score, score_components, drift)
 
         if is_shadow:
             outcome_path = self._archive_shadow_outcome(run_root, plan, render_path, step_results)
@@ -190,7 +225,13 @@ class DaemonActivities:
             "task_id": task_id,
             "plan": plan,
             "step_results": step_results,
-            "outcome": {"ok": True, "score": 1.0, "outcome_path": str(outcome_path), "is_shadow": is_shadow},
+            "outcome": {
+                "ok": True,
+                "score": round(quality_score, 4),
+                "outcome_path": str(outcome_path),
+                "is_shadow": is_shadow,
+                "global_score_components": score_components,
+            },
         }
         if not is_shadow:
             self._event_bridge.emit("delivery_completed", delivery_payload)
@@ -203,6 +244,8 @@ class DaemonActivities:
             "task_id": task_id,
             "delivered_utc": _utc(),
             "is_shadow": is_shadow,
+            "quality_score": round(quality_score, 4),
+            "global_score_components": score_components,
         }
 
     # ── Task status ───────────────────────────────────────────────────────────
@@ -220,7 +263,13 @@ class DaemonActivities:
                     "task_id": task_id,
                     "plan": plan,
                     "step_results": [],
-                    "outcome": {"ok": False, "score": 0.0, "status": status, "error": plan.get("last_error", "")},
+                    "outcome": {
+                        "ok": False,
+                        "score": 0.0,
+                        "status": status,
+                        "error": plan.get("last_error", ""),
+                        **self._failure_meta(plan),
+                    },
                 },
             )
         return {"ok": True, "status": status}
@@ -333,6 +382,193 @@ class DaemonActivities:
                 return {"ok": False, "error_code": "bilingual_incomplete", "detail": "missing zh/en mixed content"}
 
         return {"ok": True}
+
+    def _load_quality_contract(self, cluster_id: str, task_type: str) -> dict:
+        contracts_dir = self._home / "config" / "semantics" / "quality_contracts"
+        if cluster_id:
+            p = contracts_dir / f"{cluster_id}.json"
+            if p.exists():
+                try:
+                    return json.loads(p.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    activity.logger.warning("Failed to load quality contract %s: %s", p, exc)
+        if task_type:
+            p = contracts_dir / f"{task_type}.json"
+            if p.exists():
+                try:
+                    return json.loads(p.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    activity.logger.warning("Failed to load quality contract %s: %s", p, exc)
+        return {}
+
+    def _quality_score(self, content: str, plan: dict, step_results: list[dict], contract: dict, profile: dict) -> tuple[float, dict]:
+        weights = contract.get("quality_weights") if isinstance(contract.get("quality_weights"), dict) else {}
+        structural_w = float(weights.get("structural") or 0.50)
+        evidence_w = float(weights.get("evidence_completeness") or 0.30)
+        review_w = float(weights.get("content_review") or 0.20)
+        total = structural_w + evidence_w + review_w
+        if total <= 0:
+            structural_w, evidence_w, review_w = 0.50, 0.30, 0.20
+            total = 1.0
+        structural_w, evidence_w, review_w = structural_w / total, evidence_w / total, review_w / total
+
+        structural = self._structural_score(content, contract, profile)
+        evidence = self._evidence_score(plan, step_results)
+        # Deterministic fallback in activity layer — review score mirrors structural.
+        review = structural
+
+        score = structural_w * structural + evidence_w * evidence + review_w * review
+        components = {
+            "quality": round(score, 4),
+            "structural": round(structural, 4),
+            "evidence_completeness": round(evidence, 4),
+            "content_review": round(review, 4),
+            # stability/latency/cost are filled by spine.record from runtime outcomes.
+            "stability": 1.0,
+            "latency": 1.0,
+            "cost": 1.0,
+            "weights": {
+                "structural": round(structural_w, 4),
+                "evidence_completeness": round(evidence_w, 4),
+                "content_review": round(review_w, 4),
+            },
+        }
+        return score, components
+
+    def _structural_score(self, content: str, contract: dict, profile: dict) -> float:
+        structural = contract.get("structural") if isinstance(contract.get("structural"), dict) else {}
+
+        forbidden = structural.get("forbidden_markers") or profile.get("forbidden_markers") or []
+        for marker in forbidden:
+            if str(marker).lower() in content.lower():
+                return 0.0
+
+        words = len(content.split())
+        min_words = int(structural.get("min_word_count") or profile.get("min_word_count") or 0)
+        word_score = min(words / min_words, 1.0) if min_words else 1.0
+
+        sections = [ln for ln in content.splitlines() if ln.strip().startswith("#")]
+        min_sections = int(structural.get("min_sections") or profile.get("min_sections") or 0)
+        section_score = min(len(sections) / min_sections, 1.0) if min_sections else 1.0
+
+        min_items = int(profile.get("min_items") or 0)
+        if min_items:
+            bullets = [ln for ln in content.splitlines() if ln.strip().startswith(("-", "*", "1.", "2.", "3."))]
+            item_score = min(len(bullets) / min_items, 1.0)
+        else:
+            item_score = 1.0
+
+        bilingual = bool(structural.get("bilingual_check") or profile.get("require_bilingual"))
+        if bilingual:
+            has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in content)
+            has_latin = any("a" <= ch.lower() <= "z" for ch in content)
+            bilingual_score = 1.0 if (has_cjk and has_latin) else 0.0
+        else:
+            bilingual_score = 1.0
+
+        return max(0.0, min(1.0, (word_score + section_score + item_score + bilingual_score) / 4.0))
+
+    def _evidence_score(self, plan: dict, step_results: list[dict]) -> float:
+        evidence_ids = plan.get("evidence_unit_ids")
+        if isinstance(evidence_ids, list) and evidence_ids:
+            target = max(int(plan.get("evidence_target", 5) or 5), 1)
+            return max(0.0, min(1.0, len(evidence_ids) / target))
+
+        if not isinstance(step_results, list) or not step_results:
+            return 0.5
+        steps_with_output = sum(
+            1
+            for r in step_results
+            if isinstance(r, dict) and (r.get("output") or r.get("artifacts") or r.get("evidence"))
+        )
+        target = max(len(step_results) // 2, 1)
+        return max(0.0, min(1.0, steps_with_output / target))
+
+    def _quality_drift_check(self, plan: dict, score: float, contract: dict) -> dict:
+        cfg = contract.get("drift") if isinstance(contract.get("drift"), dict) else {}
+        window = max(5, int(cfg.get("window") or 30))
+        min_samples = max(5, int(cfg.get("min_samples") or 10))
+        max_drop = float(cfg.get("max_drop") or 0.15)
+
+        path = self._home / "state" / "telemetry" / "quality_scores.jsonl"
+        if not path.exists():
+            return {"blocked": False, "reason": "no_history"}
+        cluster_id = str(plan.get("cluster_id") or "")
+        task_type = str(plan.get("task_type") or "")
+        history: list[float] = []
+        try:
+            for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                if cluster_id and str(row.get("cluster_id") or "") != cluster_id:
+                    continue
+                if not cluster_id and task_type and str(row.get("task_type") or "") != task_type:
+                    continue
+                try:
+                    history.append(float(row.get("quality_score") or 0.0))
+                except Exception:
+                    continue
+                if len(history) >= window:
+                    break
+        except Exception:
+            return {"blocked": False, "reason": "history_read_failed"}
+        if len(history) < min_samples:
+            return {"blocked": False, "reason": "insufficient_history", "samples": len(history)}
+
+        baseline = sum(history) / len(history)
+        threshold = baseline - max_drop
+        if score < threshold:
+            return {
+                "blocked": True,
+                "reason": "quality_drop_below_baseline",
+                "baseline": round(baseline, 4),
+                "threshold": round(threshold, 4),
+                "current": round(score, 4),
+                "samples": len(history),
+                "detail": f"current={round(score,4)} < baseline={round(baseline,4)}-drop={round(max_drop,4)}",
+            }
+        return {
+            "blocked": False,
+            "reason": "within_baseline",
+            "baseline": round(baseline, 4),
+            "threshold": round(threshold, 4),
+            "samples": len(history),
+        }
+
+    def _append_quality_score(self, plan: dict, score: float, components: dict, drift: dict) -> None:
+        path = self._home / "state" / "telemetry" / "quality_scores.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        row = {
+            "task_id": str(plan.get("task_id") or ""),
+            "cluster_id": str(plan.get("cluster_id") or ""),
+            "task_type": str(plan.get("task_type") or ""),
+            "strategy_id": str(plan.get("strategy_id") or ""),
+            "strategy_stage": str(plan.get("strategy_stage") or ""),
+            "quality_score": round(float(score or 0.0), 4),
+            "global_score_components": components,
+            "drift": drift,
+            "created_utc": _utc(),
+            "is_shadow": bool(plan.get("is_shadow", False)),
+        }
+        try:
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            activity.logger.warning("Failed to write quality score telemetry: %s", exc)
+
+    def _failure_meta(self, plan: dict) -> dict:
+        return {
+            "trace_id": str(plan.get("trace_id") or ""),
+            "strategy_id": str(plan.get("strategy_id") or ""),
+            "semantic_fingerprint": plan.get("semantic_fingerprint") if isinstance(plan.get("semantic_fingerprint"), dict) else {},
+        }
 
     def _archive_outcome(self, run_root: str, plan: dict, render_path: Path, step_results: list[dict]) -> Path:
         task_type = str(plan.get("task_type") or "manual")
