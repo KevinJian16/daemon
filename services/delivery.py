@@ -149,6 +149,36 @@ class DeliveryService:
         }
         return composite, components
 
+    def _quality_gate(self, content: str, profile: dict) -> dict:
+        """Compatibility deterministic quality gate used by tests and legacy callers."""
+        for marker in (profile.get("forbidden_markers") or []):
+            if marker.lower() in content.lower():
+                return {"ok": False, "error_code": "forbidden_marker", "detail": f"Contains forbidden marker: {marker}"}
+
+        min_words = int(profile.get("min_word_count") or 0)
+        words = len(content.split())
+        if min_words and words < min_words:
+            return {"ok": False, "error_code": "word_count_too_low", "detail": f"{words} < {min_words}"}
+
+        min_sections = int(profile.get("min_sections") or 0)
+        if min_sections:
+            sections = [ln for ln in content.splitlines() if ln.strip().startswith("#")]
+            if len(sections) < min_sections:
+                return {"ok": False, "error_code": "sections_too_few", "detail": f"{len(sections)} < {min_sections}"}
+
+        min_items = int(profile.get("min_items") or 0)
+        if min_items:
+            bullets = [ln for ln in content.splitlines() if ln.strip().startswith(("-", "*", "1.", "2.", "3."))]
+            if len(bullets) < min_items:
+                return {"ok": False, "error_code": "brief_items_too_few", "detail": f"{len(bullets)} < {min_items}"}
+
+        if bool(profile.get("require_bilingual")):
+            has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in content)
+            has_latin = any("a" <= ch.lower() <= "z" for ch in content)
+            if not (has_cjk and has_latin):
+                return {"ok": False, "error_code": "bilingual_incomplete", "detail": "missing zh/en mixed content"}
+        return {"ok": True}
+
     def _structural_score(self, content: str, contract: dict, profile: dict) -> float:
         """Normalized structural score 0-1. Hard-zero on forbidden markers."""
         structural = contract.get("structural") or {}

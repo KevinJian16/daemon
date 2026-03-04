@@ -81,10 +81,21 @@ class Dispatch:
         plan.pop("queue_reason", None)
         plan.pop("status", None)
         task_type = str(plan.get("task_type") or plan.get("method") or "research_report")
+        plan.setdefault("task_type", task_type)
         plan.setdefault("task_id", _new_task_id())
         agent_defaults = self._agent_defaults_from_compass() or dict(self._agent_defaults)
         plan.setdefault("agent_concurrency_defaults", dict(agent_defaults))
         plan.setdefault("agent_concurrency", dict(agent_defaults))
+
+        # Compatibility path: enrich() may be called directly without prior semantic resolution.
+        if not str(plan.get("cluster_id") or "").strip():
+            try:
+                fp = self._semantic.from_task_type(task_type, title=str(plan.get("title") or ""))
+                plan["cluster_id"] = fp.cluster_id
+                plan.setdefault("semantic_fingerprint", fp.to_dict())
+                self._annotate_capability_graph(plan, fp.cluster_id)
+            except Exception as exc:
+                logger.warning("Failed to derive cluster_id from task_type=%s: %s", task_type, exc)
 
         # Consult Playbook for best matching method.
         methods = self._playbook.consult(category="dag_pattern")
@@ -136,6 +147,13 @@ class Dispatch:
             raise ValueError("missing_cluster_id")
 
         champion = self._playbook.get_champion(cluster_id)
+        if not champion:
+            # Cold-start resilience: ensure cluster has a seeded champion strategy.
+            try:
+                self._playbook.seed_clusters([{"cluster_id": cluster_id, "display_name": cluster_id}])
+                champion = self._playbook.get_champion(cluster_id)
+            except Exception as exc:
+                logger.warning("Failed to auto-seed champion for cluster=%s: %s", cluster_id, exc)
         if not champion:
             raise ValueError(f"no_champion_strategy_for_cluster:{cluster_id}")
 
@@ -385,12 +403,31 @@ class Dispatch:
         ]
         candidates = preferred or fallback
         if not candidates:
-            return None
-        return sorted(
+            seeded = self._playbook.spawn_candidate_from_champion(cluster_id=cluster_id, stage="candidate")
+            if not seeded:
+                return None
+            return seeded
+        best = sorted(
             candidates,
             key=lambda x: (float(x.get("global_score") or 0.0), int(x.get("sample_n") or 0)),
             reverse=True,
         )[0]
+        if str(best.get("stage") or "") == "candidate":
+            try:
+                self._playbook.promote_strategy(
+                    strategy_id=str(best.get("strategy_id") or ""),
+                    decision="enter_shadow_auto",
+                    prev_stage="candidate",
+                    next_stage="shadow",
+                    reason="selected_for_shadow_execution",
+                    decided_by="dispatch",
+                )
+                refreshed = self._playbook.get_strategy(str(best.get("strategy_id") or ""))
+                if refreshed:
+                    return refreshed
+            except Exception as exc:
+                logger.warning("Failed to transition candidate to shadow: %s", exc)
+        return best
 
     def _annotate_capability_graph(self, plan: dict, cluster_id: str) -> None:
         """Ensure each DAG node carries capability_id + quality_contract_id."""

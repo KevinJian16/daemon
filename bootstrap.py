@@ -17,6 +17,7 @@ from fabric.compass import (
 
 
 CANONICAL_AGENTS = ["router", "collect", "analyze", "build", "review", "render", "apply"]
+_UNSET = object()
 
 
 def _daemon_home() -> Path:
@@ -28,13 +29,14 @@ def _openclaw_home() -> Path:
     return Path(v) if v else _daemon_home() / "openclaw"
 
 
-def bootstrap(daemon_home: Path | None = None, openclaw_home: Path | None = None, force: bool = False) -> dict:
+def bootstrap(daemon_home: Path | None = None, openclaw_home: Path | None | object = _UNSET, force: bool = False) -> dict:
     """Run cold-start bootstrap. Returns a report of what was done.
 
     force=True re-seeds even if DBs exist (useful for dev resets).
     """
     home = daemon_home or _daemon_home()
-    oc_home = openclaw_home or _openclaw_home()
+    # Distinguish "argument omitted" from explicit None.
+    oc_home = _openclaw_home() if openclaw_home is _UNSET else openclaw_home
 
     report: dict = {
         "daemon_home": str(home),

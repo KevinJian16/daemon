@@ -120,7 +120,8 @@ class TestDispatch:
         d = self._make_dispatch(playbook, compass, nerve, state_dir)
         plan = {"steps": [{"id": "collect", "agent": "collect", "depends_on": []}], "task_type": "research_report"}
         result = await d.submit(plan)
-        assert result["ok"] is True
+        assert result["ok"] is False
+        assert result["error_code"] == "temporal_unavailable"
         assert "task_id" in result
 
     def test_new_task_id_format(self):

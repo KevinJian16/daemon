@@ -228,16 +228,40 @@ class DaemonActivities:
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _build_step_context(self, run_root: str, plan: dict, step: dict) -> dict:
-        """Attach Fabric snapshots from state/snapshots/ as context for the Agent."""
+        """Attach semantic/strategy/model snapshots as execution context for Agent steps."""
         snapshots_dir = self._home / "state" / "snapshots"
         context: dict = {}
-        for snap_name in ("compass_snapshot.json",):
+        for snap_name in (
+            "compass_snapshot.json",
+            "semantic_snapshot.json",
+            "strategy_snapshot.json",
+            "model_policy_snapshot.json",
+        ):
             snap_path = snapshots_dir / snap_name
             if snap_path.exists():
                 try:
                     context[snap_name.replace(".json", "")] = json.loads(snap_path.read_text())
                 except Exception as exc:
                     activity.logger.warning("Failed to load snapshot %s: %s", snap_name, exc)
+        # Router runtime hints are text by design.
+        hints_path = self._oc_home / "workspace" / "router" / "memory" / "runtime_hints.txt"
+        if hints_path.exists():
+            try:
+                context["runtime_hints"] = hints_path.read_text(encoding="utf-8", errors="ignore")[:4000]
+            except Exception as exc:
+                activity.logger.warning("Failed to read runtime hints %s: %s", hints_path, exc)
+        # Embed task/strategy contract so Agent sees the active semantic + governance context.
+        context["execution_contract"] = {
+            "task_id": str(plan.get("task_id") or ""),
+            "cluster_id": str(plan.get("cluster_id") or ""),
+            "semantic_fingerprint": plan.get("semantic_fingerprint") if isinstance(plan.get("semantic_fingerprint"), dict) else {},
+            "strategy_id": str(plan.get("strategy_id") or ""),
+            "strategy_stage": str(plan.get("strategy_stage") or ""),
+            "model_alias": str(plan.get("model_alias") or ""),
+            "is_shadow": bool(plan.get("is_shadow", False)),
+            "capability_id": str(step.get("capability_id") or ""),
+            "quality_contract_id": str(step.get("quality_contract_id") or ""),
+        }
         return context
 
     def _write_step_output(self, run_root: str, step_id: str, content: str) -> str:

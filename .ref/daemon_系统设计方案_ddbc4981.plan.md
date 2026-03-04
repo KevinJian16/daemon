@@ -1,3 +1,5 @@
+> ⚠️ 警告：此文档已作废，禁止查看。请仅以 `/.ref/daemon_统一方案_v2.md` 为唯一权威来源。
+
 ---
 name: Daemon 系统设计方案
 overview: "Daemon: 新一代多智能体系统完整设计方案。涵盖九条指导思想、三层 Fabric、十个 Spine Routine（含 record）、三层学习体系（Playbook / Skill Evolution / Skill Creation）、透明内化设计、Delivery 流程、双进程部署模型、双界面（Portal + Console），以及从零构建的完整路线。"

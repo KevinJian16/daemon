@@ -843,6 +843,20 @@ def create_app() -> FastAPI:
         )
         return {"ok": True, "strategy_id": strategy_id, "promotion_id": promotion_id, "prev_stage": prev_stage, "next_stage": "champion"}
 
+    @app.get("/console/strategies/{strategy_id}/experiments")
+    def strategy_experiments(strategy_id: str, limit: int = 200):
+        row = playbook.get_strategy(strategy_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="strategy not found")
+        return playbook.list_experiments(strategy_id=strategy_id, limit=limit)
+
+    @app.get("/console/strategies/{strategy_id}/promotions")
+    def strategy_promotions(strategy_id: str, limit: int = 200):
+        row = playbook.get_strategy(strategy_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="strategy not found")
+        return playbook.list_promotions(strategy_id=strategy_id, limit=limit)
+
     @app.get("/console/semantics")
     def console_semantics():
         catalog = {}
@@ -933,6 +947,8 @@ def create_app() -> FastAPI:
             logger.warning("Failed to read tasks for model usage cluster view: %s", exc)
             task_rows = []
         by_semantic_cluster: dict[str, int] = {}
+        by_capability: dict[str, int] = {}
+        by_risk_level: dict[str, int] = {}
         for row in task_rows if isinstance(task_rows, list) else []:
             plan_row = row.get("plan") if isinstance(row.get("plan"), dict) else {}
             cluster = str(
@@ -942,6 +958,18 @@ def create_app() -> FastAPI:
             )
             if cluster:
                 by_semantic_cluster[cluster] = by_semantic_cluster.get(cluster, 0) + 1
+            fp = plan_row.get("semantic_fingerprint") if isinstance(plan_row.get("semantic_fingerprint"), dict) else {}
+            risk = str(fp.get("risk_level") or "").strip().lower()
+            if risk:
+                by_risk_level[risk] = by_risk_level.get(risk, 0) + 1
+            steps = plan_row.get("steps") or plan_row.get("graph", {}).get("steps") or []
+            if isinstance(steps, list):
+                for st in steps:
+                    if not isinstance(st, dict):
+                        continue
+                    cid = str(st.get("capability_id") or "")
+                    if cid:
+                        by_capability[cid] = by_capability.get(cid, 0) + 1
 
         return {
             "records": records,
@@ -950,6 +978,8 @@ def create_app() -> FastAPI:
                 "by_model": by_model,
                 "by_routine": by_routine,
                 "by_semantic_cluster": by_semantic_cluster,
+                "by_capability": by_capability,
+                "by_risk_level": by_risk_level,
             },
         }
 

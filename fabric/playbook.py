@@ -554,6 +554,11 @@ class PlaybookFabric:
             if not row:
                 raise ValueError(f"Unknown strategy_id: {strategy_id}")
             cluster_id = row["cluster_id"]
+            if next_stage == "champion":
+                conn.execute(
+                    "UPDATE strategy_candidates SET stage='challenger', updated_utc=? WHERE cluster_id=? AND stage='champion' AND strategy_id<>?",
+                    (now, cluster_id, strategy_id),
+                )
             conn.execute(
                 "UPDATE strategy_candidates SET stage=?, updated_utc=?, promoted_utc=? WHERE strategy_id=?",
                 (next_stage, now, now if next_stage in ("champion", "shadow", "challenger") else None, strategy_id),
@@ -568,6 +573,36 @@ class PlaybookFabric:
             "reason": reason, "decided_by": decided_by,
         })
         return pid
+
+    def spawn_candidate_from_champion(self, cluster_id: str, stage: str = "candidate") -> dict | None:
+        """Clone current champion as a new candidate/shadow strategy for exploration."""
+        champion = self.get_champion(cluster_id)
+        if not champion:
+            return None
+        now = _utc()
+        sid = _new_id("strat")
+        base_spec = champion.get("spec") if isinstance(champion.get("spec"), dict) else {}
+        new_spec = {
+            **base_spec,
+            "source": "auto_spawn",
+            "parent_strategy_id": champion.get("strategy_id", ""),
+            "cluster_id": cluster_id,
+        }
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO strategy_candidates(strategy_id,cluster_id,stage,spec_json,sample_n,created_utc,updated_utc) VALUES(?,?,?,?,?,?,?)",
+                (sid, cluster_id, stage, json.dumps(new_spec, ensure_ascii=False), 0, now, now),
+            )
+        self._append_strategy_event(
+            "candidate_spawned",
+            {
+                "strategy_id": sid,
+                "cluster_id": cluster_id,
+                "stage": stage,
+                "parent_strategy_id": champion.get("strategy_id", ""),
+            },
+        )
+        return self.get_strategy(sid)
 
     def list_strategies(self, cluster_id: str | None = None, stage: str | None = None) -> list[dict]:
         """List strategy candidates, optionally filtered."""

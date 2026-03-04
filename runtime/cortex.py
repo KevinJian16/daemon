@@ -152,6 +152,7 @@ class Cortex:
         # Resolve alias → (provider, model_id) if applicable.
         resolved_provider: str | None = None
         resolved_model: str | None = model
+        attempted_chain: list[str] = []
         if model:
             registry = _load_registry()
             if model in registry:
@@ -161,6 +162,7 @@ class Cortex:
 
         # Direct call when alias resolved to an available provider.
         if resolved_provider and resolved_provider in self._clients:
+            attempted_chain.append(resolved_provider)
             t0 = time.time()
             try:
                 result, in_t, out_t = self._call(resolved_provider, prompt, resolved_model, max_tokens, temperature)
@@ -174,6 +176,7 @@ class Cortex:
                         False,
                         "provider_budget_exceeded",
                         prompt_preview=prompt[:300],
+                        fallback_chain=attempted_chain,
                     )
                 else:
                     self._record_usage(
@@ -185,11 +188,13 @@ class Cortex:
                         True,
                         prompt_preview=prompt[:300],
                         output_preview=result[:300],
+                        fallback_chain=attempted_chain,
                     )
                     return result
             except Exception as e:
                 self._record_usage(resolved_provider, resolved_model or resolved_provider, 0, 0,
-                                   round(time.time() - t0, 2), False, str(e)[:200], prompt_preview=prompt[:300])
+                                   round(time.time() - t0, 2), False, str(e)[:200], prompt_preview=prompt[:300],
+                                   fallback_chain=attempted_chain)
                 # Fall through to provider loop as fallback.
 
         providers = self._provider_order()
@@ -201,6 +206,7 @@ class Cortex:
         last_err: Exception | None = None
         budget_blocked = False
         for provider in providers:
+            attempted_chain.append(provider)
             t0 = time.time()
             try:
                 result, in_tokens, out_tokens = self._call(provider, prompt, resolved_model, max_tokens, temperature)
@@ -215,6 +221,7 @@ class Cortex:
                         False,
                         "provider_budget_exceeded",
                         prompt_preview=prompt[:300],
+                        fallback_chain=attempted_chain,
                     )
                     budget_blocked = True
                     last_err = CortexError("provider_budget_exceeded")
@@ -229,6 +236,7 @@ class Cortex:
                     True,
                     prompt_preview=prompt[:300],
                     output_preview=result[:300],
+                    fallback_chain=attempted_chain,
                 )
                 return result
             except Exception as e:
@@ -242,12 +250,18 @@ class Cortex:
                     False,
                     str(e)[:200],
                     prompt_preview=prompt[:300],
+                    fallback_chain=attempted_chain,
                 )
                 last_err = e
 
         if budget_blocked:
-            raise CortexError("provider_budget_exceeded: all candidate providers blocked or failed after budget checks")
-        raise CortexError(f"all providers failed; last error: {last_err}") from last_err
+            chain = "->".join(attempted_chain)
+            raise CortexError(
+                f"provider_budget_exceeded: all candidate providers blocked or failed after budget checks; "
+                f"fallback_chain={chain}"
+            )
+        chain = "->".join(attempted_chain)
+        raise CortexError(f"all providers failed; fallback_chain={chain}; last error: {last_err}") from last_err
 
     def structured(self, prompt: str, schema: dict, model: str | None = None) -> dict:
         """LLM call that returns validated JSON. Falls back to empty dict on parse failure."""
@@ -412,6 +426,7 @@ class Cortex:
         error: str | None = None,
         prompt_preview: str | None = None,
         output_preview: str | None = None,
+        fallback_chain: list[str] | None = None,
     ) -> None:
         trace = current_trace()
         entry = {
@@ -431,6 +446,8 @@ class Cortex:
             entry["prompt_preview"] = prompt_preview
         if output_preview:
             entry["output_preview"] = output_preview
+        if fallback_chain:
+            entry["fallback_chain"] = list(fallback_chain)
         self._usage.append(entry)
         if len(self._usage) > 5000:
             self._usage = self._usage[-5000:]

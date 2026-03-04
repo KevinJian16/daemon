@@ -311,6 +311,24 @@ class Scheduler:
             total += val * 3600 if unit == "h" else val * 60
         return total if total else None
 
+    @staticmethod
+    def _parse_cron_simple(schedule: str) -> int | None:
+        """Compatibility helper for simple cron cadence estimation."""
+        parts = schedule.split()
+        if len(parts) != 5:
+            return None
+        minute, hour, dom, month, dow = parts
+        if minute.startswith("*/") and hour == "*" and dom == "*" and month == "*" and dow == "*":
+            try:
+                step = int(minute[2:])
+                if step > 0:
+                    return step * 60
+            except Exception:
+                return None
+        if minute.isdigit() and hour.isdigit() and dom == "*" and month == "*" and dow == "*":
+            return 24 * 3600
+        return None
+
     @classmethod
     def _parse_adaptive_schedule(cls, schedule: str) -> tuple[int | None, int | None, int | None]:
         # Format: adaptive:<base>[:<min>-<max>]

@@ -245,7 +245,7 @@ class TestSpineRoutines:
 
     def test_relay_no_openclaw(self, spine_ctx, tmp_path):
         result = spine_ctx.relay()
-        assert result["snapshots"] == 3
+        assert result["snapshots"] == 5
         assert (tmp_path / "state" / "snapshots" / "memory_snapshot.json").exists()
         assert (tmp_path / "state" / "snapshots" / "playbook_snapshot.json").exists()
         assert (tmp_path / "state" / "snapshots" / "compass_snapshot.json").exists()
