@@ -283,6 +283,108 @@ class TestPlaybookFabric:
         audit1 = playbook.strategy_audit_status(sid)
         assert audit1["promotable_to_champion"] is True
 
+    def test_release_transitions_and_execution_audit(self, playbook, tmp_path, monkeypatch):
+        monkeypatch.setenv("DAEMON_HOME", str(tmp_path))
+        (tmp_path / "state" / "telemetry").mkdir(parents=True, exist_ok=True)
+        playbook.seed_clusters([{"cluster_id": "clst_rel", "display_name": "Release"}])
+        cand = playbook.spawn_candidate_from_champion("clst_rel", stage="candidate")
+        assert cand is not None
+        sid = cand["strategy_id"]
+
+        playbook.promote_strategy(
+            strategy_id=sid,
+            decision="enter_shadow_auto",
+            prev_stage="candidate",
+            next_stage="shadow",
+            reason="test_transition",
+            decided_by="test",
+        )
+        playbook.record_release_execution(
+            strategy_id=sid,
+            cluster_id="clst_rel",
+            stage="shadow",
+            mode="shadow",
+            task_id="task_shadow_rel",
+            actor="test",
+            reason="shadow_execution",
+            shadow_of="task_prod_1",
+        )
+
+        transitions = playbook.list_release_transitions(strategy_id=sid, limit=50)
+        assert any(t.get("action") == "spawn_candidate" for t in transitions)
+        assert any(t.get("action") == "enter_shadow_auto" for t in transitions)
+        assert any(t.get("action") == "execute_shadow" for t in transitions)
+
+        audit = playbook.strategy_audit_status(sid)
+        assert "release_execution_missing" not in audit.get("missing_checks", [])
+
+    def test_resolve_latest_rollback_target(self, playbook, tmp_path, monkeypatch):
+        monkeypatch.setenv("DAEMON_HOME", str(tmp_path))
+        (tmp_path / "state" / "telemetry").mkdir(parents=True, exist_ok=True)
+        playbook.seed_clusters([{"cluster_id": "clst_rb", "display_name": "Rollback"}])
+        champion = playbook.get_champion("clst_rb")
+        assert champion is not None
+        old_champion_id = champion["strategy_id"]
+
+        cand = playbook.spawn_candidate_from_champion("clst_rb", stage="candidate")
+        assert cand is not None
+        sid = cand["strategy_id"]
+        playbook.promote_strategy(
+            strategy_id=sid,
+            decision="enter_shadow_auto",
+            prev_stage="candidate",
+            next_stage="shadow",
+            reason="test",
+            decided_by="test",
+        )
+        playbook.record_experiment(
+            strategy_id=sid,
+            task_id="task_shadow_rb",
+            cluster_id="clst_rb",
+            score_components={"quality": 0.9},
+            global_score=0.9,
+            outcome="success",
+            is_shadow=True,
+        )
+        cmp_path = tmp_path / "state" / "telemetry" / "shadow_comparisons.jsonl"
+        cmp_path.write_text(
+            json.dumps(
+                {
+                    "task_id": "task_shadow_rb",
+                    "cluster_id": "clst_rb",
+                    "shadow_strategy_id": sid,
+                    "champion_strategy_id": old_champion_id,
+                    "shadow_global_score": 0.9,
+                    "champion_global_score": 0.8,
+                    "delta_global_score": 0.1,
+                    "created_utc": "2026-03-04T00:00:00Z",
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        playbook.promote_strategy(
+            strategy_id=sid,
+            decision="promote_manual",
+            prev_stage="shadow",
+            next_stage="challenger",
+            reason="promote_to_challenger",
+            decided_by="test",
+        )
+        playbook.promote_strategy(
+            strategy_id=sid,
+            decision="promote_manual",
+            prev_stage="challenger",
+            next_stage="champion",
+            reason="promote_to_champion",
+            decided_by="test",
+        )
+
+        target = playbook.resolve_latest_rollback_target(sid)
+        assert target is not None
+        assert target["previous_champion_strategy_id"] == old_champion_id
+
 
 # ── Compass Fabric ────────────────────────────────────────────────────────────
 

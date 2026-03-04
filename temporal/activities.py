@@ -285,6 +285,7 @@ class DaemonActivities:
             "semantic_snapshot.json",
             "strategy_snapshot.json",
             "model_policy_snapshot.json",
+            "model_registry_snapshot.json",
         ):
             snap_path = snapshots_dir / snap_name
             if snap_path.exists():

@@ -1177,6 +1177,9 @@ async function loadStrategies() {
     tbody.innerHTML = (rows || []).map(r => {
       const sid = String(r.strategy_id || '');
       const stageBadge = esc(r.stage || '');
+      const rollbackBtn = r.stage === 'champion'
+        ? `<button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackStrategy('${encodeURIComponent(sid)}')">Rollback</button>`
+        : `<span style="color:var(--muted);font-size:10px">Rollback仅冠军</span>`;
       return `<tr>
         <td style="color:var(--muted);font-size:11px">${esc(sid)}</td>
         <td>${esc(r.cluster_display_name || r.cluster_id || '')}<br><span style="color:var(--muted);font-size:10px">${esc(r.cluster_id || '')}</span></td>
@@ -1188,7 +1191,7 @@ async function loadStrategies() {
           <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewStrategyDetail('${encodeURIComponent(sid)}')">View</button>
           <button class="action" style="font-size:11px;padding:3px 8px;background:#0f766e" onclick="sandboxStrategy('${encodeURIComponent(sid)}','${encodeURIComponent(r.cluster_id || '')}','${encodeURIComponent(r.task_type_compat || '')}')">Sandbox</button>
           <button class="action" style="font-size:11px;padding:3px 8px;background:#14532d" onclick="promoteStrategy('${encodeURIComponent(sid)}')">Promote</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackStrategy('${encodeURIComponent(sid)}')">Rollback</button>
+          ${rollbackBtn}
         </td>
       </tr>`;
     }).join('') || '<tr><td colspan="7" style="color:var(--muted)">No strategies</td></tr>';
@@ -1216,10 +1219,11 @@ async function viewStrategyDetail(sidKey) {
   if (!strategyId || !target) return;
   target.textContent = 'Loading strategy detail…';
   try {
-    const [experiments, promotions, audit] = await Promise.all([
+    const [experiments, promotions, audit, releaseEvents] = await Promise.all([
       api('/console/strategies/' + encodeURIComponent(strategyId) + '/experiments?limit=200'),
       api('/console/strategies/' + encodeURIComponent(strategyId) + '/promotions?limit=100'),
       api('/console/strategies/' + encodeURIComponent(strategyId) + '/audit'),
+      api('/console/strategies/release-events?strategy_id=' + encodeURIComponent(strategyId) + '&limit=200'),
     ]);
     let rollbackPoints = [];
     const clusterId = audit && audit.cluster_id ? String(audit.cluster_id) : '';
@@ -1235,6 +1239,7 @@ async function viewStrategyDetail(sidKey) {
         latest_experiments: (experiments || []).slice(0, 30),
         promotions: promotions || [],
         rollback_points: rollbackPoints || [],
+        release_events: releaseEvents || [],
       },
       null,
       2
@@ -1264,7 +1269,7 @@ async function promoteStrategy(sidKey) {
 async function rollbackStrategy(sidKey) {
   const strategyId = decodeURIComponent(sidKey || '');
   if (!strategyId) return;
-  const reason = prompt('Rollback reason:', 'manual_rollback') || 'manual_rollback';
+  const reason = prompt('Rollback reason (将回退到上一冠军):', 'manual_rollback') || 'manual_rollback';
   try {
     await apiWrite('/console/strategies/' + encodeURIComponent(strategyId) + '/rollback', 'POST', {
       reason,

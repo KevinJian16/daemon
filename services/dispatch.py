@@ -428,6 +428,19 @@ class Dispatch:
                 "error": str(exc)[:400],
             }
 
+        try:
+            self._playbook.record_release_execution(
+                strategy_id=str(plan.get("strategy_id") or ""),
+                cluster_id=str(plan.get("cluster_id") or ""),
+                stage=str(plan.get("strategy_stage") or "champion"),
+                mode="production",
+                task_id=task_id,
+                actor="dispatch",
+                reason="primary_submission",
+            )
+        except Exception as exc:
+            logger.warning("Failed to record production release execution for %s: %s", task_id, exc)
+
         self._nerve.emit("task_submitted", {"task_id": task_id, "run_root": run_root})
         await self._maybe_submit_shadow(plan, parent_task_id=task_id)
         return {"ok": True, "task_id": task_id, "status": "running", "run_root": run_root}
@@ -508,6 +521,20 @@ class Dispatch:
                 "error": str(exc)[:400],
             }
 
+        try:
+            self._playbook.record_release_execution(
+                strategy_id=str(strategy_id or ""),
+                cluster_id=cluster_id,
+                stage=stage,
+                mode="sandbox",
+                task_id=task_id,
+                actor="dispatch",
+                reason="sandbox_submission",
+                shadow_of=str(plan.get("shadow_of") or ""),
+            )
+        except Exception as exc:
+            logger.warning("Failed to record sandbox release execution for %s: %s", task_id, exc)
+
         self._nerve.emit(
             "sandbox_submitted",
             {
@@ -583,6 +610,19 @@ class Dispatch:
                 "cluster_id": cluster_id,
             },
         )
+        try:
+            self._playbook.record_release_execution(
+                strategy_id=str(shadow_plan.get("strategy_id") or ""),
+                cluster_id=cluster_id,
+                stage=str(shadow_plan.get("strategy_stage") or "shadow"),
+                mode="shadow",
+                task_id=shadow_task_id,
+                actor="dispatch",
+                reason="shadow_submission",
+                shadow_of=str(parent_task_id or ""),
+            )
+        except Exception as exc:
+            logger.warning("Failed to record shadow release execution for %s: %s", shadow_task_id, exc)
 
     def _shadow_ratio(self) -> float:
         raw = self._compass.get_pref("strategy_shadow_ratio", "0.10")

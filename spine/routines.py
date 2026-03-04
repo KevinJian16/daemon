@@ -540,13 +540,15 @@ class SpineRoutines:
             cp_snap = self.compass.snapshot()
             semantic_snap = self._build_semantic_snapshot()
             strategy_snap = self._build_strategy_snapshot()
+            model_registry_snap = self._build_model_registry_snapshot()
 
             (snapshots_dir / "memory_snapshot.json").write_text(json.dumps(mem_snap, ensure_ascii=False, indent=2))
             (snapshots_dir / "playbook_snapshot.json").write_text(json.dumps(pb_snap, ensure_ascii=False, indent=2))
             (snapshots_dir / "compass_snapshot.json").write_text(json.dumps(cp_snap, ensure_ascii=False, indent=2))
             (snapshots_dir / "semantic_snapshot.json").write_text(json.dumps(semantic_snap, ensure_ascii=False, indent=2))
             (snapshots_dir / "strategy_snapshot.json").write_text(json.dumps(strategy_snap, ensure_ascii=False, indent=2))
-            ctx.step("snapshots_written", 5)
+            (snapshots_dir / "model_registry_snapshot.json").write_text(json.dumps(model_registry_snap, ensure_ascii=False, indent=2))
+            ctx.step("snapshots_written", 6)
 
             # Generate model_policy_snapshot.json — single source of truth for OpenClaw.
             policy_snapshot = self._build_model_policy_snapshot()
@@ -567,11 +569,13 @@ class SpineRoutines:
             # Also write compass snapshot and model policy into OpenClaw workspace for agents.
             if self.openclaw_home:
                 policy_json = json.dumps(policy_snapshot, ensure_ascii=False, indent=2)
+                registry_json = json.dumps(model_registry_snap, ensure_ascii=False, indent=2)
                 for agent in ["router", "collect", "analyze", "build", "review", "render", "apply"]:
                     agent_mem = self.openclaw_home / "workspace" / agent / "memory"
                     agent_mem.mkdir(parents=True, exist_ok=True)
                     (agent_mem / "compass_snapshot.json").write_text(json.dumps(cp_snap, ensure_ascii=False, indent=2))
                     (agent_mem / "model_policy_snapshot.json").write_text(policy_json)
+                    (agent_mem / "model_registry_snapshot.json").write_text(registry_json)
                     if agent == "router":
                         (agent_mem / "semantic_snapshot.json").write_text(json.dumps(semantic_snap, ensure_ascii=False, indent=2))
                         (agent_mem / "strategy_snapshot.json").write_text(json.dumps(strategy_snap, ensure_ascii=False, indent=2))
@@ -582,7 +586,7 @@ class SpineRoutines:
                 (router_mem / "runtime_hints.txt").write_text(hints)
                 ctx.step("runtime_hints_written", True)
 
-            result = {"snapshots": 5, "skill_index": index_written, "model_policy_snapshot": True}
+            result = {"snapshots": 6, "skill_index": index_written, "model_policy_snapshot": True, "model_registry_snapshot": True}
             ctx.set_result(result)
         return result
 
@@ -1043,6 +1047,20 @@ class SpineRoutines:
             policy = {}
         policy["generated_utc"] = _utc()
         return policy
+
+    def _build_model_registry_snapshot(self) -> dict:
+        """Read config/model_registry.json and annotate with generated_utc."""
+        reg_path = self.daemon_home / "config" / "model_registry.json"
+        try:
+            registry = json.loads(reg_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Failed to load model_registry.json: %s", exc)
+            registry = {}
+        if isinstance(registry, dict):
+            registry["generated_utc"] = _utc()
+        else:
+            registry = {"generated_utc": _utc(), "models": []}
+        return registry
 
     def _build_global_score_components(self, step_results: list[dict], outcome: dict, plan: dict) -> dict:
         quality = float(outcome.get("quality_score", outcome.get("score", 1.0 if outcome.get("ok") else 0.0)) or 0.0)

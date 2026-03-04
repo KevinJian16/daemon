@@ -950,14 +950,36 @@ def create_app() -> FastAPI:
         row = playbook.get_strategy(strategy_id)
         if not row:
             raise HTTPException(status_code=404, detail="strategy not found")
-        prev_stage = str(row.get("stage") or "unknown")
+        target = playbook.resolve_latest_rollback_target(strategy_id)
+        if not target:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "ok": False,
+                    "error_code": "strategy_guard_blocked",
+                    "error": "rollback_point_missing_or_previous_champion_unavailable",
+                },
+            )
+        prev = target.get("previous_strategy") if isinstance(target.get("previous_strategy"), dict) else {}
+        rollback_to_strategy_id = str(target.get("previous_champion_strategy_id") or "")
+        prev_stage = str(prev.get("stage") or "unknown")
+        if not rollback_to_strategy_id:
+            raise HTTPException(
+                status_code=409,
+                detail={"ok": False, "error_code": "strategy_guard_blocked", "error": "rollback_target_missing"},
+            )
+        if prev_stage == "retired":
+            raise HTTPException(
+                status_code=409,
+                detail={"ok": False, "error_code": "strategy_guard_blocked", "error": "rollback_target_retired"},
+            )
         try:
             promotion_id = playbook.promote_strategy(
-                strategy_id=strategy_id,
+                strategy_id=rollback_to_strategy_id,
                 decision="rollback_manual",
                 prev_stage=prev_stage,
                 next_stage="champion",
-                reason=reason,
+                reason=f"{reason};rollback_from:{strategy_id}",
                 decided_by=decided_by,
             )
         except ValueError as exc:
@@ -970,9 +992,22 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail={"ok": False, "error": msg})
         nerve.emit(
             "strategy_rolled_back",
-            {"strategy_id": strategy_id, "prev_stage": prev_stage, "next_stage": "champion", "promotion_id": promotion_id},
+            {
+                "from_strategy_id": strategy_id,
+                "to_strategy_id": rollback_to_strategy_id,
+                "prev_stage": prev_stage,
+                "next_stage": "champion",
+                "promotion_id": promotion_id,
+            },
         )
-        return {"ok": True, "strategy_id": strategy_id, "promotion_id": promotion_id, "prev_stage": prev_stage, "next_stage": "champion"}
+        return {
+            "ok": True,
+            "strategy_id": strategy_id,
+            "rollback_to_strategy_id": rollback_to_strategy_id,
+            "promotion_id": promotion_id,
+            "prev_stage": prev_stage,
+            "next_stage": "champion",
+        }
 
     @app.get("/console/strategies/{strategy_id}/experiments")
     def strategy_experiments(strategy_id: str, limit: int = 200):
@@ -994,6 +1029,10 @@ def create_app() -> FastAPI:
             return playbook.strategy_audit_status(strategy_id)
         except ValueError:
             raise HTTPException(status_code=404, detail="strategy not found")
+
+    @app.get("/console/strategies/release-events")
+    def strategy_release_events(strategy_id: str | None = None, cluster_id: str | None = None, limit: int = 500):
+        return playbook.list_release_transitions(strategy_id=strategy_id, cluster_id=cluster_id, limit=limit)
 
     @app.get("/console/strategies/rollback-points")
     def strategy_rollback_points(cluster_id: str | None = None, limit: int = 200):

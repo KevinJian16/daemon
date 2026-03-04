@@ -26,6 +26,14 @@ _STAGE_TRANSITIONS: dict[str, set[str]] = {
     "retired": set(),
 }
 
+_STAGE_PHASE: dict[str, str] = {
+    "candidate": "sandbox",
+    "shadow": "shadow",
+    "challenger": "pre_production",
+    "champion": "production",
+    "retired": "retired",
+}
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS methods (
@@ -446,6 +454,7 @@ class PlaybookFabric:
         """Insert semantic clusters from capability_catalog.json if not already present."""
         inserted = 0
         now = _utc()
+        seeded_strategy_ids: list[tuple[str, str]] = []
         with self._connect() as conn:
             for c in clusters:
                 cid = str(c.get("cluster_id") or "")
@@ -468,6 +477,17 @@ class PlaybookFabric:
                     (sid, cid, "champion", json.dumps(default_spec), 0, now, now),
                 )
                 inserted += 1
+                seeded_strategy_ids.append((sid, cid))
+        for sid, cid in seeded_strategy_ids:
+            self._append_release_transition(
+                strategy_id=sid,
+                cluster_id=cid,
+                prev_stage="none",
+                next_stage="champion",
+                action="seed_champion",
+                actor="bootstrap",
+                reason="cluster_seeded",
+            )
         return inserted
 
     def get_champion(self, cluster_id: str) -> dict | None:
@@ -560,6 +580,9 @@ class PlaybookFabric:
         retired_ids: list[str] = []
         rollback_point: dict | None = None
         demoted_events: list[dict] = []
+        retired_events: list[dict] = []
+        cluster_id = ""
+        current_stage = str(prev_stage or "")
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT cluster_id, stage, sample_n FROM strategy_candidates WHERE strategy_id=?", (strategy_id,)
@@ -654,6 +677,16 @@ class PlaybookFabric:
             # Enforce: each semantic cluster keeps at most 3 challengers.
             if next_stage in {"challenger", "champion"}:
                 retired_ids = self._trim_challengers(conn, cluster_id, keep_limit=3)
+                for rid in retired_ids:
+                    retired_events.append(
+                        {
+                            "strategy_id": rid,
+                            "cluster_id": cluster_id,
+                            "prev_stage": "challenger",
+                            "next_stage": "retired",
+                            "reason": "challenger_cap_exceeded",
+                        }
+                    )
 
             conn.execute(
                 "INSERT INTO strategy_promotions(promotion_id,strategy_id,cluster_id,decision,prev_stage,next_stage,reason,decided_by,decided_utc) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -664,12 +697,42 @@ class PlaybookFabric:
             "decision": decision, "prev_stage": prev_stage, "next_stage": next_stage,
             "reason": reason, "decided_by": decided_by,
         })
+        self._append_release_transition(
+            strategy_id=strategy_id,
+            cluster_id=cluster_id,
+            prev_stage=prev_stage,
+            next_stage=next_stage,
+            action=decision,
+            actor=decided_by,
+            reason=reason,
+            promotion_id=pid,
+        )
         for evt in demoted_events:
             self._append_strategy_event("promotion_decision", evt)
+            self._append_release_transition(
+                strategy_id=str(evt.get("strategy_id") or ""),
+                cluster_id=str(evt.get("cluster_id") or cluster_id),
+                prev_stage=str(evt.get("prev_stage") or "champion"),
+                next_stage=str(evt.get("next_stage") or "challenger"),
+                action=str(evt.get("decision") or "demote_auto"),
+                actor=str(evt.get("decided_by") or decided_by),
+                reason=str(evt.get("reason") or ""),
+                promotion_id=str(evt.get("promotion_id") or ""),
+            )
         for rid in retired_ids:
             self._append_strategy_event(
                 "challenger_retired_by_limit",
                 {"cluster_id": cluster_id, "strategy_id": rid, "keep_limit": 3, "reason": "challenger_cap_exceeded"},
+            )
+        for evt in retired_events:
+            self._append_release_transition(
+                strategy_id=str(evt.get("strategy_id") or ""),
+                cluster_id=str(evt.get("cluster_id") or cluster_id),
+                prev_stage=str(evt.get("prev_stage") or "challenger"),
+                next_stage=str(evt.get("next_stage") or "retired"),
+                action="retire_auto",
+                actor=decided_by,
+                reason=str(evt.get("reason") or "challenger_cap_exceeded"),
             )
         if rollback_point and rollback_point.get("previous_champion_strategy_id"):
             self._append_rollback_point(rollback_point)
@@ -703,6 +766,15 @@ class PlaybookFabric:
                 "stage": stage,
                 "parent_strategy_id": champion.get("strategy_id", ""),
             },
+        )
+        self._append_release_transition(
+            strategy_id=sid,
+            cluster_id=cluster_id,
+            prev_stage="none",
+            next_stage=stage,
+            action="spawn_candidate",
+            actor="playbook",
+            reason=f"spawned_from:{champion.get('strategy_id', '')}",
         )
         return self.get_strategy(sid)
 
@@ -784,9 +856,18 @@ class PlaybookFabric:
                 (strategy_id,),
             ).fetchone()["n"]
         comparison_count = self._shadow_comparison_count(strategy_id)
+        release_events = self.list_release_transitions(strategy_id=strategy_id, limit=200)
+        has_execution_event = any(str(e.get("action") or "").startswith("execute_") for e in release_events)
+        has_current_stage_transition = any(str(e.get("next_stage") or "") == str(row.get("stage") or "") for e in release_events)
         missing: list[str] = []
         if reason_code != "ok":
             missing.append(reason_code)
+        if not release_events:
+            missing.append("release_events_missing")
+        if str(row.get("stage") or "") in {"shadow", "challenger", "champion"} and not has_execution_event:
+            missing.append("release_execution_missing")
+        if not has_current_stage_transition:
+            missing.append("stage_transition_missing")
         return {
             "strategy_id": strategy_id,
             "cluster_id": cluster_id,
@@ -797,6 +878,8 @@ class PlaybookFabric:
             "shadow_comparisons": int(comparison_count),
             "promotable_to_champion": bool(ok),
             "missing_checks": missing,
+            "release_audit_closed": len(missing) == 0,
+            "release_events_recent": release_events[:20],
         }
 
     def list_rollback_points(self, cluster_id: str | None = None, limit: int = 200) -> list[dict]:
@@ -826,12 +909,107 @@ class PlaybookFabric:
             return []
         return rows
 
+    def resolve_latest_rollback_target(self, current_strategy_id: str) -> dict | None:
+        current = self.get_strategy(current_strategy_id)
+        if not current:
+            return None
+        cluster_id = str(current.get("cluster_id") or "")
+        if not cluster_id:
+            return None
+        points = self.list_rollback_points(cluster_id=cluster_id, limit=200)
+        for row in points:
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            if str(payload.get("new_champion_strategy_id") or "") != current_strategy_id:
+                continue
+            previous_id = str(payload.get("previous_champion_strategy_id") or "")
+            if not previous_id:
+                continue
+            previous = self.get_strategy(previous_id)
+            if not previous:
+                continue
+            return {
+                "cluster_id": cluster_id,
+                "current_strategy_id": current_strategy_id,
+                "previous_champion_strategy_id": previous_id,
+                "rollback_point": row,
+                "previous_strategy": previous,
+            }
+        return None
+
+    def list_release_transitions(
+        self,
+        strategy_id: str | None = None,
+        cluster_id: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        daemon_home = Path(os.environ.get("DAEMON_HOME", Path(__file__).parent.parent))
+        path = daemon_home / "state" / "telemetry" / "release_state_transitions.jsonl"
+        if not path.exists():
+            return []
+        out: list[dict] = []
+        try:
+            for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                if strategy_id and str(row.get("strategy_id") or "") != strategy_id:
+                    continue
+                if cluster_id and str(row.get("cluster_id") or "") != cluster_id:
+                    continue
+                out.append(row)
+                if len(out) >= max(1, min(limit, 5000)):
+                    break
+        except Exception:
+            return []
+        return out
+
+    def record_release_execution(
+        self,
+        *,
+        strategy_id: str,
+        cluster_id: str,
+        stage: str,
+        mode: str,
+        task_id: str,
+        actor: str,
+        reason: str = "",
+        shadow_of: str = "",
+    ) -> None:
+        payload = {
+            "strategy_id": strategy_id,
+            "cluster_id": cluster_id,
+            "stage": stage,
+            "mode": mode,
+            "task_id": task_id,
+            "actor": actor,
+            "reason": reason,
+            "shadow_of": shadow_of,
+        }
+        self._append_strategy_event("release_execution", payload)
+        self._append_release_transition(
+            strategy_id=strategy_id,
+            cluster_id=cluster_id,
+            prev_stage=stage,
+            next_stage=stage,
+            action=f"execute_{mode}",
+            actor=actor,
+            reason=reason,
+            task_id=task_id,
+            shadow_of=shadow_of,
+        )
+
     def _append_strategy_event(self, event: str, payload: dict) -> None:
         """Append to state/telemetry/strategy_events.jsonl (mandatory audit log)."""
         daemon_home = Path(os.environ.get("DAEMON_HOME", Path(__file__).parent.parent))
         telemetry_dir = daemon_home / "state" / "telemetry"
         telemetry_dir.mkdir(parents=True, exist_ok=True)
-        entry = {"event": event, "payload": payload, "created_utc": _utc()}
+        entry = {"event_id": _new_id("evt"), "event": event, "payload": payload, "created_utc": _utc()}
         try:
             with (telemetry_dir / "strategy_events.jsonl").open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -839,11 +1017,51 @@ class PlaybookFabric:
             import logging
             logging.getLogger(__name__).warning("Failed to write strategy event: %s", exc)
 
+    def _append_release_transition(
+        self,
+        *,
+        strategy_id: str,
+        cluster_id: str,
+        prev_stage: str,
+        next_stage: str,
+        action: str,
+        actor: str,
+        reason: str = "",
+        promotion_id: str = "",
+        task_id: str = "",
+        shadow_of: str = "",
+    ) -> None:
+        daemon_home = Path(os.environ.get("DAEMON_HOME", Path(__file__).parent.parent))
+        telemetry_dir = daemon_home / "state" / "telemetry"
+        telemetry_dir.mkdir(parents=True, exist_ok=True)
+        stage = next_stage or prev_stage
+        entry = {
+            "event_id": _new_id("rel"),
+            "strategy_id": strategy_id,
+            "cluster_id": cluster_id,
+            "prev_stage": prev_stage,
+            "next_stage": next_stage,
+            "phase": _STAGE_PHASE.get(stage, "unknown"),
+            "action": action,
+            "actor": actor,
+            "reason": reason,
+            "promotion_id": promotion_id,
+            "task_id": task_id,
+            "shadow_of": shadow_of,
+            "created_utc": _utc(),
+        }
+        try:
+            with (telemetry_dir / "release_state_transitions.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Failed to write release transition: %s", exc)
+
     def _append_rollback_point(self, payload: dict) -> None:
         daemon_home = Path(os.environ.get("DAEMON_HOME", Path(__file__).parent.parent))
         telemetry_dir = daemon_home / "state" / "telemetry"
         telemetry_dir.mkdir(parents=True, exist_ok=True)
-        entry = {"event": "rollback_point", "payload": payload, "created_utc": _utc()}
+        entry = {"event_id": _new_id("rbp_evt"), "event": "rollback_point", "payload": payload, "created_utc": _utc()}
         try:
             with (telemetry_dir / "strategy_rollback_points.jsonl").open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
