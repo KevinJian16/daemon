@@ -6,8 +6,9 @@ import json
 import sqlite3
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 
 def _utc() -> str:
@@ -92,15 +93,23 @@ class MemoryFabric:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _conn(self) -> Generator[sqlite3.Connection, None, None]:
         conn = sqlite3.connect(self._path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
-        with self._connect() as conn:
+        with self._conn() as conn:
             conn.executescript(SCHEMA)
 
     def _audit(self, conn: sqlite3.Connection, action: str, actor: str, detail: Any = None) -> None:
@@ -114,7 +123,7 @@ class MemoryFabric:
         inserted = []
         skipped = []
         now = _utc()
-        with self._connect() as conn:
+        with self._conn() as conn:
             for raw in units:
                 title = str(raw.get("title") or "").strip()
                 domain = str(raw.get("domain") or "general").strip()
@@ -196,12 +205,12 @@ class MemoryFabric:
             ORDER BY u.created_utc DESC
             LIMIT ?
         """
-        with self._connect() as conn:
+        with self._conn() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     def get(self, unit_id: str) -> dict | None:
-        with self._connect() as conn:
+        with self._conn() as conn:
             row = conn.execute("SELECT * FROM units WHERE unit_id=?", (unit_id,)).fetchone()
             if not row:
                 return None
@@ -234,7 +243,7 @@ class MemoryFabric:
             return False
         fields["updated_utc"] = _utc()
         set_clause = ", ".join(f"{k}=?" for k in fields)
-        with self._connect() as conn:
+        with self._conn() as conn:
             conn.execute(f"UPDATE units SET {set_clause} WHERE unit_id=?", [*fields.values(), unit_id])
             self._audit(conn, "distill", actor, {"unit_id": unit_id, "fields": list(fields.keys())})
         return True
@@ -242,7 +251,7 @@ class MemoryFabric:
     def link(self, from_id: str, to_id: str, relation: str, confidence: float = 1.0) -> str:
         """Create a semantic link between two units."""
         lid = _new_id("l")
-        with self._connect() as conn:
+        with self._conn() as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO links VALUES (?,?,?,?,?,?)",
                 (lid, from_id, to_id, relation, confidence, _utc()),
@@ -250,7 +259,7 @@ class MemoryFabric:
         return lid
 
     def record_usage(self, unit_id: str, task_id: str, playbook_id: str | None, outcome: str) -> None:
-        with self._connect() as conn:
+        with self._conn() as conn:
             conn.execute(
                 "INSERT INTO usage VALUES (?,?,?,?,?,?)",
                 (_new_id("ug"), unit_id, task_id, playbook_id, outcome, _utc()),
@@ -259,7 +268,7 @@ class MemoryFabric:
     def expire(self) -> dict:
         """Mark expired units as archived."""
         now = _utc()
-        with self._connect() as conn:
+        with self._conn() as conn:
             cur = conn.execute(
                 "UPDATE units SET status='archived', updated_utc=? WHERE expires_utc IS NOT NULL AND expires_utc < ? AND status='active'",
                 (now, now),
@@ -271,7 +280,7 @@ class MemoryFabric:
 
     def snapshot(self) -> dict:
         """Export a read-only snapshot for Agent consumption."""
-        with self._connect() as conn:
+        with self._conn() as conn:
             units = [dict(r) for r in conn.execute(
                 "SELECT unit_id, title, domain, tier, confidence, summary_zh, summary_en FROM units WHERE status='active' ORDER BY created_utc DESC LIMIT 500"
             ).fetchall()]
@@ -281,7 +290,7 @@ class MemoryFabric:
         return {"units": units, "links": links, "exported_utc": _utc()}
 
     def stats(self) -> dict:
-        with self._connect() as conn:
+        with self._conn() as conn:
             total = conn.execute("SELECT COUNT(*) FROM units WHERE status='active'").fetchone()[0]
             by_domain = {
                 r["domain"]: r["cnt"]

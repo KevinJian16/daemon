@@ -6,8 +6,9 @@ import os
 import sqlite3
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 
 def _utc() -> str:
@@ -211,21 +212,29 @@ class PlaybookFabric:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _conn(self) -> Generator[sqlite3.Connection, None, None]:
         conn = sqlite3.connect(self._path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
-        with self._connect() as conn:
+        with self._conn() as conn:
             conn.executescript(SCHEMA)
 
     def register(self, name: str, category: str, spec: dict, description: str = "", status: str = "candidate") -> str:
         """Register a new method or bump version if name already exists."""
         now = _utc()
-        with self._connect() as conn:
+        with self._conn() as conn:
             existing = conn.execute("SELECT method_id, version FROM methods WHERE name=?", (name,)).fetchone()
             if existing:
                 mid = existing["method_id"]
@@ -256,7 +265,7 @@ class PlaybookFabric:
     def evaluate(self, method_id: str, task_id: str | None, outcome: str, score: float | None = None, detail: dict | None = None) -> str:
         """Record one execution result for a method."""
         eid = _new_id("e")
-        with self._connect() as conn:
+        with self._conn() as conn:
             conn.execute(
                 "INSERT INTO evaluations VALUES (?,?,?,?,?,?,?,?)",
                 (eid, method_id, task_id, outcome, score, json.dumps(detail) if detail else None, 0, _utc()),
@@ -268,7 +277,7 @@ class PlaybookFabric:
 
     def consult(self, task_type: str | None = None, category: str = "dag_pattern") -> list[dict]:
         """Return active methods sorted by success_rate for planning."""
-        with self._connect() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 """SELECT method_id, name, category, description, spec_json, success_rate, total_runs, version
                    FROM methods WHERE status='active' AND category=?
@@ -299,7 +308,7 @@ class PlaybookFabric:
         sql += " ORDER BY COALESCE(success_rate, 0.0) DESC, total_runs DESC LIMIT ?"
         params.append(limit)
 
-        with self._connect() as conn:
+        with self._conn() as conn:
             rows = conn.execute(sql, params).fetchall()
         out = []
         for row in rows:
@@ -309,7 +318,7 @@ class PlaybookFabric:
         return out
 
     def get(self, method_id: str) -> dict | None:
-        with self._connect() as conn:
+        with self._conn() as conn:
             row = conn.execute("SELECT * FROM methods WHERE method_id=?", (method_id,)).fetchone()
             if not row:
                 return None
@@ -330,7 +339,7 @@ class PlaybookFabric:
         return m
 
     def promote(self, method_id: str) -> bool:
-        with self._connect() as conn:
+        with self._conn() as conn:
             cur = conn.execute(
                 "UPDATE methods SET status='active', promoted_utc=?, retired_utc=NULL WHERE method_id=? AND status='candidate'",
                 (_utc(), method_id),
@@ -338,7 +347,7 @@ class PlaybookFabric:
         return cur.rowcount > 0
 
     def retire(self, method_id: str) -> bool:
-        with self._connect() as conn:
+        with self._conn() as conn:
             cur = conn.execute(
                 "UPDATE methods SET status='retired', retired_utc=? WHERE method_id=? AND status='active'",
                 (_utc(), method_id),
@@ -358,7 +367,7 @@ class PlaybookFabric:
         refreshed: list[str] = []
         now = _utc()
 
-        with self._connect() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT method_id, status FROM methods WHERE category='dag_pattern' AND status IN ('candidate','active')"
             ).fetchall()
@@ -427,7 +436,7 @@ class PlaybookFabric:
         }
 
     def unanalyzed_evaluations(self, limit: int = 100) -> list[dict]:
-        with self._connect() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM evaluations WHERE analyzed=0 ORDER BY evaluated_utc ASC LIMIT ?",
                 (limit,),
@@ -437,7 +446,7 @@ class PlaybookFabric:
     def mark_analyzed(self, eval_ids: list[str]) -> None:
         if not eval_ids:
             return
-        with self._connect() as conn:
+        with self._conn() as conn:
             conn.executemany(
                 "UPDATE evaluations SET analyzed=1 WHERE eval_id=?",
                 [(eid,) for eid in eval_ids],
@@ -455,7 +464,7 @@ class PlaybookFabric:
         inserted = 0
         now = _utc()
         seeded_strategy_ids: list[tuple[str, str]] = []
-        with self._connect() as conn:
+        with self._conn() as conn:
             for c in clusters:
                 cid = str(c.get("cluster_id") or "")
                 if not cid:
@@ -492,7 +501,7 @@ class PlaybookFabric:
 
     def get_champion(self, cluster_id: str) -> dict | None:
         """Return the current champion strategy for a cluster."""
-        with self._connect() as conn:
+        with self._conn() as conn:
             row = conn.execute(
                 "SELECT * FROM strategy_candidates WHERE cluster_id=? AND stage='champion' ORDER BY updated_utc DESC LIMIT 1",
                 (cluster_id,),
@@ -505,7 +514,7 @@ class PlaybookFabric:
         return d
 
     def get_strategy(self, strategy_id: str) -> dict | None:
-        with self._connect() as conn:
+        with self._conn() as conn:
             row = conn.execute(
                 "SELECT * FROM strategy_candidates WHERE strategy_id=?",
                 (strategy_id,),
@@ -518,7 +527,7 @@ class PlaybookFabric:
         return d
 
     def list_clusters(self) -> list[dict]:
-        with self._connect() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT cluster_id, display_name, task_type_compat, created_utc, updated_utc FROM semantic_clusters ORDER BY cluster_id"
             ).fetchall()
@@ -537,7 +546,7 @@ class PlaybookFabric:
         """Record an experiment result and update candidate aggregate score."""
         eid = _new_id("exp")
         now = _utc()
-        with self._connect() as conn:
+        with self._conn() as conn:
             conn.execute(
                 "INSERT INTO strategy_experiments(experiment_id,strategy_id,task_id,cluster_id,is_shadow,score_components,global_score,outcome,created_utc) VALUES(?,?,?,?,?,?,?,?,?)",
                 (eid, strategy_id, task_id, cluster_id, 1 if is_shadow else 0,
@@ -583,7 +592,7 @@ class PlaybookFabric:
         retired_events: list[dict] = []
         cluster_id = ""
         current_stage = str(prev_stage or "")
-        with self._connect() as conn:
+        with self._conn() as conn:
             row = conn.execute(
                 "SELECT cluster_id, stage, sample_n FROM strategy_candidates WHERE strategy_id=?", (strategy_id,)
             ).fetchone()
@@ -753,7 +762,7 @@ class PlaybookFabric:
             "parent_strategy_id": champion.get("strategy_id", ""),
             "cluster_id": cluster_id,
         }
-        with self._connect() as conn:
+        with self._conn() as conn:
             conn.execute(
                 "INSERT INTO strategy_candidates(strategy_id,cluster_id,stage,spec_json,sample_n,created_utc,updated_utc) VALUES(?,?,?,?,?,?,?)",
                 (sid, cluster_id, stage, json.dumps(new_spec, ensure_ascii=False), 0, now, now),
@@ -789,7 +798,7 @@ class PlaybookFabric:
             q += " AND stage=?"
             params.append(stage)
         q += " ORDER BY updated_utc DESC"
-        with self._connect() as conn:
+        with self._conn() as conn:
             rows = conn.execute(q, params).fetchall()
         result = []
         for row in rows:
@@ -807,7 +816,7 @@ class PlaybookFabric:
             params.append(strategy_id)
         sql += " ORDER BY decided_utc DESC LIMIT ?"
         params.append(max(1, min(limit, 2000)))
-        with self._connect() as conn:
+        with self._conn() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
@@ -827,7 +836,7 @@ class PlaybookFabric:
             params.append(cluster_id)
         sql += " ORDER BY created_utc DESC LIMIT ?"
         params.append(max(1, min(limit, 5000)))
-        with self._connect() as conn:
+        with self._conn() as conn:
             rows = conn.execute(sql, params).fetchall()
         out: list[dict] = []
         for row in rows:
@@ -845,7 +854,7 @@ class PlaybookFabric:
         if not row:
             raise ValueError(f"Unknown strategy_id: {strategy_id}")
         cluster_id = str(row.get("cluster_id") or "")
-        with self._connect() as conn:
+        with self._conn() as conn:
             ok, reason_code = self._promotion_audit_ok(conn, strategy_id, cluster_id)
             total_exp = conn.execute(
                 "SELECT COUNT(*) as n FROM strategy_experiments WHERE strategy_id=?",
@@ -1139,7 +1148,7 @@ class PlaybookFabric:
         return retired_ids
 
     def stats(self) -> dict:
-        with self._connect() as conn:
+        with self._conn() as conn:
             by_status = {
                 r["status"]: r["cnt"]
                 for r in conn.execute(

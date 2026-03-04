@@ -5,8 +5,9 @@ import json
 import sqlite3
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 
 def _utc() -> str:
@@ -135,15 +136,23 @@ class CompassFabric:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _conn(self) -> Generator[sqlite3.Connection, None, None]:
         conn = sqlite3.connect(self._path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
-        with self._connect() as conn:
+        with self._conn() as conn:
             conn.executescript(SCHEMA)
 
     def _version(self, conn: sqlite3.Connection, key: str, value: Any, changed_by: str, reason: str | None) -> int:
@@ -161,7 +170,7 @@ class CompassFabric:
 
     def set_priority(self, domain: str, weight: float, reason: str = "", source: str = "system", changed_by: str = "system") -> None:
         now = _utc()
-        with self._connect() as conn:
+        with self._conn() as conn:
             conn.execute(
                 "INSERT INTO priorities VALUES (?,?,?,?,?) ON CONFLICT(domain) DO UPDATE SET weight=excluded.weight, reason=excluded.reason, updated_utc=excluded.updated_utc, source=excluded.source",
                 (domain, weight, reason, now, source),
@@ -169,14 +178,14 @@ class CompassFabric:
             self._version(conn, f"priority.{domain}", {"weight": weight, "reason": reason}, changed_by, reason)
 
     def get_priorities(self) -> list[dict]:
-        with self._connect() as conn:
+        with self._conn() as conn:
             return [dict(r) for r in conn.execute("SELECT * FROM priorities ORDER BY weight DESC").fetchall()]
 
     # ── Quality profiles ─────────────────────────────────────────────────────
 
     def set_quality_profile(self, task_type: str, rules: dict, changed_by: str = "system") -> None:
         now = _utc()
-        with self._connect() as conn:
+        with self._conn() as conn:
             conn.execute(
                 "INSERT INTO quality_profiles VALUES (?,?,?) ON CONFLICT(task_type) DO UPDATE SET rules_json=excluded.rules_json, updated_utc=excluded.updated_utc",
                 (task_type, json.dumps(rules), now),
@@ -184,7 +193,7 @@ class CompassFabric:
             self._version(conn, f"quality.{task_type}", rules, changed_by, None)
 
     def get_quality_profile(self, task_type: str) -> dict:
-        with self._connect() as conn:
+        with self._conn() as conn:
             row = conn.execute("SELECT rules_json FROM quality_profiles WHERE task_type=?", (task_type,)).fetchone()
             if not row:
                 row = conn.execute("SELECT rules_json FROM quality_profiles WHERE task_type='default'").fetchone()
@@ -193,13 +202,13 @@ class CompassFabric:
     # ── Resource budgets ─────────────────────────────────────────────────────
 
     def get_budget(self, resource_type: str) -> dict | None:
-        with self._connect() as conn:
+        with self._conn() as conn:
             row = conn.execute("SELECT * FROM resource_budgets WHERE resource_type=?", (resource_type,)).fetchone()
         return dict(row) if row else None
 
     def consume_budget(self, resource_type: str, amount: float) -> bool:
         """Returns False if budget would be exceeded."""
-        with self._connect() as conn:
+        with self._conn() as conn:
             row = conn.execute("SELECT * FROM resource_budgets WHERE resource_type=?", (resource_type,)).fetchone()
             if not row:
                 return True
@@ -214,16 +223,16 @@ class CompassFabric:
     def reset_budgets(self) -> None:
         now = _utc()
         tomorrow = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 86400))
-        with self._connect() as conn:
+        with self._conn() as conn:
             conn.execute("UPDATE resource_budgets SET current_usage=0, reset_utc=?", (tomorrow,))
 
     def all_budgets(self) -> list[dict]:
-        with self._connect() as conn:
+        with self._conn() as conn:
             return [dict(r) for r in conn.execute("SELECT * FROM resource_budgets").fetchall()]
 
     def set_budget(self, resource_type: str, daily_limit: float, changed_by: str = "console") -> None:
         now = _utc()
-        with self._connect() as conn:
+        with self._conn() as conn:
             row = conn.execute(
                 "SELECT current_usage, reset_utc FROM resource_budgets WHERE resource_type=?",
                 (resource_type,),
@@ -251,13 +260,13 @@ class CompassFabric:
     # ── Preferences ───────────────────────────────────────────────────────────
 
     def get_pref(self, key: str, default: str = "") -> str:
-        with self._connect() as conn:
+        with self._conn() as conn:
             row = conn.execute("SELECT value FROM preferences WHERE pref_key=?", (key,)).fetchone()
         return row["value"] if row else default
 
     def set_pref(self, key: str, value: str, source: str = "user", changed_by: str = "user") -> None:
         now = _utc()
-        with self._connect() as conn:
+        with self._conn() as conn:
             conn.execute(
                 "INSERT INTO preferences VALUES (?,?,?,?) ON CONFLICT(pref_key) DO UPDATE SET value=excluded.value, updated_utc=excluded.updated_utc, source=excluded.source",
                 (key, value, now, source),
@@ -265,7 +274,7 @@ class CompassFabric:
             self._version(conn, f"pref.{key}", {"value": value}, changed_by, None)
 
     def all_prefs(self) -> dict[str, str]:
-        with self._connect() as conn:
+        with self._conn() as conn:
             rows = conn.execute("SELECT pref_key, value FROM preferences").fetchall()
         return {r["pref_key"]: r["value"] for r in rows}
 
@@ -275,7 +284,7 @@ class CompassFabric:
         sid = _new_id("sig")
         now = _utc()
         expires = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + ttl_hours * 3600))
-        with self._connect() as conn:
+        with self._conn() as conn:
             conn.execute(
                 "INSERT INTO attention_signals VALUES (?,?,?,?,?,?)",
                 (sid, domain, trend, severity, now, expires),
@@ -284,7 +293,7 @@ class CompassFabric:
 
     def active_signals(self) -> list[dict]:
         now = _utc()
-        with self._connect() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM attention_signals WHERE expires_utc IS NULL OR expires_utc > ? ORDER BY observed_utc DESC",
                 (now,),
@@ -293,7 +302,7 @@ class CompassFabric:
 
     def expire_signals(self) -> int:
         now = _utc()
-        with self._connect() as conn:
+        with self._conn() as conn:
             cur = conn.execute(
                 "DELETE FROM attention_signals WHERE expires_utc IS NOT NULL AND expires_utc < ?", (now,)
             )
@@ -302,7 +311,7 @@ class CompassFabric:
     # ── Config version history ────────────────────────────────────────────────
 
     def versions(self, config_key: str, limit: int = 20) -> list[dict]:
-        with self._connect() as conn:
+        with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM config_versions WHERE config_key=? ORDER BY version DESC LIMIT ?",
                 (config_key, limit),
@@ -310,11 +319,11 @@ class CompassFabric:
         return [dict(r) for r in rows]
 
     def record_config_version(self, config_key: str, value: Any, changed_by: str = "system", reason: str | None = None) -> int:
-        with self._connect() as conn:
+        with self._conn() as conn:
             return self._version(conn, config_key, value, changed_by, reason)
 
     def version_value(self, config_key: str, version: int) -> Any | None:
-        with self._connect() as conn:
+        with self._conn() as conn:
             row = conn.execute(
                 "SELECT value_json FROM config_versions WHERE config_key=? AND version=?",
                 (config_key, version),
@@ -328,7 +337,7 @@ class CompassFabric:
 
     def rollback(self, config_key: str, version: int, changed_by: str = "console") -> bool:
         """Restore a config key to a specific historical version."""
-        with self._connect() as conn:
+        with self._conn() as conn:
             row = conn.execute(
                 "SELECT value_json FROM config_versions WHERE config_key=? AND version=?",
                 (config_key, version),
@@ -355,7 +364,7 @@ class CompassFabric:
         return True
 
     def snapshot(self) -> dict:
-        with self._connect() as conn:
+        with self._conn() as conn:
             quality_profiles = {
                 r["task_type"]: json.loads(r["rules_json"])
                 for r in conn.execute("SELECT task_type, rules_json FROM quality_profiles").fetchall()
@@ -369,7 +378,7 @@ class CompassFabric:
         }
 
     def stats(self) -> dict:
-        with self._connect() as conn:
+        with self._conn() as conn:
             priority_count = conn.execute("SELECT COUNT(*) FROM priorities").fetchone()[0]
             signal_count = conn.execute(
                 "SELECT COUNT(*) FROM attention_signals WHERE expires_utc IS NULL OR expires_utc > ?",
