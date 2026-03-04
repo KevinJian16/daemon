@@ -56,6 +56,35 @@ def _temporal_config() -> dict[str, Any]:
     return {"host": host, "port": port, "namespace": namespace, "task_queue": task_queue}
 
 
+def _validate_semantic_config(home: Path) -> None:
+    """Hard error on startup if capability_catalog.json or mapping_rules.json is missing."""
+    catalog = home / "config" / "semantics" / "capability_catalog.json"
+    rules = home / "config" / "semantics" / "mapping_rules.json"
+    missing = [str(p) for p in (catalog, rules) if not p.exists()]
+    if missing:
+        raise RuntimeError(
+            f"Missing required semantic config files (daemon cannot start): {missing}. "
+            "Create config/semantics/capability_catalog.json and mapping_rules.json."
+        )
+
+
+def _bootstrap_clusters(home: Path, playbook) -> None:
+    """Seed semantic_clusters table from capability_catalog.json (idempotent)."""
+    catalog_path = home / "config" / "semantics" / "capability_catalog.json"
+    try:
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Failed to read capability_catalog.json for bootstrap: %s", exc)
+        return
+    clusters = catalog.get("clusters") or []
+    if clusters:
+        try:
+            playbook.seed_clusters(clusters)
+            logger.info("Bootstrapped %d semantic clusters into Playbook DB.", len(clusters))
+        except Exception as exc:
+            logger.warning("Failed to seed semantic clusters: %s", exc)
+
+
 def create_app() -> FastAPI:
     home = _daemon_home()
     oc_home = _openclaw_home()
@@ -80,7 +109,7 @@ def create_app() -> FastAPI:
         daemon_home=home, openclaw_home=oc_home,
     )
     # Initialize Services.
-    dispatch = Dispatch(playbook, compass, nerve, state)
+    dispatch = Dispatch(playbook, compass, nerve, state, cortex=cortex)
     scheduler = Scheduler(registry, routines, compass, nerve, state, dispatch=dispatch)
     dialog = DialogService(compass, oc_home)
     bridge = EventBridge(state, source="api")
@@ -98,6 +127,11 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def _startup():
         nonlocal temporal_client, bridge_task, bridge_running
+        # Validate required semantic config files — hard error if missing.
+        _validate_semantic_config(home)
+        # Bootstrap semantic clusters into Playbook DB.
+        _bootstrap_clusters(home, playbook)
+
         tc = _temporal_config()
         try:
             temporal_client = await TemporalClient.connect(
@@ -311,9 +345,10 @@ def create_app() -> FastAPI:
         return result
 
     @app.get("/tasks")
-    def list_tasks(status: str | None = None, limit: int = 50):
+    def list_tasks(request: Request, status: str | None = None, limit: int = 50):
         tasks_path = state / "tasks.json"
         if not tasks_path.exists():
+            _log_portal_event("tasks_list", {"status": status, "count": 0}, request)
             return []
         try:
             tasks = json.loads(tasks_path.read_text())
@@ -322,10 +357,12 @@ def create_app() -> FastAPI:
             return []
         if status:
             tasks = [t for t in tasks if t.get("status") == status]
-        return tasks[-limit:]
+        result = tasks[-limit:]
+        _log_portal_event("tasks_list", {"status": status, "count": len(result)}, request)
+        return result
 
     @app.get("/tasks/{task_id}")
-    def get_task(task_id: str):
+    def get_task(task_id: str, request: Request):
         tasks_path = state / "tasks.json"
         try:
             tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
@@ -334,7 +371,9 @@ def create_app() -> FastAPI:
             tasks = []
         for t in tasks:
             if t.get("task_id") == task_id:
+                _log_portal_event("task_get", {"task_id": task_id, "status": t.get("status", "")}, request)
                 return t
+        _log_portal_event("task_not_found", {"task_id": task_id}, request)
         raise HTTPException(status_code=404, detail="task not found")
 
     # ── Chat (Portal) ─────────────────────────────────────────────────────────

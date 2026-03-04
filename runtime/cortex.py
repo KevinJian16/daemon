@@ -70,11 +70,15 @@ class Cortex:
             except ImportError:
                 logger.debug("openai package not installed — deepseek provider skipped")
 
-        if os.getenv("MINIMAX_API_KEY") and os.getenv("MINIMAX_GROUP_ID"):
-            self._clients["minimax"] = {
-                "api_key": os.environ["MINIMAX_API_KEY"],
-                "group_id": os.environ["MINIMAX_GROUP_ID"],
-            }
+        if os.getenv("MINIMAX_API_KEY"):
+            try:
+                import anthropic
+                self._clients["minimax"] = anthropic.Anthropic(
+                    api_key=os.environ["MINIMAX_API_KEY"],
+                    base_url=os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/anthropic"),
+                )
+            except ImportError:
+                logger.debug("anthropic package not installed — minimax provider skipped")
 
     def _provider_order(self) -> list[str]:
         if self._compass:
@@ -210,11 +214,11 @@ class Cortex:
         if provider == "openai":
             return self._call_openai(self._clients["openai"], prompt, model or "gpt-4o-mini", max_tokens, temperature)
         if provider == "deepseek":
-            return self._call_openai(self._clients["deepseek"], prompt, model or "deepseek-chat", max_tokens, temperature)
+            return self._call_deepseek(self._clients["deepseek"], prompt, model or "deepseek-reasoner", max_tokens, temperature)
         if provider == "anthropic":
             return self._call_anthropic(self._clients["anthropic"], prompt, model or "claude-haiku-4-5-20251001", max_tokens, temperature)
         if provider == "minimax":
-            return self._call_minimax(self._clients["minimax"], prompt, model or "abab6.5s-chat", max_tokens, temperature)
+            return self._call_anthropic(self._clients["minimax"], prompt, model or "MiniMax-M2.5", max_tokens, temperature)
         raise CortexError(f"unknown provider: {provider}")
 
     def _call_openai(self, client: Any, prompt: str, model: str, max_tokens: int, temperature: float) -> tuple[str, int, int]:
@@ -228,6 +232,24 @@ class Cortex:
         usage = resp.usage
         return text, int(usage.prompt_tokens or 0), int(usage.completion_tokens or 0)
 
+    def _call_deepseek(self, client: Any, prompt: str, model: str, max_tokens: int, temperature: float) -> tuple[str, int, int]:
+        # deepseek-reasoner only accepts temperature=1; deepseek-chat accepts arbitrary values.
+        is_reasoner = "reasoner" in model
+        effective_temperature = 1.0 if is_reasoner else temperature
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=effective_temperature,
+        )
+        # Reasoner responses include reasoning_content + content; we use content (final answer).
+        text = resp.choices[0].message.content or ""
+        usage = resp.usage
+        # deepseek-reasoner reports reasoning tokens separately; sum all for budget tracking.
+        in_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        out_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        return text, in_tokens, out_tokens
+
     def _call_anthropic(self, client: Any, prompt: str, model: str, max_tokens: int, temperature: float) -> tuple[str, int, int]:
         resp = client.messages.create(
             model=model,
@@ -238,20 +260,6 @@ class Cortex:
         text = resp.content[0].text if resp.content else ""
         return text, int(resp.usage.input_tokens or 0), int(resp.usage.output_tokens or 0)
 
-    def _call_minimax(self, cfg: dict, prompt: str, model: str, max_tokens: int, temperature: float) -> tuple[str, int, int]:
-        url = f"https://api.minimax.chat/v1/text/chatcompletion_v2?GroupId={cfg['group_id']}"
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
-        resp = httpx.post(url, json=payload, headers={"Authorization": f"Bearer {cfg['api_key']}"}, timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
-        text = data["choices"][0]["message"]["content"]
-        usage = data.get("usage", {})
-        return text, int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
 
     def _record_usage(
         self,

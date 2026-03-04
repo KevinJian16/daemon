@@ -58,6 +58,60 @@ CREATE INDEX IF NOT EXISTS idx_methods_category ON methods(category);
 CREATE INDEX IF NOT EXISTS idx_evals_method     ON evaluations(method_id);
 CREATE INDEX IF NOT EXISTS idx_evals_analyzed   ON evaluations(analyzed);
 CREATE INDEX IF NOT EXISTS idx_evals_outcome    ON evaluations(outcome);
+
+-- V2 Strategy Layer tables.
+
+CREATE TABLE IF NOT EXISTS semantic_clusters (
+    cluster_id       TEXT PRIMARY KEY,
+    display_name     TEXT NOT NULL,
+    task_type_compat TEXT,
+    created_utc      TEXT NOT NULL,
+    updated_utc      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS strategy_candidates (
+    strategy_id      TEXT PRIMARY KEY,
+    cluster_id       TEXT NOT NULL REFERENCES semantic_clusters(cluster_id),
+    stage            TEXT NOT NULL DEFAULT 'candidate',
+    spec_json        TEXT NOT NULL,
+    global_score     REAL,
+    score_components TEXT,
+    sample_n         INTEGER NOT NULL DEFAULT 0,
+    created_utc      TEXT NOT NULL,
+    updated_utc      TEXT NOT NULL,
+    promoted_utc     TEXT,
+    retired_utc      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS strategy_experiments (
+    experiment_id    TEXT PRIMARY KEY,
+    strategy_id      TEXT NOT NULL REFERENCES strategy_candidates(strategy_id),
+    task_id          TEXT NOT NULL,
+    cluster_id       TEXT NOT NULL,
+    is_shadow        INTEGER NOT NULL DEFAULT 0,
+    score_components TEXT,
+    global_score     REAL,
+    outcome          TEXT,
+    created_utc      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS strategy_promotions (
+    promotion_id     TEXT PRIMARY KEY,
+    strategy_id      TEXT NOT NULL REFERENCES strategy_candidates(strategy_id),
+    cluster_id       TEXT NOT NULL,
+    decision         TEXT NOT NULL,
+    prev_stage       TEXT NOT NULL,
+    next_stage       TEXT NOT NULL,
+    reason           TEXT,
+    decided_by       TEXT NOT NULL DEFAULT 'auto',
+    decided_utc      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sc_cluster  ON strategy_candidates(cluster_id);
+CREATE INDEX IF NOT EXISTS idx_sc_stage    ON strategy_candidates(stage);
+CREATE INDEX IF NOT EXISTS idx_se_strategy ON strategy_experiments(strategy_id);
+CREATE INDEX IF NOT EXISTS idx_se_cluster  ON strategy_experiments(cluster_id);
+CREATE INDEX IF NOT EXISTS idx_sp_strategy ON strategy_promotions(strategy_id);
 """
 
 # Bootstrap DAG templates registered as active methods on first run.
@@ -375,6 +429,154 @@ class PlaybookFabric:
         """Export active methods as a read-only snapshot."""
         methods = self.consult()
         return {"methods": methods, "exported_utc": _utc()}
+
+    # ── V2 Strategy Layer ─────────────────────────────────────────────────────
+
+    def seed_clusters(self, clusters: list[dict]) -> int:
+        """Insert semantic clusters from capability_catalog.json if not already present."""
+        inserted = 0
+        now = _utc()
+        with self._connect() as conn:
+            for c in clusters:
+                cid = str(c.get("cluster_id") or "")
+                if not cid:
+                    continue
+                existing = conn.execute(
+                    "SELECT 1 FROM semantic_clusters WHERE cluster_id=?", (cid,)
+                ).fetchone()
+                if existing:
+                    continue
+                conn.execute(
+                    "INSERT INTO semantic_clusters(cluster_id,display_name,task_type_compat,created_utc,updated_utc) VALUES(?,?,?,?,?)",
+                    (cid, str(c.get("display_name") or cid), c.get("task_type_compat"), now, now),
+                )
+                # Seed a champion strategy candidate per cluster.
+                sid = _new_id("strat")
+                default_spec = {"source": "seed", "cluster_id": cid}
+                conn.execute(
+                    "INSERT INTO strategy_candidates(strategy_id,cluster_id,stage,spec_json,sample_n,created_utc,updated_utc) VALUES(?,?,?,?,?,?,?)",
+                    (sid, cid, "champion", json.dumps(default_spec), 0, now, now),
+                )
+                inserted += 1
+        return inserted
+
+    def get_champion(self, cluster_id: str) -> dict | None:
+        """Return the current champion strategy for a cluster."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM strategy_candidates WHERE cluster_id=? AND stage='champion' ORDER BY updated_utc DESC LIMIT 1",
+                (cluster_id,),
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["spec"] = json.loads(d.pop("spec_json", "{}") or "{}")
+        d["score_components"] = json.loads(d.get("score_components") or "{}")
+        return d
+
+    def record_experiment(
+        self,
+        strategy_id: str,
+        task_id: str,
+        cluster_id: str,
+        score_components: dict,
+        global_score: float,
+        outcome: str,
+        is_shadow: bool = False,
+    ) -> str:
+        """Record an experiment result and update candidate aggregate score."""
+        eid = _new_id("exp")
+        now = _utc()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO strategy_experiments(experiment_id,strategy_id,task_id,cluster_id,is_shadow,score_components,global_score,outcome,created_utc) VALUES(?,?,?,?,?,?,?,?,?)",
+                (eid, strategy_id, task_id, cluster_id, 1 if is_shadow else 0,
+                 json.dumps(score_components, ensure_ascii=False), round(global_score, 4), outcome, now),
+            )
+            # Update aggregate on candidate.
+            agg = conn.execute(
+                "SELECT AVG(global_score) as avg_score, COUNT(*) as n FROM strategy_experiments WHERE strategy_id=?",
+                (strategy_id,),
+            ).fetchone()
+            conn.execute(
+                "UPDATE strategy_candidates SET global_score=?, sample_n=?, updated_utc=? WHERE strategy_id=?",
+                (round(float(agg["avg_score"] or 0), 4), int(agg["n"]), now, strategy_id),
+            )
+        # Emit to telemetry JSONL.
+        self._append_strategy_event("experiment_recorded", {
+            "experiment_id": eid, "strategy_id": strategy_id,
+            "cluster_id": cluster_id, "global_score": round(global_score, 4),
+        })
+        return eid
+
+    def promote_strategy(
+        self,
+        strategy_id: str,
+        decision: str,
+        prev_stage: str,
+        next_stage: str,
+        reason: str = "",
+        decided_by: str = "auto",
+    ) -> str:
+        """Record a promotion/rollback decision and update stage."""
+        pid = _new_id("prom")
+        now = _utc()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT cluster_id FROM strategy_candidates WHERE strategy_id=?", (strategy_id,)
+            ).fetchone()
+            if not row:
+                raise ValueError(f"Unknown strategy_id: {strategy_id}")
+            cluster_id = row["cluster_id"]
+            conn.execute(
+                "UPDATE strategy_candidates SET stage=?, updated_utc=?, promoted_utc=? WHERE strategy_id=?",
+                (next_stage, now, now if next_stage in ("champion", "shadow", "challenger") else None, strategy_id),
+            )
+            conn.execute(
+                "INSERT INTO strategy_promotions(promotion_id,strategy_id,cluster_id,decision,prev_stage,next_stage,reason,decided_by,decided_utc) VALUES(?,?,?,?,?,?,?,?,?)",
+                (pid, strategy_id, cluster_id, decision, prev_stage, next_stage, reason, decided_by, now),
+            )
+        self._append_strategy_event("promotion_decision", {
+            "promotion_id": pid, "strategy_id": strategy_id, "cluster_id": cluster_id,
+            "decision": decision, "prev_stage": prev_stage, "next_stage": next_stage,
+            "reason": reason, "decided_by": decided_by,
+        })
+        return pid
+
+    def list_strategies(self, cluster_id: str | None = None, stage: str | None = None) -> list[dict]:
+        """List strategy candidates, optionally filtered."""
+        q = "SELECT * FROM strategy_candidates WHERE 1=1"
+        params: list = []
+        if cluster_id:
+            q += " AND cluster_id=?"
+            params.append(cluster_id)
+        if stage:
+            q += " AND stage=?"
+            params.append(stage)
+        q += " ORDER BY updated_utc DESC"
+        with self._connect() as conn:
+            rows = conn.execute(q, params).fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["spec"] = json.loads(d.pop("spec_json", "{}") or "{}")
+            d["score_components"] = json.loads(d.get("score_components") or "{}")
+            result.append(d)
+        return result
+
+    def _append_strategy_event(self, event: str, payload: dict) -> None:
+        """Append to state/telemetry/strategy_events.jsonl (mandatory audit log)."""
+        import os
+        daemon_home = Path(os.environ.get("DAEMON_HOME", Path(__file__).parent.parent))
+        telemetry_dir = daemon_home / "state" / "telemetry"
+        telemetry_dir.mkdir(parents=True, exist_ok=True)
+        entry = {"event": event, "payload": payload, "created_utc": _utc()}
+        try:
+            with (telemetry_dir / "strategy_events.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Failed to write strategy event: %s", exc)
 
     def stats(self) -> dict:
         with self._connect() as conn:

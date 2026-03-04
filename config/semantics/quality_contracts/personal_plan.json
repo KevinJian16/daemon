@@ -1,0 +1,16 @@
+{
+  "cluster_id": "clst_personal_plan",
+  "contract_version": "1.0.0",
+  "structural": {
+    "min_word_count": 200,
+    "min_sections": 1,
+    "forbidden_markers": ["[TODO]", "[PLACEHOLDER]", "待补充"]
+  },
+  "quality_weights": {
+    "structural": 0.35,
+    "evidence_completeness": 0.25,
+    "content_review": 0.40
+  },
+  "min_quality_score": 0.60,
+  "bilingual_check": false
+}

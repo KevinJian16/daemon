@@ -1,0 +1,39 @@
+{
+  "_comment": "Model registry — canonical model definitions used by both Cortex and OpenClaw via model_policy_snapshot.",
+  "_version": "1.0.0",
+  "_updated": "2026-03-04",
+  "models": [
+    {
+      "alias": "analysis",
+      "provider": "deepseek",
+      "model_id": "deepseek-reasoner",
+      "description": "Heavy analytical tasks: witness, learn, distill, focus",
+      "context_window": 65536,
+      "supports_temperature": false
+    },
+    {
+      "alias": "chat",
+      "provider": "deepseek",
+      "model_id": "deepseek-chat",
+      "description": "Light conversational tasks: structured output, intent extraction",
+      "context_window": 65536,
+      "supports_temperature": true
+    },
+    {
+      "alias": "review",
+      "provider": "minimax",
+      "model_id": "MiniMax-M2.5",
+      "description": "Review and quality gate tasks",
+      "context_window": 1000000,
+      "supports_temperature": true
+    },
+    {
+      "alias": "fallback",
+      "provider": "deepseek",
+      "model_id": "deepseek-chat",
+      "description": "Fallback when primary provider unavailable",
+      "context_window": 65536,
+      "supports_temperature": true
+    }
+  ]
+}

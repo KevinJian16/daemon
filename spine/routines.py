@@ -479,6 +479,12 @@ class SpineRoutines:
             (snapshots_dir / "compass_snapshot.json").write_text(json.dumps(cp_snap, ensure_ascii=False, indent=2))
             ctx.step("snapshots_written", 3)
 
+            # Generate model_policy_snapshot.json — single source of truth for OpenClaw.
+            policy_snapshot = self._build_model_policy_snapshot()
+            snap_path = snapshots_dir / "model_policy_snapshot.json"
+            snap_path.write_text(json.dumps(policy_snapshot, ensure_ascii=False, indent=2))
+            ctx.step("model_policy_snapshot_written", True)
+
             # Write skill_index.json to router workspace if OpenClaw home is configured.
             skill_index = self._build_skill_index()
             index_written = False
@@ -489,12 +495,14 @@ class SpineRoutines:
                 index_written = True
             ctx.step("skill_index_written", index_written)
 
-            # Also write compass snapshot into OpenClaw workspace for agents.
+            # Also write compass snapshot and model policy into OpenClaw workspace for agents.
             if self.openclaw_home:
+                policy_json = json.dumps(policy_snapshot, ensure_ascii=False, indent=2)
                 for agent in ["router", "collect", "analyze", "build", "review", "render", "apply"]:
                     agent_mem = self.openclaw_home / "workspace" / agent / "memory"
                     agent_mem.mkdir(parents=True, exist_ok=True)
                     (agent_mem / "compass_snapshot.json").write_text(json.dumps(cp_snap, ensure_ascii=False, indent=2))
+                    (agent_mem / "model_policy_snapshot.json").write_text(policy_json)
 
                 router_mem = self.openclaw_home / "workspace" / "router" / "memory"
                 router_mem.mkdir(parents=True, exist_ok=True)
@@ -502,7 +510,7 @@ class SpineRoutines:
                 (router_mem / "runtime_hints.txt").write_text(hints)
                 ctx.step("runtime_hints_written", True)
 
-            result = {"snapshots": 3, "skill_index": index_written}
+            result = {"snapshots": 3, "skill_index": index_written, "model_policy_snapshot": True}
             ctx.set_result(result)
         return result
 
@@ -677,6 +685,17 @@ class SpineRoutines:
         lines.append(f"- links={len(mem_snap.get('links', []))}")
         return "\n".join(lines).strip() + "\n"
 
+    def _build_model_policy_snapshot(self) -> dict:
+        """Read config/model_policy.json and annotate with generated_utc."""
+        policy_path = self.daemon_home / "config" / "model_policy.json"
+        try:
+            policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Failed to load model_policy.json: %s", exc)
+            policy = {}
+        policy["generated_utc"] = _utc()
+        return policy
+
     def _collect_openclaw_observations(self) -> dict:
         if not self.openclaw_home:
             return {"session_files": 0, "signals_files": 0, "session_errors": 0}
@@ -830,7 +849,7 @@ class SpineRoutines:
                 break
 
     def _replay_queued_tasks(self) -> int:
-        """Find queued tasks and re-emit for dispatch. Returns count."""
+        """Find queued tasks eligible for replay (backoff respected). Returns count."""
         tasks_path = self.state_dir / "tasks.json"
         if not tasks_path.exists():
             return 0
@@ -839,9 +858,20 @@ class SpineRoutines:
         except Exception as exc:
             logger.warning("Failed to parse queued tasks file %s: %s", tasks_path, exc)
             return 0
-        queued = [t for t in tasks if t.get("status") == "queued"]
+        now = _utc()
+        eligible = []
+        for t in tasks:
+            if t.get("status") not in ("queued",):
+                continue
+            if t.get("status") == "replay_exhausted":
+                continue
+            next_replay = str(t.get("next_replay_utc") or "")
+            if next_replay and next_replay > now:
+                continue  # Backoff not elapsed yet.
+            eligible.append(t)
+
         replayed = 0
-        for task in sorted(queued, key=lambda t: t.get("priority", 5))[:10]:
+        for task in sorted(eligible, key=lambda t: int(t.get("priority", 5)))[:10]:
             self.nerve.emit("task_replay", {"task_id": task.get("task_id"), "plan": task.get("plan")})
             replayed += 1
         return replayed

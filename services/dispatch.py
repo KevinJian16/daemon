@@ -1,4 +1,4 @@
-"""Dispatch — validates plans, applies Playbook strategy, submits to Temporal."""
+"""Dispatch — semantic routing, plan validation, Playbook strategy, Temporal submission."""
 from __future__ import annotations
 
 import json
@@ -8,10 +8,17 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from runtime.semantic import SemanticFingerprint, SemanticGenerator, SemanticMappingError
+
 if TYPE_CHECKING:
     from fabric.playbook import PlaybookFabric
     from fabric.compass import CompassFabric
+    from runtime.cortex import Cortex
     from spine.nerve import Nerve
+
+# Replay backoff schedule in seconds (capped at 4h).
+_REPLAY_BACKOFF = [60, 300, 900, 3600, 14400]
+_REPLAY_MAX_ATTEMPTS = 5
 
 
 def _utc() -> str:
@@ -30,6 +37,7 @@ class Dispatch:
         state_dir: Path,
         temporal_client=None,
         task_queue: str = "daemon-queue",
+        cortex: "Cortex | None" = None,
     ) -> None:
         self._playbook = playbook
         self._compass = compass
@@ -37,6 +45,8 @@ class Dispatch:
         self._state = state_dir
         self._temporal = temporal_client
         self._task_queue = task_queue
+        self._cortex = cortex
+        self._semantic = SemanticGenerator(cortex=cortex)
         self._agent_defaults = self._load_agent_defaults()
 
     def set_temporal_client(self, temporal_client) -> None:
@@ -174,8 +184,40 @@ class Dispatch:
                 continue
         return out
 
+    def resolve_semantic(self, request: dict) -> "SemanticFingerprint":
+        """Four-path semantic resolution (decision §1). Raises SemanticMappingError on failure.
+
+        Path 1: caller provides semantic_fingerprint dict → validate cluster_id.
+        Path 2: caller provides intent_contract dict → generate fingerprint.
+        Path 3: caller provides task_type string → compat cluster mapping.
+        Path 4: none of the above → SemanticMappingError (fail-closed, 400).
+        """
+        if fp_raw := request.get("semantic_fingerprint"):
+            if isinstance(fp_raw, dict):
+                return self._semantic.from_fingerprint_dict(fp_raw)
+
+        if ic_raw := request.get("intent_contract"):
+            if isinstance(ic_raw, dict):
+                return self._semantic.from_intent_contract(ic_raw, cortex=self._cortex)
+
+        if task_type := str(request.get("task_type") or "").strip():
+            return self._semantic.from_task_type(task_type, title=str(request.get("title") or ""))
+
+        raise SemanticMappingError("semantic_input_missing: provide semantic_fingerprint, intent_contract, or task_type")
+
     async def submit(self, plan: dict) -> dict:
-        """Validate, enrich, and submit plan to Temporal. Returns task record."""
+        """Semantic resolve → validate → enrich → Temporal submit."""
+        # Step 1: Semantic resolution (fail-closed).
+        try:
+            fingerprint = self.resolve_semantic(plan)
+        except SemanticMappingError as exc:
+            return {"ok": False, "error": str(exc), "error_code": "semantic_mapping_failed"}
+
+        # Attach resolved fingerprint to plan.
+        plan = dict(plan)
+        plan["semantic_fingerprint"] = fingerprint.to_dict()
+        plan.setdefault("cluster_id", fingerprint.cluster_id)
+
         ok, err = self.validate(plan)
         if not ok:
             return {"ok": False, "error": err, "error_code": "invalid_plan"}
@@ -216,13 +258,74 @@ class Dispatch:
         return {"ok": True, "task_id": task_id, "status": "running", "run_root": run_root}
 
     async def replay(self, task_id: str, plan: dict) -> dict:
-        """Replay a previously queued task with its original task_id."""
+        """Replay a queued task with backoff enforcement (decision §7)."""
+        tasks_path = self._state / "tasks.json"
+        try:
+            tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
+        except Exception as exc:
+            logger.warning("Failed to read tasks.json for replay: %s", exc)
+            tasks = []
+
+        task_record: dict | None = next((t for t in tasks if t.get("task_id") == task_id), None)
+
+        if task_record:
+            attempts = int(task_record.get("replay_attempts", 0))
+            next_replay_utc = str(task_record.get("next_replay_utc") or "")
+            if attempts >= _REPLAY_MAX_ATTEMPTS:
+                self._update_replay_state(task_id, tasks, tasks_path, status="replay_exhausted",
+                                          reason=f"exceeded max_attempts={_REPLAY_MAX_ATTEMPTS}")
+                return {"ok": False, "task_id": task_id, "error_code": "replay_exhausted",
+                        "error": f"Max replay attempts ({_REPLAY_MAX_ATTEMPTS}) exceeded"}
+            if next_replay_utc and next_replay_utc > _utc():
+                return {"ok": False, "task_id": task_id, "error_code": "replay_too_soon",
+                        "error": f"Next replay not due until {next_replay_utc}"}
+
         replay_plan = dict(plan)
         replay_plan["task_id"] = task_id
         replay_plan.pop("queued", None)
         replay_plan.pop("queue_reason", None)
         replay_plan.pop("status", None)
-        return await self.submit(replay_plan)
+        replay_plan["replay_token"] = f"rpl_{uuid.uuid4().hex[:12]}"
+
+        result = await self.submit(replay_plan)
+
+        if task_record:
+            attempts = int(task_record.get("replay_attempts", 0)) + 1
+            backoff_s = _REPLAY_BACKOFF[min(attempts - 1, len(_REPLAY_BACKOFF) - 1)]
+            next_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + backoff_s))
+            self._update_replay_state(task_id, tasks, tasks_path,
+                                      status="running" if result.get("ok") else "queued",
+                                      attempts=attempts, next_replay_utc=next_utc)
+
+        return result
+
+    def _update_replay_state(
+        self,
+        task_id: str,
+        tasks: list,
+        tasks_path: Path,
+        status: str,
+        attempts: int | None = None,
+        next_replay_utc: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        for t in tasks:
+            if t.get("task_id") == task_id:
+                t["status"] = status
+                t["updated_utc"] = _utc()
+                if attempts is not None:
+                    t["replay_attempts"] = attempts
+                if next_replay_utc is not None:
+                    t["next_replay_utc"] = next_replay_utc
+                if reason:
+                    t["replay_exhausted_reason"] = reason
+                break
+        try:
+            tmp = tasks_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(tasks, ensure_ascii=False, indent=2))
+            tmp.replace(tasks_path)
+        except Exception as exc:
+            logger.warning("Failed to update replay state for %s: %s", task_id, exc)
 
     def _make_run_root(self, task_id: str) -> str:
         runs_dir = self._state / "runs" / task_id

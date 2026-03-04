@@ -14,6 +14,7 @@ import httpx
 
 if TYPE_CHECKING:
     from fabric.compass import CompassFabric
+    from runtime.cortex import Cortex
     from spine.nerve import Nerve
 
 
@@ -23,16 +24,29 @@ def _utc() -> str:
 
 logger = logging.getLogger(__name__)
 
+_CONTRACTS_DIR = Path(__file__).parent.parent / "config" / "semantics" / "quality_contracts"
+
 
 class DeliveryService:
-    def __init__(self, compass: "CompassFabric", nerve: "Nerve", daemon_home: Path) -> None:
+    def __init__(
+        self,
+        compass: "CompassFabric",
+        nerve: "Nerve",
+        daemon_home: Path,
+        cortex: "Cortex | None" = None,
+    ) -> None:
         self._compass = compass
         self._nerve = nerve
         self._home = daemon_home
+        self._cortex = cortex
 
     def deliver(self, run_root: str, plan: dict, step_results: list[dict]) -> dict:
         """Full delivery pipeline: quality gate → archive → channel routing."""
         task_type = str(plan.get("task_type") or "default")
+        cluster_id = str(plan.get("cluster_id") or "")
+
+        # Load quality contract (cluster-aware, falls back to Compass profile).
+        contract = self._load_contract(cluster_id, task_type)
         profile = self._compass.get_quality_profile(task_type)
 
         # Find render output.
@@ -42,10 +56,19 @@ class DeliveryService:
 
         content = render_file.read_text()
 
-        # Structural quality gate (deterministic — no LLM).
-        check = self._quality_gate(content, profile)
-        if not check["ok"]:
-            return check
+        # Compute continuous quality score (replaces binary gate).
+        quality_score, score_components = self._compute_quality_score(
+            content, plan, step_results, contract, profile
+        )
+        min_quality = float(contract.get("min_quality_score") or profile.get("min_quality_score") or 0.60)
+        if quality_score < min_quality:
+            return {
+                "ok": False,
+                "error_code": "quality_gate_failed",
+                "quality_score": round(quality_score, 4),
+                "min_quality_score": min_quality,
+                "score_components": score_components,
+            }
 
         # Archive.
         outcome_dir = self._archive(run_root, plan, render_file)
@@ -59,13 +82,145 @@ class DeliveryService:
         self._nerve.emit("delivery_completed", {
             "task_id": plan.get("task_id", ""),
             "outcome_path": str(outcome_dir),
+            "quality_score": round(quality_score, 4),
         })
 
         return {
             "ok": True,
             "outcome_path": str(outcome_dir),
             "delivered_utc": _utc(),
+            "quality_score": round(quality_score, 4),
+            "score_components": score_components,
         }
+
+    def _load_contract(self, cluster_id: str, task_type: str) -> dict:
+        """Load quality contract JSON for cluster_id or task_type, fallback to {}."""
+        # Try cluster-based contract first.
+        if cluster_id:
+            p = _CONTRACTS_DIR / f"{cluster_id}.json"
+            if p.exists():
+                try:
+                    return json.loads(p.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    logger.warning("Failed to load quality contract %s: %s", p, exc)
+        # Try task_type-based contract.
+        if task_type:
+            p = _CONTRACTS_DIR / f"{task_type}.json"
+            if p.exists():
+                try:
+                    return json.loads(p.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    logger.warning("Failed to load quality contract %s: %s", p, exc)
+        return {}
+
+    def _compute_quality_score(
+        self,
+        content: str,
+        plan: dict,
+        step_results: list[dict],
+        contract: dict,
+        profile: dict,
+    ) -> tuple[float, dict]:
+        """Return (quality_score 0-1, score_components dict)."""
+        weights = contract.get("quality_weights") or {
+            "structural": 0.50,
+            "evidence_completeness": 0.30,
+            "content_review": 0.20,
+        }
+        structural_w = float(weights.get("structural") or 0.50)
+        evidence_w = float(weights.get("evidence_completeness") or 0.30)
+        review_w = float(weights.get("content_review") or 0.20)
+
+        structural_score = self._structural_score(content, contract, profile)
+        evidence_score = self._evidence_score(plan, step_results)
+        review_score = self._content_review_score(content, structural_score)
+
+        composite = (
+            structural_w * structural_score
+            + evidence_w * evidence_score
+            + review_w * review_score
+        )
+
+        components = {
+            "structural": round(structural_score, 4),
+            "evidence_completeness": round(evidence_score, 4),
+            "content_review": round(review_score, 4),
+            "weights": {"structural": structural_w, "evidence_completeness": evidence_w, "content_review": review_w},
+        }
+        return composite, components
+
+    def _structural_score(self, content: str, contract: dict, profile: dict) -> float:
+        """Normalized structural score 0-1. Hard-zero on forbidden markers."""
+        structural = contract.get("structural") or {}
+        forbidden = structural.get("forbidden_markers") or profile.get("forbidden_markers") or []
+        for marker in forbidden:
+            if marker.lower() in content.lower():
+                return 0.0  # Hard fail
+
+        words = len(content.split())
+        min_words = int(structural.get("min_word_count") or profile.get("min_word_count") or 0)
+        word_score = min(words / min_words, 1.0) if min_words else 1.0
+
+        sections = [ln for ln in content.splitlines() if ln.strip().startswith("#")]
+        min_sections = int(structural.get("min_sections") or profile.get("min_sections") or 0)
+        section_score = min(len(sections) / min_sections, 1.0) if min_sections else 1.0
+
+        min_items = int(profile.get("min_items") or 0)
+        if min_items:
+            bullets = [ln for ln in content.splitlines() if ln.strip().startswith(("-", "*", "1.", "2.", "3."))]
+            item_score = min(len(bullets) / min_items, 1.0)
+        else:
+            item_score = 1.0
+
+        bilingual = structural.get("bilingual_check") or profile.get("require_bilingual") or False
+        if bilingual:
+            has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in content)
+            has_latin = any("a" <= ch.lower() <= "z" for ch in content)
+            bilingual_score = 1.0 if (has_cjk and has_latin) else 0.0
+        else:
+            bilingual_score = 1.0
+
+        return (word_score + section_score + item_score + bilingual_score) / 4.0
+
+    def _evidence_score(self, plan: dict, step_results: list[dict]) -> float:
+        """Evidence completeness 0-1 based on evidence_unit_ids or step outputs."""
+        evidence_ids = plan.get("evidence_unit_ids")
+        if isinstance(evidence_ids, list) and len(evidence_ids) > 0:
+            target = max(int(plan.get("evidence_target", 5)), 1)
+            return min(len(evidence_ids) / target, 1.0)
+
+        # Fallback: count steps with non-empty output as evidence.
+        steps_with_output = sum(
+            1 for r in step_results
+            if r.get("output") or r.get("artifacts") or r.get("evidence")
+        )
+        if not step_results:
+            return 0.5  # Unknown
+        target = max(len(step_results) // 2, 1)
+        return min(steps_with_output / target, 1.0)
+
+    def _content_review_score(self, content: str, structural_score: float) -> float:
+        """LLM content review 0-1; fallback to structural_score if unavailable."""
+        if not self._cortex or not self._cortex.is_available():
+            return structural_score
+
+        prompt = (
+            "Rate the quality of this report on a scale from 0 to 10. "
+            "Consider: clarity, completeness, accuracy, and usefulness. "
+            "Respond with a single integer 0-10.\n\n"
+            f"{content[:3000]}"
+        )
+        try:
+            result = self._cortex.complete(prompt, max_tokens=10)
+            text = (result or "").strip()
+            # Extract first integer found.
+            m = re.search(r"\b(\d+)\b", text)
+            if m:
+                score = int(m.group(1))
+                return min(max(score / 10.0, 0.0), 1.0)
+        except Exception as exc:
+            logger.warning("Content review LLM call failed: %s", exc)
+        return structural_score
 
     def _generate_pdf_best_effort(self, outcome_dir: Path, render_file: Path) -> None:
         pdf_path = outcome_dir / "report.pdf"
@@ -157,45 +312,6 @@ class DeliveryService:
             chunks.append("T*")
         chunks.append("ET")
         return ("\n".join(chunks) + "\n").encode("latin-1")
-
-    def _quality_gate(self, content: str, profile: dict) -> dict:
-        for marker in profile.get("forbidden_markers") or []:
-            if marker.lower() in content.lower():
-                return {"ok": False, "error_code": "forbidden_marker", "detail": f"Contains: {marker}"}
-
-        min_words = int(profile.get("min_word_count") or 0)
-        if min_words and len(content.split()) < min_words:
-            return {"ok": False, "error_code": "word_count_too_low"}
-
-        min_sections = int(profile.get("min_sections") or 0)
-        if min_sections:
-            sections = [ln for ln in content.splitlines() if ln.strip().startswith("#")]
-            if len(sections) < min_sections:
-                return {"ok": False, "error_code": "sections_too_few"}
-
-        min_items = int(profile.get("min_items") or 0)
-        if min_items:
-            bullet_items = [ln for ln in content.splitlines() if ln.strip().startswith(("-", "*", "1.", "2.", "3."))]
-            if len(bullet_items) < min_items:
-                return {"ok": False, "error_code": "brief_items_too_few"}
-
-        min_domain_coverage = int(profile.get("min_domain_coverage") or 0)
-        if min_domain_coverage:
-            domains = set()
-            for ln in content.splitlines():
-                low = ln.lower()
-                if "domain:" in low:
-                    domains.add(low.split("domain:", 1)[1].strip())
-            if len(domains) < min_domain_coverage:
-                return {"ok": False, "error_code": "brief_domain_coverage_too_low"}
-
-        if bool(profile.get("require_bilingual")):
-            has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in content)
-            has_latin = any("a" <= ch.lower() <= "z" for ch in content)
-            if not (has_cjk and has_latin):
-                return {"ok": False, "error_code": "bilingual_incomplete"}
-
-        return {"ok": True}
 
     def _find_render_output(self, run_root: Path, step_results: list[dict]) -> Path | None:
         for res in reversed(step_results):
