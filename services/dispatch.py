@@ -318,6 +318,100 @@ class Dispatch:
         await self._maybe_submit_shadow(plan, parent_task_id=task_id)
         return {"ok": True, "task_id": task_id, "status": "running", "run_root": run_root}
 
+    async def submit_sandbox(self, plan: dict, strategy_id: str) -> dict:
+        """Submit an isolated sandbox run for candidate/shadow/challenger strategy."""
+        try:
+            fingerprint = self.resolve_semantic(plan)
+        except SemanticMappingError as exc:
+            return {"ok": False, "error": str(exc), "error_code": "semantic_mapping_failed"}
+
+        plan = dict(plan)
+        plan["semantic_fingerprint"] = fingerprint.to_dict()
+        plan.setdefault("cluster_id", fingerprint.cluster_id)
+        self._annotate_capability_graph(plan, fingerprint.cluster_id)
+
+        ok, err = self.validate(plan)
+        if not ok:
+            return {"ok": False, "error": err, "error_code": "invalid_plan"}
+
+        try:
+            plan = self.enrich(plan)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "error_code": "strategy_guard_blocked"}
+
+        strategy = self._playbook.get_strategy(strategy_id)
+        if not strategy:
+            return {"ok": False, "error": f"unknown_strategy:{strategy_id}", "error_code": "strategy_not_found"}
+        stage = str(strategy.get("stage") or "")
+        if stage not in {"candidate", "shadow", "challenger"}:
+            return {"ok": False, "error": f"sandbox_stage_invalid:{stage}", "error_code": "strategy_guard_blocked"}
+        cluster_id = str(plan.get("cluster_id") or "")
+        if cluster_id and str(strategy.get("cluster_id") or "") != cluster_id:
+            return {"ok": False, "error": "strategy_cluster_mismatch", "error_code": "strategy_guard_blocked"}
+
+        task_id = str(plan.get("task_id") or _new_task_id())
+        plan["task_id"] = task_id
+        champion = self._playbook.get_champion(cluster_id) if cluster_id else None
+        champion_id = str(champion.get("strategy_id") or "") if champion else ""
+        plan["is_shadow"] = True
+        plan["delivery_mode"] = "sandbox"
+        plan["shadow_of"] = f"sandbox:{task_id}"
+        plan["strategy_id"] = strategy_id
+        plan["strategy_stage"] = stage
+        plan["shadow_champion_strategy_id"] = champion_id
+
+        spec = strategy.get("spec") if isinstance(strategy.get("spec"), dict) else {}
+        if spec:
+            if isinstance(spec.get("concurrency"), dict):
+                current = plan.get("concurrency") if isinstance(plan.get("concurrency"), dict) else {}
+                plan["concurrency"] = {**spec.get("concurrency", {}), **current}
+            if isinstance(spec.get("timeout_hints"), dict):
+                current_hints = plan.get("timeout_hints") if isinstance(plan.get("timeout_hints"), dict) else {}
+                plan["timeout_hints"] = {**spec.get("timeout_hints", {}), **current_hints}
+
+        if not self._temporal:
+            self._record_task(plan, "failed_submission", "")
+            return {
+                "ok": False,
+                "task_id": task_id,
+                "error_code": "temporal_unavailable",
+                "error": "Temporal client unavailable; submission rejected",
+            }
+
+        run_root = self._make_run_root(task_id, is_shadow=True)
+        self._record_task(plan, "running_shadow", run_root)
+        try:
+            workflow_id = f"daemon-sandbox-{task_id}"
+            await self._temporal.submit(workflow_id, plan, run_root)
+        except Exception as exc:
+            logger.error("Temporal sandbox submit failed for task %s: %s", task_id, exc)
+            self._record_task({**plan, "last_error": str(exc)[:300]}, "failed_submission", run_root)
+            return {
+                "ok": False,
+                "task_id": task_id,
+                "error_code": "temporal_submit_failed",
+                "error": str(exc)[:400],
+            }
+
+        self._nerve.emit(
+            "sandbox_submitted",
+            {
+                "task_id": task_id,
+                "strategy_id": strategy_id,
+                "cluster_id": cluster_id,
+                "stage": stage,
+                "run_root": run_root,
+            },
+        )
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "status": "running_shadow",
+            "run_root": run_root,
+            "strategy_id": strategy_id,
+            "strategy_stage": stage,
+        }
+
     async def _maybe_submit_shadow(self, plan: dict, parent_task_id: str) -> None:
         """Submit a shadow run on a non-champion strategy without impacting primary delivery."""
         if plan.get("is_shadow"):

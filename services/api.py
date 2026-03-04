@@ -891,6 +891,21 @@ def create_app() -> FastAPI:
     def strategy_rollback_points(cluster_id: str | None = None, limit: int = 200):
         return playbook.list_rollback_points(cluster_id=cluster_id, limit=limit)
 
+    @app.post("/console/strategies/{strategy_id}/sandbox-submit")
+    async def strategy_sandbox_submit(strategy_id: str, request: Request):
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="sandbox plan body must be a JSON object")
+        result = await dispatch.submit_sandbox(body, strategy_id=strategy_id)
+        if not result.get("ok"):
+            code = str(result.get("error_code") or "")
+            if code in {"invalid_plan", "semantic_mapping_failed", "strategy_guard_blocked", "strategy_not_found"}:
+                raise HTTPException(status_code=400, detail=result)
+            if code.startswith("temporal_"):
+                raise HTTPException(status_code=503, detail=result)
+            raise HTTPException(status_code=500, detail=result)
+        return result
+
     @app.get("/console/semantics")
     def console_semantics():
         catalog = {}

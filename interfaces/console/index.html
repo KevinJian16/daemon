@@ -1158,6 +1158,7 @@ async function loadStrategies() {
         <td style="color:var(--muted)">${(r.updated_utc || '').replace('T',' ').replace('Z','')}</td>
         <td>
           <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewStrategyDetail('${encodeURIComponent(sid)}')">View</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#0f766e" onclick="sandboxStrategy('${encodeURIComponent(sid)}','${encodeURIComponent(r.cluster_id || '')}','${encodeURIComponent(r.task_type_compat || '')}')">Sandbox</button>
           <button class="action" style="font-size:11px;padding:3px 8px;background:#14532d" onclick="promoteStrategy('${encodeURIComponent(sid)}')">Promote</button>
           <button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackStrategy('${encodeURIComponent(sid)}')">Rollback</button>
         </td>
@@ -1244,6 +1245,39 @@ async function rollbackStrategy(sidKey) {
     await loadStrategies();
   } catch (e) {
     alert('Rollback failed: ' + e.message);
+  }
+}
+
+async function sandboxStrategy(sidKey, clusterKey, taskTypeKey) {
+  const strategyId = decodeURIComponent(sidKey || '');
+  const clusterId = decodeURIComponent(clusterKey || '');
+  const taskTypeCompat = decodeURIComponent(taskTypeKey || '');
+  if (!strategyId) return;
+  const title = prompt('Sandbox task title:', 'Sandbox validation run');
+  if (!title) return;
+  const taskType = taskTypeCompat || 'research_report';
+  const plan = {
+    title: title,
+    task_type: taskType,
+    semantic_fingerprint: {
+      cluster_id: clusterId || 'clst_research_report',
+      objective: title,
+      risk_level: 'medium'
+    },
+    steps: [
+      { id: 'collect', agent: 'collect', depends_on: [] },
+      { id: 'analyze', agent: 'analyze', depends_on: ['collect'] },
+      { id: 'review', agent: 'review', depends_on: ['analyze'] },
+      { id: 'render', agent: 'render', depends_on: ['review'] },
+      { id: 'apply', agent: 'apply', depends_on: ['render'] },
+    ]
+  };
+  try {
+    const result = await apiWrite('/console/strategies/' + encodeURIComponent(strategyId) + '/sandbox-submit', 'POST', plan);
+    alert('Sandbox submitted: ' + (result.task_id || ''));
+    await loadStrategies();
+  } catch (e) {
+    alert('Sandbox submit failed: ' + e.message);
   }
 }
 
