@@ -1,0 +1,21 @@
+{
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/openclaw/**": true,
+    "**/state/**": true,
+    "**/outcome/**": true,
+    "**/logs/**": true
+  },
+  "files.exclude": {
+    "**/node_modules": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/openclaw": true,
+    "**/state": true,
+    "**/outcome": true
+  },
+  "git.ignoredRepositories": [
+    "${workspaceFolder}/openclaw"
+  ]
+}
