@@ -393,6 +393,7 @@ class Dispatch:
             return {"ok": False, "error": str(exc), "error_code": "strategy_guard_blocked"}
 
         task_id = plan["task_id"]
+        plan.setdefault("trace_id", f"tr_task_{task_id}")
 
         if plan.get("queued"):
             self._queue_task(plan)
@@ -460,6 +461,7 @@ class Dispatch:
 
         task_id = str(plan.get("task_id") or _new_task_id())
         plan["task_id"] = task_id
+        plan.setdefault("trace_id", f"tr_task_{task_id}")
         champion = self._playbook.get_champion(cluster_id) if cluster_id else None
         champion_id = str(champion.get("strategy_id") or "") if champion else ""
         plan["is_shadow"] = True

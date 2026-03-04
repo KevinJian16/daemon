@@ -328,7 +328,24 @@ def create_app() -> FastAPI:
                 gate = json.loads(gate_path.read_text())
             except Exception as exc:
                 logger.warning("Failed to read gate.json: %s", exc)
-        return {"ok": True, "gate": gate["status"]}
+        dependencies = {
+            "temporal_connected": temporal_client is not None,
+            "cortex_available": bool(cortex and cortex.is_available()),
+            "model_policy_exists": model_policy_path.exists(),
+            "model_registry_exists": (home / "config" / "model_registry.json").exists(),
+            "openclaw_config_exists": (oc_home / "openclaw.json").exists(),
+        }
+        dependencies_ready = (
+            dependencies["cortex_available"]
+            and dependencies["model_policy_exists"]
+            and dependencies["model_registry_exists"]
+        )
+        return {
+            "ok": True,
+            "gate": gate["status"],
+            "dependencies": dependencies,
+            "dependencies_ready": dependencies_ready,
+        }
 
     # ── Task submission (Portal) ───────────────────────────────────────────────
 
@@ -949,8 +966,24 @@ def create_app() -> FastAPI:
         body["_version"] = version
         body["_updated"] = _utc()[:10]
         model_policy_path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
+        cv_version = compass.record_config_version("model_policy", body, changed_by="console", reason="model_policy_update")
         nerve.emit("fabric_updated", {"fabric": "model_policy", "path": str(model_policy_path)})
-        return {"ok": True, "path": str(model_policy_path), "_version": version}
+        return {"ok": True, "path": str(model_policy_path), "_version": version, "config_version": cv_version}
+
+    @app.get("/console/model-policy/versions")
+    def model_policy_versions(limit: int = 50):
+        return compass.versions("model_policy", limit=max(1, min(limit, 200)))
+
+    @app.post("/console/model-policy/rollback/{version}")
+    def model_policy_rollback(version: int):
+        value = compass.version_value("model_policy", version)
+        if value is None or not isinstance(value, dict):
+            raise HTTPException(status_code=404, detail="model policy version not found")
+        value["_updated"] = _utc()[:10]
+        model_policy_path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+        cv_version = compass.record_config_version("model_policy", value, changed_by="console", reason=f"rollback_to:{version}")
+        nerve.emit("fabric_updated", {"fabric": "model_policy", "path": str(model_policy_path), "rollback_from_version": version})
+        return {"ok": True, "rolled_back_to": version, "config_version": cv_version}
 
     @app.get("/console/model-usage")
     def model_usage(since: str | None = None, until: str | None = None, limit: int = 1000):

@@ -146,7 +146,7 @@ class CompassFabric:
         with self._connect() as conn:
             conn.executescript(SCHEMA)
 
-    def _version(self, conn: sqlite3.Connection, key: str, value: Any, changed_by: str, reason: str | None) -> None:
+    def _version(self, conn: sqlite3.Connection, key: str, value: Any, changed_by: str, reason: str | None) -> int:
         cur_ver = conn.execute(
             "SELECT MAX(version) FROM config_versions WHERE config_key=?", (key,)
         ).fetchone()[0]
@@ -155,6 +155,7 @@ class CompassFabric:
             "INSERT INTO config_versions VALUES (?,?,?,?,?,?,?)",
             (_new_id("cv"), key, next_ver, json.dumps(value), _utc(), changed_by, reason),
         )
+        return next_ver
 
     # ── Priorities ──────────────────────────────────────────────────────────
 
@@ -307,6 +308,23 @@ class CompassFabric:
                 (config_key, limit),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def record_config_version(self, config_key: str, value: Any, changed_by: str = "system", reason: str | None = None) -> int:
+        with self._connect() as conn:
+            return self._version(conn, config_key, value, changed_by, reason)
+
+    def version_value(self, config_key: str, version: int) -> Any | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value_json FROM config_versions WHERE config_key=? AND version=?",
+                (config_key, version),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row["value_json"])
+        except Exception:
+            return None
 
     def rollback(self, config_key: str, version: int, changed_by: str = "console") -> bool:
         """Restore a config key to a specific historical version."""
