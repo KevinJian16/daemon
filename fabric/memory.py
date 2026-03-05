@@ -300,6 +300,108 @@ class MemoryFabric:
             ]
         return unit
 
+    def upsert(
+        self,
+        unit: dict,
+        actor: str = "spine.learn",
+        source_type: str | None = None,
+        source_agent: str | None = None,
+    ) -> dict:
+        """CRUD-aware write: detect conflict with existing active units, update or insert.
+
+        Conflict detection: same domain + title match (case-insensitive).
+        - If existing unit found with lower source priority → Update (overwrite content).
+        - If existing unit found with equal/higher source priority → Skip (trust existing).
+        - If no conflict → Insert new unit.
+
+        Returns: {"action": "inserted"|"updated"|"skipped", "unit_id": str}
+        """
+        title = str(unit.get("title") or "").strip()
+        domain = str(unit.get("domain") or "general").strip()
+        if not title:
+            return {"action": "skipped", "unit_id": "", "reason": "empty_title"}
+
+        unit_source_type = _normalize_source_type(
+            unit.get("source_type") or source_type, fallback="synthetic"
+        )
+        incoming_priority = SOURCE_PRIORITY.get(unit_source_type, 99)
+
+        with self._conn() as conn:
+            # Find active unit with same domain+title (case-insensitive)
+            existing = conn.execute(
+                "SELECT unit_id, source_type, confidence FROM units "
+                "WHERE domain=? AND LOWER(title)=LOWER(?) AND status='active' LIMIT 1",
+                (domain, title),
+            ).fetchone()
+
+            if existing:
+                existing_priority = SOURCE_PRIORITY.get(
+                    _normalize_source_type(existing["source_type"]), 99
+                )
+                if incoming_priority < existing_priority:
+                    # Incoming has higher authority → Update
+                    uid = existing["unit_id"]
+                    now = _utc()
+                    fields: dict = {}
+                    for k in ("summary_zh", "summary_en", "confidence", "tier"):
+                        if unit.get(k) is not None:
+                            fields[k] = unit[k]
+                    fields["source_type"] = unit_source_type
+                    if source_agent:
+                        fields["source_agent"] = str(source_agent)
+                    fields["updated_utc"] = now
+                    if fields:
+                        set_clause = ", ".join(f"{k}=?" for k in fields)
+                        conn.execute(
+                            f"UPDATE units SET {set_clause} WHERE unit_id=?",
+                            [*fields.values(), uid],
+                        )
+                    self._audit(conn, "upsert_update", actor, {"unit_id": uid, "reason": "higher_source_priority"})
+                    return {"action": "updated", "unit_id": uid}
+                else:
+                    # Existing has equal or higher authority → Skip
+                    self._audit(conn, "upsert_skip", actor, {"unit_id": existing["unit_id"], "reason": "existing_priority_sufficient"})
+                    return {"action": "skipped", "unit_id": existing["unit_id"]}
+
+            # No conflict → Insert
+            result = self.intake([unit], actor=actor, source_type=source_type, source_agent=source_agent)
+            uid = result["unit_ids"][0] if result["unit_ids"] else ""
+            return {"action": "inserted", "unit_id": uid}
+
+    def delete(self, unit_id: str, actor: str = "spine.learn", reason: str = "") -> bool:
+        """Soft-delete a memory unit (status='deleted'). Stronger signal than 'archived'."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE units SET status='deleted', updated_utc=? WHERE unit_id=? AND status='active'",
+                (_utc(), unit_id),
+            )
+            if cur.rowcount == 0:
+                return False
+            self._audit(conn, "delete", actor, {"unit_id": unit_id, "reason": reason})
+        return True
+
+    def find_conflicts(self, domain: str | None = None, limit: int = 50) -> list[dict]:
+        """Find active units that share domain+title — potential contradictions for review."""
+        clause = "WHERE status='active'"
+        params: list[Any] = []
+        if domain:
+            clause += " AND domain=?"
+            params.append(domain)
+        sql = f"""
+            SELECT LOWER(title) as norm_title, domain, COUNT(*) as cnt,
+                   GROUP_CONCAT(unit_id, ',') as unit_ids,
+                   GROUP_CONCAT(source_type, ',') as source_types
+            FROM units {clause}
+            GROUP BY LOWER(title), domain
+            HAVING cnt > 1
+            ORDER BY cnt DESC
+            LIMIT ?
+        """
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
     def distill(self, unit_id: str, updates: dict, actor: str = "spine.distill") -> bool:
         """Update a unit's content after semantic distillation."""
         allowed = {"title", "summary_zh", "summary_en", "confidence", "status", "tier"}

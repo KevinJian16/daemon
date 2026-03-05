@@ -185,7 +185,7 @@ def run_distill(self) -> dict:
                 for uid in ids:
                     if uid == keep_id or uid in archived_ids:
                         continue
-                    self.memory.distill(uid, {"status": "archived"})
+                    self.memory.delete(uid, actor="spine.distill", reason="duplicate_merged")
                     archived_ids.add(uid)
                     archived += 1
 
@@ -204,6 +204,14 @@ def run_distill(self) -> dict:
 
 def run_learn(self) -> dict:
     with self.tracer.span("spine.learn", trigger="cron") as ctx:
+        # CRUD: scan for conflicting units before learning
+        conflicts = self.memory.find_conflicts(limit=20)
+        if conflicts:
+            ctx.step("memory_conflicts_detected", {"count": len(conflicts), "groups": [
+                {"title": c["norm_title"], "domain": c["domain"], "count": c["cnt"]}
+                for c in conflicts[:5]
+            ]})
+
         active_methods = self.playbook.consult()
         recent_traces = self.tracer.recent(limit=100)
         mem_stats = self.memory.stats()
