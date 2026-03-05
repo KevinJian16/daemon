@@ -4,7 +4,6 @@ async function loadCampaigns() {
   const q = document.getElementById('campaign-q')?.value?.trim() || '';
   const sizeSel = Number(document.getElementById('campaign-page-size')?.value || 20);
   _listState('campaigns', {size: sizeSel}).size = sizeSel;
-  tbody.innerHTML = `<tr><td colspan="7" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
   try {
     const rows = await api('/campaigns?limit=500');
     const filtered = _applyListQuery(rows || [], q, ['campaign_id', 'task_id', 'status', 'current_phase', 'updated_utc']);
@@ -109,4 +108,3 @@ async function cancelCampaign(campaignKey) {
     alert(tx('取消 Campaign 失败：', 'Cancel campaign failed: ') + e.message);
   }
 }
-

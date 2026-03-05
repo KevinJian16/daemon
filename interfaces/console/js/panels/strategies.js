@@ -14,8 +14,6 @@ async function loadStrategies() {
   if (cluster) qs.push('cluster_id=' + encodeURIComponent(cluster));
   if (stage) qs.push('stage=' + encodeURIComponent(stage));
   if (qs.length) url += '?' + qs.join('&');
-  tbody.innerHTML = `<tr><td colspan="8" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
-  shadowBody.innerHTML = `<tr><td colspan="7" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
   try {
     const [rows, shadowRows] = await Promise.all([
       api(url),
@@ -170,9 +168,9 @@ async function loadSemantics() {
   const target = document.getElementById('semantics-detail');
   const versionsBody = document.getElementById('semantic-versions-tbody');
   const versionSelect = document.getElementById('semantic-version-select');
-  target.textContent = tx('加载语义数据…', 'Loading semantic data…');
-  if (versionsBody) versionsBody.innerHTML = `<tr><td colspan="6" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
-  if (versionSelect) versionSelect.innerHTML = `<option value="">${tx('选择版本', 'Select version')}</option>`;
+  if (versionSelect && !String(versionSelect.innerHTML || '').trim()) {
+    versionSelect.innerHTML = `<option value="">${tx('选择版本', 'Select version')}</option>`;
+  }
   try {
     const [res, catalogVersions, ruleVersions] = await Promise.all([
       api('/console/semantics'),
@@ -342,4 +340,3 @@ async function rollbackSemanticVersion(targetKey, version) {
     alert(tx('语义配置回滚失败：', 'Semantic rollback failed: ') + e.message);
   }
 }
-

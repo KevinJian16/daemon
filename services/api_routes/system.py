@@ -80,7 +80,8 @@ def register_system_routes(
 
     @app.get("/console/system/reset/last-report")
     def system_reset_last_report(request: Request):
-        require_localhost(request)
+        # Read-only report: allow remote Console users after normal auth middleware checks.
+        # Challenge/confirm endpoints remain localhost-only.
         return reset_manager.last_report()
 
     @app.get("/portal/integrations/drive/status")
@@ -121,7 +122,7 @@ def register_system_routes(
 
     @app.get("/console/system/storage")
     def console_storage_status(request: Request):
-        require_localhost(request)
+        # Read-only storage status: allow remote Console users after normal auth middleware checks.
         return drive_accounts.integration_status()
 
     @app.put("/console/system/storage")

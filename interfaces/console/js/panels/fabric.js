@@ -1,7 +1,9 @@
 async function showFabric(type) {
   currentFabricView = String(type || 'memory');
   const content = document.getElementById('fabric-content');
-  content.innerHTML = tx('加载中…', 'Loading…');
+  if (content && !String(content.textContent || '').trim()) {
+    content.textContent = tx('加载中…', 'Loading…');
+  }
   if (type === 'memory') {
     const units = await api('/console/fabric/memory?limit=50');
     let html = `<div class="card"><h3>${tx('Memory Units（最近 50 条）', 'Memory Units (latest 50)')}</h3><table><thead><tr><th>${tx('操作', 'Action')}</th><th>${tx('标题', 'Title')}</th><th>${tx('领域', 'Domain')}</th><th>${tx('层级', 'Tier')}</th><th>${tx('来源', 'Source')}</th><th>${tx('置信度', 'Confidence')}</th><th>${tx('创建时间', 'Created')}</th></tr></thead><tbody>`;
@@ -143,4 +145,3 @@ function previewSelectedPlaybookVersion() {
   }
   preview.textContent = JSON.stringify(spec, null, 2);
 }
-

@@ -53,7 +53,6 @@ async function confirmSystemReset() {
 async function loadSystemResetReport() {
   const target = document.getElementById('system-reset-report');
   if (!target) return;
-  target.textContent = tx('加载重置报告…', 'Loading reset report…');
   try {
     const data = await api('/console/system/reset/last-report');
     target.textContent = data && Object.keys(data).length ? JSON.stringify(data, null, 2) : tx('暂无报告。', 'No report.');
@@ -79,7 +78,6 @@ function renderStorageStatus(data) {
 async function loadSystemStorage() {
   const body = document.getElementById('storage-status-body');
   const input = document.getElementById('storage-daemon-dir-name');
-  if (body) body.innerHTML = `<tr><td colspan="2" style="color:var(--muted);padding:6px 0">${tx('加载中…','Loading…')}</td></tr>`;
   try {
     const data = await api('/console/system/storage');
     if (input) input.value = String(data.daemon_dir_name || 'daemon');

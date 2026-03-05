@@ -15,7 +15,7 @@
     <span id="brand">Daemon</span>
     <span id="gate-dot" title="Gate: GREEN"></span>
     <button class="icon-btn" id="lang-btn" onclick="toggleLang()">EN</button>
-    <a class="icon-btn" href="/console/" id="console-link">Console</a>
+    <a class="icon-btn" href="/console/" id="console-link" onclick="try{const raw=localStorage.getItem('d_console_view_state');const panel=String((raw?JSON.parse(raw):{}).panel||'').trim();const allow=['overview','spine','fabric','policy','traces','strategies','model','agents','skill-evolution','schedules','campaigns','system'];this.href=allow.includes(panel)?('/console/?panel='+encodeURIComponent(panel)):'/console/';}catch(_){this.href='/console/';}">Console</a>
     <button class="icon-btn" id="compose-btn" onclick="showCompose()" title="新建任务">✏</button>
   </div>
 

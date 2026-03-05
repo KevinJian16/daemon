@@ -5,11 +5,9 @@ async function loadModelControl() {
   const cortexBody = document.getElementById('cortex-usage-tbody');
   const versionsBody = document.getElementById('model-policy-versions-tbody');
   const versionSelect = document.getElementById('model-version-select');
-  if (summary) summary.innerHTML = `<div class="model-empty">${tx('加载模型用量…', 'Loading model usage…')}</div>`;
-  if (cortexSummary) cortexSummary.innerHTML = `<div class="model-empty">${tx('加载 Cortex 汇总…', 'Loading Cortex summary…')}</div>`;
-  if (cortexBody) cortexBody.innerHTML = `<tr><td colspan="8" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
-  if (versionsBody) versionsBody.innerHTML = `<tr><td colspan="6" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
-  if (versionSelect) versionSelect.innerHTML = `<option value="">${tx('选择版本', 'Select version')}</option>`;
+  if (versionSelect && !String(versionSelect.innerHTML || '').trim()) {
+    versionSelect.innerHTML = `<option value="">${tx('选择版本', 'Select version')}</option>`;
+  }
   try {
     const [policy, registry, usage, policyVersions, registryVersions] = await Promise.all([
       api('/console/model-policy'),
@@ -253,4 +251,3 @@ async function rollbackModelConfigVersion(targetKey, version) {
     alert(tx('模型回滚失败：', 'Model rollback failed: ') + e.message);
   }
 }
-

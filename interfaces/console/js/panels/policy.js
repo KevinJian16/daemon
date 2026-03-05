@@ -210,9 +210,6 @@ async function loadPolicyCatalog() {
   const qualityTbody = document.getElementById('policy-quality-tbody');
   const prefTbody = document.getElementById('policy-pref-tbody');
   const budgetTbody = document.getElementById('policy-budget-tbody');
-  if (qualityTbody) qualityTbody.innerHTML = `<tr><td colspan="4" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
-  if (prefTbody) prefTbody.innerHTML = `<tr><td colspan="4" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
-  if (budgetTbody) budgetTbody.innerHTML = `<tr><td colspan="4" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
   try {
     const [qualityKeys, prefs, budgets] = await Promise.all([
       _loadPolicyScopeKeys('quality'),
@@ -273,7 +270,6 @@ async function editPolicyKey(scope, keyEncoded) {
 async function loadPolicyVersions() {
   const desc = _policyDescriptor();
   const tbody = document.getElementById('policy-versions-tbody');
-  tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
   try {
     const versions = await api(desc.versionsPath);
     currentPolicyVersions = Array.isArray(versions) ? versions : [];

@@ -20,16 +20,18 @@ async function loadTraces() {
     const rows = await api(url);
     const filtered = _applyListQuery(rows || [], q, ['trace_id', 'routine', 'status', 'started_utc', 'error']);
     const traces = _paginate(filtered, 'traces', 'traces-pager', 'loadTraces');
-    document.getElementById('traces-tbody').innerHTML = traces.map(t =>
-      `<tr>
-        <td style="color:var(--muted);font-size:11px"><button class="action" style="font-size:10px;padding:2px 6px;background:#334155" onclick="loadTraceDetail('${t.trace_id}')">${t.trace_id}</button></td>
+    document.getElementById('traces-tbody').innerHTML = traces.map(t => {
+      const rawId = String(t.trace_id || '');
+      const shortId = rawId.length > 14 ? `${rawId.slice(0, 14)}…` : rawId;
+      return `<tr>
+        <td style="color:var(--muted);font-size:11px"><button class="action trace-id-btn" title="${esc(rawId)}" style="font-size:10px;padding:2px 6px;background:#334155" onclick="loadTraceDetail('${t.trace_id}')">${esc(shortId)}</button></td>
         <td>${t.routine}</td>
         <td><span class="badge ${t.status}">${t.status}</span></td>
         <td>${t.degraded ? '<span class="badge degraded">yes</span>' : '—'}</td>
         <td style="color:var(--muted)">${fmtTime(t.started_utc)}</td>
         <td>${t.elapsed_s}s</td>
-      </tr>`
-    ).join('') || `<tr><td colspan="6" style="color:var(--muted)">${tx('未找到 traces', 'No traces found')}</td></tr>`;
+      </tr>`;
+    }).join('') || `<tr><td colspan="6" style="color:var(--muted)">${tx('未找到 traces', 'No traces found')}</td></tr>`;
   } catch (e) {
     document.getElementById('traces-tbody').innerHTML = `<tr><td colspan="6" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
     const pager = document.getElementById('traces-pager');
@@ -124,8 +126,6 @@ async function loadCortexUsage() {
   let url = '/console/cortex/usage?limit=2000';
   if (since) url += '&since=' + encodeURIComponent(since);
   if (until) url += '&until=' + encodeURIComponent(until);
-  tbody.innerHTML = `<tr><td colspan="8" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
-  if (summary) summary.innerHTML = `<div class="model-empty">${tx('加载用量汇总…', 'Loading usage summary…')}</div>`;
   try {
     const res = await api(url);
     const rows = Array.isArray(res.records) ? res.records : [];
@@ -190,4 +190,3 @@ async function loadCortexUsage() {
     if (summary) summary.innerHTML = `<div class="model-empty">${tx('加载用量汇总失败：', 'Error loading usage summary: ')}${esc(e.message)}</div>`;
   }
 }
-

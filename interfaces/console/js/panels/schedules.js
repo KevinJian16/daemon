@@ -71,7 +71,6 @@ async function loadScheduleHistory() {
   let url = '/console/schedules/history?limit=500';
   const routine = document.getElementById('schedule-history-routine')?.value || '';
   if (routine) url += '&routine=' + encodeURIComponent(routine);
-  tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
   try {
     const rows = await api(url);
     let filtered = rows || [];
@@ -107,4 +106,3 @@ async function loadScheduleHistory() {
     tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
   }
 }
-

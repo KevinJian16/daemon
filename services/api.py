@@ -154,14 +154,87 @@ def create_app() -> FastAPI:
     _access_token = os.environ.get("DAEMON_ACCESS_TOKEN", "").strip()
     _TOKEN_COOKIE = "daemon_token"
     _LOGIN_HTML = """<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Daemon — Login</title>
-<style>body{font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#faf9f7}
-form{display:flex;flex-direction:column;gap:12px;width:320px}
-input{padding:10px;border:1px solid #ddd;border-radius:8px;font-size:15px}
-button{padding:10px;background:#1a1a1a;color:#fff;border:none;border-radius:8px;font-size:15px;cursor:pointer}
-p{color:#c00;font-size:13px;text-align:center}</style></head>
+<style>
+:root{
+  --bg:#faf9f7;
+  --surface:#f0ece3;
+  --border:#e2ddd5;
+  --text:#1c1917;
+  --muted:#78716c;
+  --accent:#c96940;
+  --error:#b91c1c;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  min-height:100dvh;
+  background:var(--bg);
+  color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  display:flex;
+  justify-content:center;
+  align-items:flex-start;
+  padding:clamp(36px,10vh,96px) 16px 24px;
+}
+form{
+  width:min(420px,100%);
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:20px;
+  box-shadow:0 10px 28px rgba(28,25,23,.06);
+}
+h2{
+  margin:0;
+  font-size:21px;
+  letter-spacing:-.02em;
+}
+.sub{
+  margin:0;
+  color:var(--muted);
+  font-size:13px;
+  line-height:1.45;
+}
+input{
+  width:100%;
+  border:1px solid var(--border);
+  border-radius:10px;
+  background:var(--bg);
+  color:var(--text);
+  font-size:15px;
+  padding:11px 12px;
+  outline:none;
+}
+input:focus{
+  border-color:var(--accent);
+}
+button{
+  margin-top:2px;
+  border:none;
+  border-radius:10px;
+  background:var(--accent);
+  color:#fff;
+  padding:11px 12px;
+  font-size:14px;
+  font-weight:600;
+  cursor:pointer;
+}
+button:hover{opacity:.92}
+p{
+  margin:0;
+  color:var(--error);
+  font-size:13px;
+  line-height:1.4;
+}
+</style></head>
 <body><form method=post action=/_login>
-<h2 style="margin:0;font-size:20px">Daemon</h2>
+<h2>Daemon</h2>
+<p class=sub>Enter your access token to continue.</p>
 {error}
 <input type=password name=token placeholder="Access token" autofocus>
 <button type=submit>Enter</button>

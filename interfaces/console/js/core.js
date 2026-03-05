@@ -33,6 +33,8 @@ let unifiedEditorState = {
 };
 const listUiState = {};
 const CONSOLE_VIEW_STATE_KEY = 'd_console_view_state';
+const PANEL_CACHE_TTL_MS = 60 * 1000;
+const panelLoadState = {};
 
 function _readConsolePanelState() {
   try {
@@ -110,7 +112,7 @@ const CONSOLE_STATIC_TEXT = [
   {sel:'#panel-campaigns .card:nth-of-type(1) h3', zh:'Campaign 列表', en:'Campaign List'},
   {sel:'#panel-campaigns .card:nth-of-type(2) h3', zh:'Campaign 详情', en:'Campaign Detail'},
   {sel:'#panel-system .card:nth-of-type(1) h3', zh:'托管 Drive 存储', en:'Managed Drive Storage'},
-  {sel:'#panel-system .card:nth-of-type(2) h3', zh:'系统重置（仅本机）', en:'System Reset (Localhost Only)'},
+  {sel:'#panel-system .card:nth-of-type(2) h3', zh:'系统重置（challenge/confirm 仅本机）', en:'System Reset (Challenge/Confirm = Localhost Only)'},
   {sel:'#panel-system .card:nth-of-type(3) h3', zh:'最近重置报告', en:'Last Reset Report'},
   {sel:'#policy-editor-meta', zh:'编辑器空闲', en:'Editor idle'},
 ];
@@ -167,7 +169,7 @@ function applyConsoleLang() {
   _translateDefaultText('#model-usage-summary', '加载中…', 'Loading…');
   _translateDefaultText('#sev-detail', '请选择一个提案查看详情。', 'Select a proposal to inspect details.');
   _translateDefaultText('#campaign-detail', '请选择一条 Campaign 记录查看 manifest/milestones。', 'Select a campaign row to inspect manifest/milestones.');
-  _translateDefaultText('#system-storage-status', '加载中…', 'Loading…');
+  _translateDefaultText('#storage-status-body', '加载中…', 'Loading…');
   _translateDefaultText('#system-reset-state', '尚未生成重置挑战码。', 'No reset challenge issued.');
   _translateDefaultText('#system-reset-report', '暂无报告。', 'No report.');
   const policyScope = document.getElementById('policy-scope');
@@ -382,6 +384,55 @@ function clearTransientUi(_nextPanel) {
   return true;
 }
 
+function _panelState(panel) {
+  if (!panelLoadState[panel]) {
+    panelLoadState[panel] = {loaded: false, loadedAt: 0, loading: null};
+  }
+  return panelLoadState[panel];
+}
+
+async function _runPanelLoader(panel, opts = {}) {
+  const force = !!opts.force;
+  const st = _panelState(panel);
+  if (st.loading) return st.loading;
+  if (!force && st.loaded) return;
+  let loader = null;
+  if (panel === 'overview') loader = loadOverview;
+  else if (panel === 'spine') loader = loadSpine;
+  else if (panel === 'fabric') loader = () => showFabric(currentFabricView || 'memory');
+  else if (panel === 'policy') loader = loadPolicy;
+  else if (panel === 'traces') loader = loadTraces;
+  else if (panel === 'strategies') loader = async () => { await loadStrategies(); await loadSemantics(); };
+  else if (panel === 'model') loader = loadModelControl;
+  else if (panel === 'agents') loader = loadAgents;
+  else if (panel === 'skill-evolution') loader = loadSkillEvolution;
+  else if (panel === 'schedules') loader = loadSchedules;
+  else if (panel === 'campaigns') loader = loadCampaigns;
+  else if (panel === 'system') loader = loadSystemResetPanel;
+  if (!loader) return;
+  st.loading = Promise.resolve()
+    .then(() => loader())
+    .then(() => {
+      st.loaded = true;
+      st.loadedAt = Date.now();
+    })
+    .catch((err) => {
+      console.error('[console] panel load failed:', panel, err);
+      throw err;
+    })
+    .finally(() => {
+      st.loading = null;
+    });
+  return st.loading;
+}
+
+function _scheduleSoftRefresh(panel) {
+  const st = _panelState(panel);
+  if (!st.loaded) return;
+  if ((Date.now() - Number(st.loadedAt || 0)) < PANEL_CACHE_TTL_MS) return;
+  setTimeout(() => { _runPanelLoader(panel, {force: true}).catch(() => {}); }, 0);
+}
+
 function show(panel, el) {
   if (!clearTransientUi(panel)) return;
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
@@ -390,18 +441,12 @@ function show(panel, el) {
   const navBtn = el || _navButtonForPanel(panel);
   if (navBtn) navBtn.classList.add('active');
   _writeConsolePanelState(panel);
-  if (panel === 'overview') loadOverview();
-  else if (panel === 'spine') loadSpine();
-  else if (panel === 'fabric') showFabric(currentFabricView || 'memory');
-  else if (panel === 'policy') loadPolicy();
-  else if (panel === 'traces') loadTraces();
-  else if (panel === 'strategies') { loadStrategies(); loadSemantics(); }
-  else if (panel === 'model') loadModelControl();
-  else if (panel === 'agents') loadAgents();
-  else if (panel === 'skill-evolution') loadSkillEvolution();
-  else if (panel === 'schedules') loadSchedules();
-  else if (panel === 'campaigns') loadCampaigns();
-  else if (panel === 'system') loadSystemResetPanel();
+  const st = _panelState(panel);
+  if (!st.loaded) {
+    _runPanelLoader(panel, {force: true}).catch(() => {});
+  } else {
+    _scheduleSoftRefresh(panel);
+  }
 }
 
 function _listState(key, defaults = {page: 1, size: 20}) {

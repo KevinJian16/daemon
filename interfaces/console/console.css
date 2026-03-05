@@ -82,6 +82,12 @@ tr:hover td { background: var(--hover); }
 .deterministic { background: rgba(120,113,108,.12); color: var(--muted); }
 button.action { background: var(--accent); color: #fff; padding: 5px 12px; border-radius: 6px; font-size: 12px; font-weight: 500; transition: opacity .15s; }
 button.action:hover { opacity: .85; }
+button.action {
+  white-space: nowrap;
+  word-break: normal;
+  overflow-wrap: normal;
+  text-wrap: nowrap;
+}
 #nerve-feed { max-height: 300px; overflow-y: auto; font-size: 12px; }
 #nerve-feed div { padding: 5px 8px; border-bottom: 1px solid var(--border); font-family: var(--mono); }
 #nerve-feed .ts { color: var(--muted); font-size: 10px; }
@@ -345,4 +351,167 @@ textarea.editor:focus { border-color: var(--accent); }
 .model-empty {
   color: var(--muted);
   padding: 10px;
+}
+
+/* Mobile-first polish for Console */
+@media (max-width: 900px) {
+  header {
+    padding: 10px 12px;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  header h1 {
+    width: 100%;
+    font-size: 13px;
+  }
+  #running-tasks {
+    width: 100%;
+    margin-left: 0 !important;
+  }
+  nav {
+    padding: 6px 10px;
+  }
+  nav button {
+    font-size: 12px;
+    padding: 6px 10px;
+  }
+  main {
+    padding: 12px;
+  }
+  .card {
+    padding: 12px;
+    border-radius: 9px;
+  }
+  .search-row {
+    gap: 6px;
+  }
+  .search-row input,
+  .search-row select,
+  .search-row button,
+  .search-row .action {
+    width: 100% !important;
+    min-height: 34px;
+  }
+  .card > table,
+  .panel > table,
+  .card .table-shell table,
+  .model-table-shell table {
+    width: 100%;
+    min-width: 0 !important;
+    table-layout: fixed;
+  }
+  .card th,
+  .card td {
+    white-space: normal;
+    overflow-wrap: break-word;
+    word-break: normal;
+    vertical-align: top;
+    font-size: 11px;
+    padding: 6px;
+  }
+  #panel-policy .table-shell th,
+  #panel-policy .table-shell td {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+  #panel-policy .table-shell td .action {
+    width: min(96px, 100%);
+  }
+  /* Dense data tables: keep words/buttons intact with horizontal scroll in-panel */
+  #panel-traces,
+  #panel-strategies .card,
+  #panel-model .card,
+  #panel-agents .card,
+  #panel-schedules .card,
+  #panel-campaigns .card {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #panel-traces > table,
+  #panel-strategies .card > table,
+  #panel-model .card > table,
+  #panel-agents .card > table,
+  #panel-schedules .card > table,
+  #panel-campaigns .card > table {
+    min-width: 720px !important;
+    table-layout: auto !important;
+    width: max-content;
+  }
+  #panel-traces > table th,
+  #panel-traces > table td,
+  #panel-strategies .card > table th,
+  #panel-strategies .card > table td,
+  #panel-model .card > table th,
+  #panel-model .card > table td,
+  #panel-agents .card > table th,
+  #panel-agents .card > table td,
+  #panel-schedules .card > table th,
+  #panel-schedules .card > table td,
+  #panel-campaigns .card > table th,
+  #panel-campaigns .card > table td {
+    white-space: nowrap;
+    overflow-wrap: normal;
+    word-break: keep-all;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    vertical-align: middle;
+  }
+  #panel-strategies td .action,
+  #panel-model td .action,
+  #panel-agents td .action,
+  #panel-schedules td .action,
+  #panel-campaigns td .action,
+  #panel-traces td .action {
+    white-space: nowrap;
+    word-break: keep-all;
+    overflow-wrap: normal;
+  }
+  #panel-traces > table th,
+  #panel-traces > table td {
+    font-size: 10px;
+    padding: 5px;
+  }
+  #panel-traces .trace-id-btn {
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+  }
+  .list-foot {
+    justify-content: flex-start;
+  }
+  .pager {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  pre {
+    font-size: 10px;
+    padding: 10px;
+  }
+  #panel-system #storage-daemon-dir-name {
+    max-width: none !important;
+    width: 100% !important;
+  }
+}
+
+@media (max-width: 600px) {
+  .grid-4 {
+    grid-template-columns: 1fr;
+  }
+  .mini-stats {
+    grid-template-columns: 1fr;
+  }
+  .editor-drawer {
+    width: 100vw;
+  }
+  .editor-head {
+    flex-wrap: wrap;
+  }
+  .editor-head .tag {
+    margin-left: 0;
+  }
 }

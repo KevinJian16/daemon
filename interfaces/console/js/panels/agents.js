@@ -109,7 +109,6 @@ async function loadSkillEvolution() {
   const sizeSel = Number(document.getElementById('sev-page-size')?.value || 20);
   _listState('skill_evolution', {size: sizeSel}).size = sizeSel;
   const tbody = document.getElementById('sev-tbody');
-  tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
   let url = '/console/skill-evolution/proposals?limit=500';
   if (status) url += '&status=' + encodeURIComponent(status);
   try {
@@ -187,4 +186,3 @@ async function applySkillProposal(pidKey) {
     alert(tx('应用失败：', 'Apply failed: ') + e.message);
   }
 }
-

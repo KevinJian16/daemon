@@ -1,22 +1,35 @@
-function refreshAll() {
+function refreshAll(opts = {}) {
+  const force = opts.force !== false;
   const active = document.querySelector('.panel.active');
-  if (active?.id === 'panel-overview') loadOverview();
-  else if (active?.id === 'panel-spine') loadSpine();
-  else if (active?.id === 'panel-fabric') showFabric(currentFabricView || 'memory');
-  else if (active?.id === 'panel-policy') loadPolicy();
-  else if (active?.id === 'panel-traces') loadTraces();
-  else if (active?.id === 'panel-strategies') { loadStrategies(); loadSemantics(); }
-  else if (active?.id === 'panel-model') loadModelControl();
-  else if (active?.id === 'panel-agents') loadAgents();
-  else if (active?.id === 'panel-skill-evolution') loadSkillEvolution();
-  else if (active?.id === 'panel-schedules') loadSchedules();
-  else if (active?.id === 'panel-campaigns') loadCampaigns();
-  else if (active?.id === 'panel-system') loadSystemResetPanel();
+  const id = String(active?.id || '');
+  const panel = id.startsWith('panel-') ? id.slice(6) : '';
+  if (!panel) return;
+  if (force) {
+    _runPanelLoader(panel, {force: true}).catch(() => {});
+  } else {
+    _scheduleSoftRefresh(panel);
+  }
 }
 
 const CONSOLE_SERVER_BOOT_KEY = 'd_console_server_boot_marker';
 
+function _readPanelFromQuery() {
+  try {
+    const params = new URLSearchParams(window.location.search || '');
+    const panel = String(params.get('panel') || '').trim();
+    const allow = new Set(['overview', 'spine', 'fabric', 'policy', 'traces', 'strategies', 'model', 'agents', 'skill-evolution', 'schedules', 'campaigns', 'system']);
+    return allow.has(panel) ? panel : '';
+  } catch (_) {
+    return '';
+  }
+}
+
 async function resolveStartupPanel() {
+  const fromQuery = _readPanelFromQuery();
+  if (fromQuery) {
+    _writeConsolePanelState(fromQuery);
+    return fromQuery;
+  }
   const fallback = _readConsolePanelState();
   try {
     const resp = await fetch(`${API}/health`);
@@ -25,11 +38,7 @@ async function resolveStartupPanel() {
     const boot = String(data?.app_started_utc || '').trim();
     if (!boot) return fallback;
     const prev = String(localStorage.getItem(CONSOLE_SERVER_BOOT_KEY) || '').trim();
-    if (prev !== boot) {
-      localStorage.setItem(CONSOLE_SERVER_BOOT_KEY, boot);
-      _writeConsolePanelState('overview');
-      return 'overview';
-    }
+    if (prev !== boot) localStorage.setItem(CONSOLE_SERVER_BOOT_KEY, boot);
     return fallback;
   } catch (_) {
     return fallback;
@@ -58,5 +67,5 @@ document.addEventListener('keydown', (event) => {
   applyConsoleLang();
   const startupPanel = await resolveStartupPanel();
   show(startupPanel, _navButtonForPanel(startupPanel));
-  setInterval(refreshAll, 30000);
+  setInterval(() => refreshAll({force: false}), 30000);
 })();
