@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import time
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from temporalio import activity
+from runtime.drive_accounts import DriveAccountRegistry
 from runtime.event_bridge import EventBridge
 from runtime.openclaw import OpenClawAdapter
 
@@ -36,6 +38,7 @@ class DaemonActivities:
         self._home = _daemon_home()
         self._oc_home = _openclaw_home()
         self._openclaw: OpenClawAdapter | None = None
+        self._drive_registry = DriveAccountRegistry(self._home / "state")
         self._event_bridge = EventBridge(self._home / "state", source="worker")
         try:
             self._openclaw = OpenClawAdapter(self._oc_home)
@@ -57,8 +60,21 @@ class DaemonActivities:
         instruction = str(step.get("instruction") or step.get("message") or "").strip()
         timeout_s = int(step.get("timeout_s") or plan.get("default_step_timeout_s") or 480)
 
+        # Checkpoint restore: if this step has already completed, skip re-run.
+        checkpoint = self._read_step_checkpoint(run_root, step_id)
+        if checkpoint and str(checkpoint.get("status") or "") in {"ok", "degraded"}:
+            checkpoint["restored_from_checkpoint"] = True
+            return checkpoint
+
         # Build context payload including Fabric snapshots.
         context_payload = self._build_step_context(run_root, plan, step)
+        context_payload = self._apply_context_window_precheck(
+            run_root=run_root,
+            plan=plan,
+            step=step,
+            instruction=instruction,
+            context=context_payload,
+        )
 
         # Send message to Agent.
         composed_message = (
@@ -99,31 +115,34 @@ class DaemonActivities:
 
             if newest_assistant:
                 content = str(newest_assistant.get("content") or newest_assistant.get("text") or "").strip()
-                if content and content != last_content:
-                    last_content = content
+                if content:
                     raw = newest_assistant.get("raw") if isinstance(newest_assistant.get("raw"), dict) else {}
                     stop_reason = str(raw.get("stopReason") or "").strip().lower()
                     has_done_signal = any(
                         signal in content.lower()
                         for signal in ["[done]", "[complete]", "task complete", "completed successfully"]
                     )
+                    if content != last_content:
+                        last_content = content
                     # OpenClaw sessions_send is turn-based in current runtime: a concrete assistant turn
                     # with terminal stopReason is sufficient to mark the step complete.
                     if has_done_signal or stop_reason in {"stop", "end_turn"}:
                         output_path = self._write_step_output(run_root, step_id, content)
-                        return {
+                        result = {
                             "status": "ok",
                             "step_id": step_id,
                             "agent": agent_id,
                             "session_key": session_key,
                             "output_path": output_path,
                         }
+                        self._write_step_checkpoint(run_root, step_id, result)
+                        return result
 
             poll_interval = min(poll_interval * 1.2, 30)
 
         # Timeout — mark as degraded, not error (Temporal will handle retry policy).
         activity.logger.warning(f"Step {step_id} timed out after {timeout_s}s — marking degraded")
-        return {
+        result = {
             "status": "degraded",
             "step_id": step_id,
             "agent": agent_id,
@@ -131,6 +150,8 @@ class DaemonActivities:
             "error": f"timeout_after_{timeout_s}s",
             "degraded": True,
         }
+        self._write_step_checkpoint(run_root, step_id, result)
+        return result
 
     # ── Spine routine ─────────────────────────────────────────────────────────
 
@@ -236,9 +257,10 @@ class DaemonActivities:
             outcome_path = self._archive_shadow_outcome(run_root, plan, render_path, step_results)
         else:
             # Archive to outcome/.
-            outcome_path = self._archive_outcome(run_root, plan, render_path, step_results)
+            outcome_root = self._resolve_outcome_root()
+            outcome_path = self._archive_outcome(run_root, plan, render_path, step_results, outcome_root=outcome_root)
             # Update outcome index.
-            self._update_outcome_index(outcome_path, plan)
+            self._update_outcome_index(outcome_path, plan, outcome_root=outcome_root)
 
         # Update task status.
         self._update_task_status(
@@ -247,6 +269,15 @@ class DaemonActivities:
             "completed_shadow" if is_shadow else "completed",
             outcome_path=str(outcome_path),
         )
+
+        feedback_survey: dict[str, Any] | None = None
+        if not is_shadow:
+            try:
+                feedback_survey = self._generate_feedback_survey(plan=plan, outcome_path=outcome_path)
+                self._write_feedback_survey(feedback_survey)
+                self._event_bridge.emit("feedback_survey_generated", feedback_survey)
+            except Exception as exc:
+                activity.logger.warning("Failed to generate feedback survey for task %s: %s", plan.get("task_id", ""), exc)
 
         # Emit cross-process events for API process.
         task_id = str(plan.get("task_id") or "")
@@ -262,6 +293,8 @@ class DaemonActivities:
                 "global_score_components": score_components,
             },
         }
+        if feedback_survey:
+            delivery_payload["feedback_survey"] = feedback_survey
         if not is_shadow:
             self._event_bridge.emit("delivery_completed", delivery_payload)
         self._event_bridge.emit("task_completed", delivery_payload)
@@ -275,6 +308,7 @@ class DaemonActivities:
             "is_shadow": is_shadow,
             "quality_score": round(quality_score, 4),
             "global_score_components": score_components,
+            "feedback_survey": feedback_survey or {},
         }
 
     # ── Task status ───────────────────────────────────────────────────────────
@@ -302,6 +336,179 @@ class DaemonActivities:
                 },
             )
         return {"ok": True, "status": status}
+
+    # ── Campaign state ────────────────────────────────────────────────────────
+
+    @activity.defn(name="activity_campaign_bootstrap")
+    async def activity_campaign_bootstrap(self, run_root: str, plan: dict) -> dict:
+        """Initialize or refresh campaign manifest and milestone layout."""
+        task_id = str(plan.get("task_id") or run_root.split("/")[-1] or "")
+        campaign_id = str(plan.get("campaign_id") or f"cmp_{task_id}")
+        campaign_dir = self._home / "state" / "campaigns" / campaign_id
+        campaign_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = campaign_dir / "manifest.json"
+
+        steps = self._normalized_steps(plan)
+        milestones = self._derive_campaign_milestones(plan, steps)
+        resume_from = int(plan.get("campaign_resume_from") or 0)
+        resume_from = max(0, min(resume_from, len(milestones)))
+
+        manifest: dict[str, Any] = {}
+        if manifest_path.exists():
+            try:
+                old = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if isinstance(old, dict):
+                    manifest = old
+            except Exception:
+                manifest = {}
+
+        milestone_summaries = []
+        for i, m in enumerate(milestones):
+            row = {
+                "milestone_id": str(m.get("milestone_id") or f"m{i + 1:02d}"),
+                "title": str(m.get("title") or f"Milestone {i + 1}"),
+                "expected_output": str(m.get("expected_output") or ""),
+                "input_dependencies": m.get("input_dependencies") if isinstance(m.get("input_dependencies"), list) else [],
+                "step_ids": [str(s.get("id") or "") for s in (m.get("steps") or []) if isinstance(s, dict)],
+                "status": "pending",
+            }
+            # Keep previous status if exists.
+            old_rows = manifest.get("milestones") if isinstance(manifest.get("milestones"), list) else []
+            if i < len(old_rows) and isinstance(old_rows[i], dict):
+                row["status"] = str(old_rows[i].get("status") or row["status"])
+                if old_rows[i].get("objective_score") is not None:
+                    row["objective_score"] = old_rows[i].get("objective_score")
+                if old_rows[i].get("attempts") is not None:
+                    row["attempts"] = old_rows[i].get("attempts")
+            milestone_summaries.append(row)
+
+        manifest.update(
+            {
+                "campaign_id": campaign_id,
+                "task_id": task_id,
+                "title": str(plan.get("title") or task_id),
+                "status": str(manifest.get("status") or "running"),
+                "current_phase": str(manifest.get("current_phase") or "phase0_planning"),
+                "current_milestone_index": resume_from,
+                "workflow_id": str(plan.get("_workflow_id") or manifest.get("workflow_id") or ""),
+                "run_root": run_root,
+                "plan": plan,
+                "milestones": milestone_summaries,
+                "total_milestones": len(milestone_summaries),
+                "updated_utc": _utc(),
+                "created_utc": str(manifest.get("created_utc") or _utc()),
+            }
+        )
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        historical_step_results: list[dict] = []
+        for i in range(0, resume_from):
+            result_path = campaign_dir / "milestones" / str(i + 1) / "result.json"
+            if not result_path.exists():
+                continue
+            try:
+                payload = json.loads(result_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            rows = payload.get("step_results") if isinstance(payload.get("step_results"), list) else []
+            for row in rows:
+                if isinstance(row, dict):
+                    historical_step_results.append(row)
+
+        return {
+            "campaign_id": campaign_id,
+            "milestones": milestones,
+            "next_milestone_index": resume_from,
+            "manifest_path": str(manifest_path),
+            "historical_step_results": historical_step_results,
+        }
+
+    @activity.defn(name="activity_campaign_record_milestone")
+    async def activity_campaign_record_milestone(self, campaign_id: str, milestone_index: int, result: dict) -> dict:
+        """Persist one milestone result and update manifest pointer/status."""
+        campaign_dir = self._home / "state" / "campaigns" / campaign_id
+        campaign_dir.mkdir(parents=True, exist_ok=True)
+        milestones_dir = campaign_dir / "milestones" / str(max(1, int(milestone_index) + 1))
+        milestones_dir.mkdir(parents=True, exist_ok=True)
+
+        payload = dict(result or {})
+        payload["milestone_index"] = int(milestone_index)
+        payload["recorded_utc"] = _utc()
+        result_path = milestones_dir / "result.json"
+        result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        manifest_path = campaign_dir / "manifest.json"
+        manifest: dict[str, Any] = {}
+        if manifest_path.exists():
+            try:
+                data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    manifest = data
+            except Exception:
+                manifest = {}
+        rows = manifest.get("milestones") if isinstance(manifest.get("milestones"), list) else []
+        idx = int(milestone_index)
+        if 0 <= idx < len(rows) and isinstance(rows[idx], dict):
+            rows[idx]["status"] = str(payload.get("status") or rows[idx].get("status") or "")
+            rows[idx]["objective_score"] = payload.get("objective_score")
+            rows[idx]["attempts"] = int(payload.get("attempts") or 0)
+        manifest["milestones"] = rows
+        manifest["current_milestone_index"] = idx + 1 if str(payload.get("status") or "") == "passed" else idx
+        manifest["updated_utc"] = _utc()
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._event_bridge.emit(
+            "campaign_milestone_recorded",
+            {
+                "campaign_id": campaign_id,
+                "milestone_index": int(milestone_index),
+                "status": str(payload.get("status") or ""),
+                "objective_score": payload.get("objective_score"),
+                "attempts": int(payload.get("attempts") or 0),
+                "title": str(payload.get("title") or ""),
+            },
+        )
+        return {"ok": True, "campaign_id": campaign_id, "result_path": str(result_path)}
+
+    @activity.defn(name="activity_campaign_set_status")
+    async def activity_campaign_set_status(self, campaign_id: str, status: str, phase: str, extra: dict | None = None) -> dict:
+        """Update campaign manifest status/phase with mergeable metadata."""
+        campaign_dir = self._home / "state" / "campaigns" / campaign_id
+        campaign_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = campaign_dir / "manifest.json"
+        manifest: dict[str, Any] = {}
+        if manifest_path.exists():
+            try:
+                data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    manifest = data
+            except Exception:
+                manifest = {}
+        manifest["campaign_id"] = campaign_id
+        manifest["status"] = str(status or manifest.get("status") or "")
+        manifest["current_phase"] = str(phase or manifest.get("current_phase") or "")
+        manifest["updated_utc"] = _utc()
+        if isinstance(extra, dict) and extra:
+            meta = manifest.get("meta") if isinstance(manifest.get("meta"), dict) else {}
+            meta.update(extra)
+            manifest["meta"] = meta
+            if "current_milestone_index" in extra:
+                try:
+                    manifest["current_milestone_index"] = int(extra.get("current_milestone_index"))
+                except Exception:
+                    pass
+            if "workflow_id" in extra:
+                manifest["workflow_id"] = str(extra.get("workflow_id") or "")
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._event_bridge.emit(
+            "campaign_status_changed",
+            {
+                "campaign_id": campaign_id,
+                "status": str(manifest.get("status") or ""),
+                "phase": str(manifest.get("current_phase") or ""),
+                "current_milestone_index": int(manifest.get("current_milestone_index") or 0),
+            },
+        )
+        return {"ok": True, "campaign_id": campaign_id, "status": manifest.get("status"), "phase": manifest.get("current_phase")}
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -343,6 +550,124 @@ class DaemonActivities:
         }
         return context
 
+    def _apply_context_window_precheck(
+        self,
+        *,
+        run_root: str,
+        plan: dict,
+        step: dict,
+        instruction: str,
+        context: dict,
+    ) -> dict:
+        """Render precheck: compress upstream context if estimated prompt > 70% context window."""
+        out = dict(context or {})
+        agent = str(step.get("agent") or "").strip().lower()
+        step_id = str(step.get("id") or step.get("step_id") or "").strip().lower()
+        if agent != "render" and "render" not in step_id:
+            return out
+
+        model_window = self._model_context_window(plan, step)
+        threshold = int(model_window * 0.70)
+        refs = self._collect_upstream_outputs(run_root, str(step.get("id") or ""))
+        base_payload_text = f"{instruction}\n\n{json.dumps(out, ensure_ascii=False)}"
+        upstream_tokens = sum(self._estimate_tokens(str(r.get("content") or "")) for r in refs)
+        estimated_before = self._estimate_tokens(base_payload_text) + upstream_tokens
+        precheck = {
+            "model_context_window": model_window,
+            "threshold_tokens": threshold,
+            "estimated_tokens_before": estimated_before,
+            "compression_applied": False,
+            "upstream_output_files": len(refs),
+            "checked_utc": _utc(),
+        }
+
+        if estimated_before <= threshold:
+            out["context_precheck"] = precheck
+            self._write_context_precheck(run_root, str(step.get("id") or "step"), precheck)
+            return out
+
+        compressed = []
+        for row in refs:
+            text = str(row.get("content") or "").strip()
+            if not text:
+                continue
+            snippet = text[:1200]
+            if len(text) > 1200:
+                snippet += "...[truncated]"
+            compressed.append(
+                {
+                    "path": row.get("path", ""),
+                    "summary": snippet,
+                    "chars": len(text),
+                }
+            )
+
+        # Keep compression section bounded and always retain raw reference paths.
+        out["upstream_raw_references"] = [str(r.get("path") or "") for r in refs]
+        out["upstream_compressed"] = compressed[:20]
+        precheck["compression_applied"] = True
+        precheck["estimated_tokens_after"] = self._estimate_tokens(
+            f"{instruction}\n\n{json.dumps(out, ensure_ascii=False)}"
+        )
+        precheck["reason"] = "prompt_exceeds_70pct_context_window"
+        out["context_precheck"] = precheck
+        self._write_context_precheck(run_root, str(step.get("id") or "step"), precheck)
+        return out
+
+    def _write_context_precheck(self, run_root: str, step_id: str, payload: dict) -> None:
+        path = Path(run_root) / "steps" / step_id / "context_precheck.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _estimate_tokens(self, text: str) -> int:
+        s = str(text or "")
+        return max(1, int(len(s) / 4))
+
+    def _model_context_window(self, plan: dict, step: dict) -> int:
+        alias = (
+            str(step.get("model_alias") or "").strip()
+            or str(plan.get("model_alias") or "").strip()
+            or "fast"
+        )
+        registry_path = self._home / "config" / "model_registry.json"
+        if registry_path.exists():
+            try:
+                reg = json.loads(registry_path.read_text(encoding="utf-8"))
+                models = reg.get("models") if isinstance(reg.get("models"), list) else []
+                for row in models:
+                    if not isinstance(row, dict):
+                        continue
+                    if str(row.get("alias") or "").strip() != alias:
+                        continue
+                    cw = int(row.get("context_window") or 0)
+                    if cw > 0:
+                        return cw
+            except Exception:
+                pass
+        return 128000
+
+    def _collect_upstream_outputs(self, run_root: str, current_step_id: str) -> list[dict]:
+        rp = Path(run_root)
+        refs: list[dict] = []
+        for p in sorted(rp.glob("steps/*/output/output.md")):
+            sid = p.parent.parent.name
+            if sid == current_step_id:
+                continue
+            try:
+                content = p.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            refs.append(
+                {
+                    "step_id": sid,
+                    "path": str(p),
+                    "content": content,
+                }
+            )
+            if len(refs) >= 40:
+                break
+        return refs
+
     def _write_step_output(self, run_root: str, step_id: str, content: str) -> str:
         out_dir = Path(run_root) / "steps" / step_id / "output"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -350,8 +675,159 @@ class DaemonActivities:
         out_file.write_text(content)
         return str(out_file)
 
+    def _step_checkpoint_path(self, run_root: str, step_id: str) -> Path:
+        return Path(run_root) / "steps" / step_id / "output.json"
+
+    def _normalized_steps(self, plan: dict) -> list[dict]:
+        steps = plan.get("steps") or plan.get("graph", {}).get("steps") or []
+        if not isinstance(steps, list):
+            return []
+        out: list[dict] = []
+        for i, st in enumerate(steps):
+            if not isinstance(st, dict):
+                continue
+            sid = str(st.get("id") or st.get("step_id") or f"step_{i}").strip()
+            out.append({**st, "id": sid})
+        return out
+
+    def _derive_campaign_milestones(self, plan: dict, steps: list[dict]) -> list[dict]:
+        explicit = plan.get("milestones")
+        by_id = {str(st.get("id") or ""): st for st in steps if str(st.get("id") or "")}
+        milestones: list[dict] = []
+        if isinstance(explicit, list) and explicit:
+            for i, row in enumerate(explicit):
+                if not isinstance(row, dict):
+                    continue
+                sid_list = row.get("step_ids") if isinstance(row.get("step_ids"), list) else []
+                selected_steps = [by_id.get(str(sid)) for sid in sid_list if str(sid) in by_id]
+                if not selected_steps:
+                    continue
+                milestones.append(
+                    {
+                        "milestone_id": str(row.get("milestone_id") or row.get("id") or f"m{i + 1:02d}"),
+                        "title": str(row.get("title") or f"Milestone {i + 1}"),
+                        "expected_output": str(row.get("expected_output") or ""),
+                        "input_dependencies": row.get("input_dependencies") if isinstance(row.get("input_dependencies"), list) else [],
+                        "steps": selected_steps,
+                        "objective_rework_budget": int(row.get("objective_rework_budget") or 2),
+                    }
+                )
+            if milestones:
+                return milestones
+
+        if not steps:
+            return []
+        probe = plan.get("complexity_probe") if isinstance(plan.get("complexity_probe"), dict) else {}
+        estimated_phases = int(probe.get("estimated_phases") or plan.get("estimated_phases") or 4)
+        phases = max(2, min(estimated_phases, len(steps)))
+        chunk = max(1, int(math.ceil(len(steps) / phases)))
+        prev_milestone = ""
+        for i in range(0, len(steps), chunk):
+            chunk_steps = steps[i:i + chunk]
+            idx = len(milestones) + 1
+            milestone_id = f"m{idx:02d}"
+            milestones.append(
+                {
+                    "milestone_id": milestone_id,
+                    "title": f"Milestone {idx}",
+                    "expected_output": f"Complete {len(chunk_steps)} campaign steps",
+                    "input_dependencies": [prev_milestone] if prev_milestone else [],
+                    "steps": chunk_steps,
+                    "objective_rework_budget": 2,
+                }
+            )
+            prev_milestone = milestone_id
+        return milestones
+
+    def _read_step_checkpoint(self, run_root: str, step_id: str) -> dict | None:
+        path = self._step_checkpoint_path(run_root, step_id)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _write_step_checkpoint(self, run_root: str, step_id: str, result: dict) -> None:
+        path = self._step_checkpoint_path(run_root, step_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = dict(result or {})
+        payload["checkpoint_utc"] = _utc()
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _feedback_survey_path(self, task_id: str) -> Path:
+        return self._home / "state" / "feedback_surveys" / f"{task_id}.json"
+
+    def _generate_feedback_survey(self, *, plan: dict, outcome_path: Path) -> dict:
+        task_id = str(plan.get("task_id") or "")
+        task_scale = str(plan.get("task_scale") or "thread").strip().lower() or "thread"
+        task_type = str(plan.get("task_type") or "")
+        title = str(plan.get("title") or task_id)[:200]
+        channels = ["portal", "telegram"]
+        required = task_scale in {"pulse", "thread", "campaign"}
+        if task_scale == "campaign":
+            survey_type = "campaign_final"
+            prompt = "你对本次 Campaign 最终交付是否满意？"
+        else:
+            survey_type = "delivery_final"
+            prompt = "你对本次任务交付是否满意？"
+        return {
+            "survey_id": f"svy_{task_id}",
+            "task_id": task_id,
+            "task_type": task_type,
+            "task_scale": task_scale,
+            "title": title,
+            "survey_type": survey_type,
+            "prompt": prompt,
+            "required": required,
+            "channels": channels,
+            "status": "pending",
+            "created_utc": _utc(),
+            "outcome_path": str(outcome_path),
+            "questions": [
+                {
+                    "key": "overall",
+                    "type": "rating",
+                    "label": "整体满意度",
+                    "scale": [1, 2, 3, 4, 5],
+                },
+                {
+                    "key": "quality",
+                    "type": "choice",
+                    "label": "交付质量评价",
+                    "options": ["符合预期", "部分符合", "不符合"],
+                },
+                {
+                    "key": "next_action",
+                    "type": "choice",
+                    "label": "后续动作建议",
+                    "options": ["继续下一步", "需要补充修改", "暂停"],
+                },
+            ],
+        }
+
+    def _write_feedback_survey(self, payload: dict) -> None:
+        task_id = str(payload.get("task_id") or "")
+        if not task_id:
+            return
+        path = self._feedback_survey_path(task_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
     def _find_render_output(self, run_root: str, step_results: list[dict]) -> Path | None:
         rp = Path(run_root)
+        # Prefer explicit output_path attached to step results. This is critical for
+        # campaign resume runs where step outputs may come from earlier run_root.
+        for res in reversed(step_results):
+            if not isinstance(res, dict):
+                continue
+            outp = str(res.get("output_path") or "").strip()
+            if not outp:
+                continue
+            p = Path(outp)
+            if p.exists() and p.is_file():
+                return p
         # Look for render step output.
         for res in reversed(step_results):
             sid = res.get("step_id", "")
@@ -614,17 +1090,25 @@ class DaemonActivities:
             "semantic_fingerprint": plan.get("semantic_fingerprint") if isinstance(plan.get("semantic_fingerprint"), dict) else {},
         }
 
-    def _archive_outcome(self, run_root: str, plan: dict, render_path: Path, step_results: list[dict]) -> Path:
+    def _archive_outcome(
+        self,
+        run_root: str,
+        plan: dict,
+        render_path: Path,
+        step_results: list[dict],
+        outcome_root: Path | None = None,
+    ) -> Path:
         task_type = str(plan.get("task_type") or "manual")
         task_id = str(plan.get("task_id") or uuid.uuid4().hex[:8])
         title = str(plan.get("title") or task_id)[:60].replace("/", "-")
+        root = outcome_root or self._resolve_outcome_root()
 
         # Choose outcome category.
         if task_type in ("daily_brief", "weekly_brief"):
             today = time.strftime("%Y-%m-%d")
-            dest = self._home / "outcome" / "scheduled" / task_type / today
+            dest = root / "scheduled" / task_type / today
         else:
-            dest = self._home / "outcome" / "manual" / title
+            dest = root / "manual" / title
 
         dest.mkdir(parents=True, exist_ok=True)
 
@@ -681,15 +1165,20 @@ class DaemonActivities:
         except Exception as exc:
             activity.logger.warning("Failed to append shadow audit: %s", exc)
 
-    def _update_outcome_index(self, outcome_path: Path, plan: dict) -> None:
-        index_path = self._home / "outcome" / "index.json"
+    def _update_outcome_index(self, outcome_path: Path, plan: dict, outcome_root: Path | None = None) -> None:
+        root = outcome_root or self._resolve_outcome_root()
+        index_path = root / "index.json"
         try:
             index = json.loads(index_path.read_text())
         except Exception as exc:
             activity.logger.warning("Failed to read outcome index %s: %s", index_path, exc)
             index = []
+        try:
+            rel_path = str(outcome_path.relative_to(root))
+        except Exception:
+            rel_path = str(outcome_path)
         entry = {
-            "path": str(outcome_path.relative_to(self._home / "outcome")),
+            "path": rel_path,
             "title": plan.get("title", ""),
             "task_type": plan.get("task_type", "manual"),
             "task_id": plan.get("task_id", ""),
@@ -698,6 +1187,14 @@ class DaemonActivities:
         index.append(entry)
         # Keep last 1000 entries.
         index_path.write_text(json.dumps(index[-1000:], ensure_ascii=False, indent=2))
+
+    def _resolve_outcome_root(self) -> Path:
+        resolved = self._drive_registry.resolve_outcome_root()
+        if not resolved.get("ok"):
+            raise RuntimeError(f"drive_outcome_unavailable: {resolved.get('error', '')}")
+        root = Path(str(resolved.get("outcome_root") or "")).expanduser()
+        root.mkdir(parents=True, exist_ok=True)
+        return root
 
     def _update_task_status(self, run_root: str, plan: dict, status: str, outcome_path: str | None = None) -> None:
         tasks_path = self._home / "state" / "tasks.json"

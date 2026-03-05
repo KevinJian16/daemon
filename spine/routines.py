@@ -6,8 +6,13 @@ import logging
 import time
 import calendar
 import math
+import os
+import shutil
+import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from runtime.drive_accounts import DriveAccountRegistry
 
 if TYPE_CHECKING:
     from fabric.memory import MemoryFabric
@@ -23,6 +28,7 @@ def _utc() -> str:
 
 
 logger = logging.getLogger(__name__)
+_SOURCE_PRIORITY = {"human": 0, "empirical": 1, "synthetic": 2, "collected": 3}
 
 
 class SpineRoutines:
@@ -123,7 +129,12 @@ class SpineRoutines:
                     raw_signals = json.loads(sf.read_text())
                     if not isinstance(raw_signals, list):
                         raw_signals = [raw_signals]
-                    result = self.memory.intake(raw_signals)
+                    result = self.memory.intake(
+                        raw_signals,
+                        actor="spine.intake",
+                        source_type="collected",
+                        source_agent="collect",
+                    )
                     total_inserted += result["inserted"]
                     total_skipped += result["skipped"]
                 except Exception as e:
@@ -144,13 +155,20 @@ class SpineRoutines:
             status = "success" if outcome.get("ok") else "failure"
             score = float(outcome.get("score", 1.0 if outcome.get("ok") else 0.0))
 
-            # Find matching method.
-            methods = self.playbook.consult(category="dag_pattern")
             method_id: str | None = None
-            for m in methods:
-                if m["name"] == method_name:
-                    method_id = m["method_id"]
-                    break
+            plan_method_id = str(plan.get("method_id") or "").strip()
+            if plan_method_id:
+                method_row = self.playbook.get(plan_method_id)
+                if method_row:
+                    method_id = plan_method_id
+
+            # Fallback: resolve by active method name.
+            if not method_id:
+                methods = self.playbook.consult(category="dag_pattern")
+                for m in methods:
+                    if m["name"] == method_name:
+                        method_id = m["method_id"]
+                        break
 
             if method_id:
                 eval_detail = {
@@ -341,58 +359,98 @@ class SpineRoutines:
         """Semantic dedup and link discovery in Memory (hybrid)."""
         with self.tracer.span("spine.distill", trigger="cron") as ctx:
             units = self.memory.query(limit=200)
-            ctx.step("units_loaded", len(units))
+            snapshot_path = self._write_tmp_snapshot("distill", {"units": units})
+            ctx.step("snapshot_written", str(snapshot_path))
+            try:
+                units_snapshot = units
+                try:
+                    snap_raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
+                    if isinstance(snap_raw, dict) and isinstance(snap_raw.get("units"), list):
+                        units_snapshot = [u for u in snap_raw.get("units", []) if isinstance(u, dict)]
+                except Exception:
+                    units_snapshot = units
+                ctx.step("units_loaded", len(units_snapshot))
 
-            if not units:
-                result = {"units_processed": 0, "links_created": 0, "archived": 0}
+                if not units_snapshot:
+                    result = {"units_processed": 0, "links_created": 0, "archived": 0}
+                    ctx.set_result(result)
+                    return result
+
+                def _llm_distill() -> dict:
+                    titles = [{"unit_id": u["unit_id"], "title": u["title"], "domain": u["domain"]} for u in units_snapshot[:50]]
+                    return self.cortex.structured(
+                        f"Find semantic duplicates and relationships among these knowledge units:\n"
+                        f"{json.dumps(titles, ensure_ascii=False)}\n\n"
+                        "Return duplicates to merge and semantic links to create.",
+                        schema={
+                            "duplicates": [{"keep": "unit_id", "merge_from": ["unit_id"]}],
+                            "links": [{"from_id": "unit_id", "to_id": "unit_id", "relation": "supports|contradicts|extends"}],
+                        },
+                        model="analysis",
+                    )
+
+                def _string_fallback() -> dict:
+                    ctx.mark_degraded("Cortex unavailable; string_match_only mode")
+                    # Simple title-based dedup: exact match.
+                    seen_titles: dict[str, str] = {}
+                    duplicates = []
+                    for u in units_snapshot:
+                        t = str(u.get("title") or "").lower().strip()
+                        uid = str(u.get("unit_id") or "")
+                        if not uid:
+                            continue
+                        if t in seen_titles:
+                            duplicates.append({"keep": seen_titles[t], "merge_from": [uid]})
+                        else:
+                            seen_titles[t] = uid
+                    return {"duplicates": duplicates, "links": []}
+
+                analysis = self.cortex.try_or_degrade(_llm_distill, _string_fallback)
+
+                # Apply links.
+                links_created = 0
+                for link in analysis.get("links", []):
+                    from_id = str(link.get("from_id") or "")
+                    to_id = str(link.get("to_id") or "")
+                    relation = str(link.get("relation") or "")
+                    if not from_id or not to_id or not relation:
+                        continue
+                    self.memory.link(from_id, to_id, relation)
+                    links_created += 1
+
+                # Resolve duplicate winner by source priority: human > empirical > synthetic > collected.
+                unit_by_id = {
+                    str(u.get("unit_id") or ""): u
+                    for u in units_snapshot
+                    if str(u.get("unit_id") or "")
+                }
+                archived = 0
+                archived_ids: set[str] = set()
+                for dup in analysis.get("duplicates", []):
+                    keep_hint = str(dup.get("keep") or "")
+                    merge_from = [str(x) for x in (dup.get("merge_from") or []) if str(x)]
+                    ids = [x for x in [keep_hint, *merge_from] if x in unit_by_id]
+                    if len(ids) <= 1:
+                        continue
+                    keep_id = self._best_duplicate_keep(ids, unit_by_id)
+                    for uid in ids:
+                        if uid == keep_id or uid in archived_ids:
+                            continue
+                        self.memory.distill(uid, {"status": "archived"})
+                        archived_ids.add(uid)
+                        archived += 1
+
+                ctx.step("distill_done", {"links": links_created, "archived": archived})
+                result = {
+                    "units_processed": len(units_snapshot),
+                    "links_created": links_created,
+                    "archived": archived,
+                    "degraded": ctx._degraded,
+                }
                 ctx.set_result(result)
                 return result
-
-            def _llm_distill() -> dict:
-                titles = [{"unit_id": u["unit_id"], "title": u["title"], "domain": u["domain"]} for u in units[:50]]
-                return self.cortex.structured(
-                    f"Find semantic duplicates and relationships among these knowledge units:\n"
-                    f"{json.dumps(titles, ensure_ascii=False)}\n\n"
-                    "Return duplicates to merge and semantic links to create.",
-                    schema={
-                        "duplicates": [{"keep": "unit_id", "merge_from": ["unit_id"]}],
-                        "links": [{"from_id": "unit_id", "to_id": "unit_id", "relation": "supports|contradicts|extends"}],
-                    },
-                    model="analysis",
-                )
-
-            def _string_fallback() -> dict:
-                ctx.mark_degraded("Cortex unavailable; string_match_only mode")
-                # Simple title-based dedup: exact match.
-                seen_titles: dict[str, str] = {}
-                duplicates = []
-                for u in units:
-                    t = u["title"].lower().strip()
-                    if t in seen_titles:
-                        duplicates.append({"keep": seen_titles[t], "merge_from": [u["unit_id"]]})
-                    else:
-                        seen_titles[t] = u["unit_id"]
-                return {"duplicates": duplicates, "links": []}
-
-            analysis = self.cortex.try_or_degrade(_llm_distill, _string_fallback)
-
-            # Apply links.
-            links_created = 0
-            for link in analysis.get("links", []):
-                self.memory.link(link["from_id"], link["to_id"], link["relation"])
-                links_created += 1
-
-            # Mark duplicates as archived (keep winner, archive losers).
-            archived = 0
-            for dup in analysis.get("duplicates", []):
-                for merge_id in dup.get("merge_from", []):
-                    self.memory.distill(merge_id, {"status": "archived"})
-                    archived += 1
-
-            ctx.step("distill_done", {"links": links_created, "archived": archived})
-            result = {"units_processed": len(units), "links_created": links_created, "archived": archived, "degraded": ctx._degraded}
-            ctx.set_result(result)
-        return result
+            finally:
+                self._cleanup_tmp_snapshot(snapshot_path, ctx)
 
     # ── 6. learn ──────────────────────────────────────────────────────────────
 
@@ -403,66 +461,98 @@ class SpineRoutines:
             recent_traces = self.tracer.recent(limit=100)
             mem_stats = self.memory.stats()
             router_patterns = self._read_router_patterns(limit=30)
+            snapshot_data = {
+                "active_methods": active_methods,
+                "recent_traces": recent_traces,
+                "memory_stats": mem_stats,
+                "router_patterns": router_patterns,
+            }
+            snapshot_path = self._write_tmp_snapshot("learn", snapshot_data)
+            ctx.step("snapshot_written", str(snapshot_path))
             ctx.step(
                 "data_collected",
                 {"methods": len(active_methods), "traces": len(recent_traces), "router_patterns": len(router_patterns)},
             )
+            try:
+                learn_ctx = snapshot_data
+                try:
+                    snap_raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
+                    if isinstance(snap_raw, dict):
+                        learn_ctx = snap_raw
+                except Exception:
+                    learn_ctx = snapshot_data
 
-            def _llm_learn() -> dict:
-                context = {
-                    "active_methods": [{"name": m["name"], "success_rate": m.get("success_rate"), "total_runs": m.get("total_runs")} for m in active_methods],
-                    "recent_traces": [{"routine": t.get("routine"), "status": t.get("status"), "elapsed_s": t.get("elapsed_s")} for t in recent_traces[:20]],
-                    "memory_stats": mem_stats,
-                    "router_patterns": router_patterns,
+                methods_ctx = learn_ctx.get("active_methods") if isinstance(learn_ctx.get("active_methods"), list) else active_methods
+                traces_ctx = learn_ctx.get("recent_traces") if isinstance(learn_ctx.get("recent_traces"), list) else recent_traces
+                mem_stats_ctx = learn_ctx.get("memory_stats") if isinstance(learn_ctx.get("memory_stats"), dict) else mem_stats
+                router_ctx = learn_ctx.get("router_patterns") if isinstance(learn_ctx.get("router_patterns"), list) else router_patterns
+
+                def _llm_learn() -> dict:
+                    context = {
+                        "active_methods": [{"name": m["name"], "success_rate": m.get("success_rate"), "total_runs": m.get("total_runs")} for m in methods_ctx],
+                        "recent_traces": [{"routine": t.get("routine"), "status": t.get("status"), "elapsed_s": t.get("elapsed_s")} for t in traces_ctx[:20]],
+                        "memory_stats": mem_stats_ctx,
+                        "router_patterns": router_ctx,
+                    }
+                    return self.cortex.structured(
+                        f"Analyze system execution history and identify improvements:\n{json.dumps(context, ensure_ascii=False)}\n\n"
+                        "Suggest new method candidates or improvements to existing ones.",
+                        schema={
+                            "new_candidates": [{"name": "string", "category": "string", "description": "string", "rationale": "string"}],
+                            "skill_evolution_proposals": [{"skill": "string", "proposed_change": "string", "evidence": "string"}],
+                        },
+                        model="analysis",
+                    )
+
+                def _skip_fallback() -> dict:
+                    ctx.mark_degraded("Cortex unavailable; skipping learn this cycle")
+                    return {"new_candidates": [], "skill_evolution_proposals": []}
+
+                analysis = self.cortex.try_or_degrade(_llm_learn, _skip_fallback)
+
+                candidates_added = 0
+                for cand in analysis.get("new_candidates", []):
+                    name = cand.get("name", "").strip()
+                    if not name or any(m["name"] == name for m in methods_ctx):
+                        continue
+                    self.playbook.register(
+                        name=name,
+                        category=cand.get("category", "dag_pattern"),
+                        spec={"rationale": cand.get("rationale", ""), "steps_template": []},
+                        description=cand.get("description", ""),
+                        status="candidate",
+                    )
+                    candidates_added += 1
+
+                # Write skill evolution proposals to state.
+                proposals = analysis.get("skill_evolution_proposals", [])
+                digest_result = {"sent": 0, "skipped": True, "reason": "no_proposals"}
+                if proposals:
+                    proposals_path = self.state_dir / "skill_evolution_proposals.json"
+                    existing: list = []
+                    if proposals_path.exists():
+                        try:
+                            existing = json.loads(proposals_path.read_text())
+                        except Exception as exc:
+                            logger.warning("Failed to parse %s: %s", proposals_path, exc)
+                            existing = []
+                    existing.extend(proposals)
+                    merged = existing[-100:]
+                    proposals_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2))
+                    digest_result = self._notify_skill_evolution_digest(merged)
+                ctx.step("skill_evolution_digest", digest_result)
+
+                ctx.step("learn_done", {"candidates_added": candidates_added, "proposals": len(proposals)})
+                result = {
+                    "candidates_added": candidates_added,
+                    "proposals": len(proposals),
+                    "digest_sent": digest_result.get("sent", 0),
+                    "degraded": ctx._degraded,
                 }
-                return self.cortex.structured(
-                    f"Analyze system execution history and identify improvements:\n{json.dumps(context, ensure_ascii=False)}\n\n"
-                    "Suggest new method candidates or improvements to existing ones.",
-                    schema={
-                        "new_candidates": [{"name": "string", "category": "string", "description": "string", "rationale": "string"}],
-                        "skill_evolution_proposals": [{"skill": "string", "proposed_change": "string", "evidence": "string"}],
-                    },
-                    model="analysis",
-                )
-
-            def _skip_fallback() -> dict:
-                ctx.mark_degraded("Cortex unavailable; skipping learn this cycle")
-                return {"new_candidates": [], "skill_evolution_proposals": []}
-
-            analysis = self.cortex.try_or_degrade(_llm_learn, _skip_fallback)
-
-            candidates_added = 0
-            for cand in analysis.get("new_candidates", []):
-                name = cand.get("name", "").strip()
-                if not name or any(m["name"] == name for m in active_methods):
-                    continue
-                self.playbook.register(
-                    name=name,
-                    category=cand.get("category", "dag_pattern"),
-                    spec={"rationale": cand.get("rationale", ""), "steps_template": []},
-                    description=cand.get("description", ""),
-                    status="candidate",
-                )
-                candidates_added += 1
-
-            # Write skill evolution proposals to state.
-            proposals = analysis.get("skill_evolution_proposals", [])
-            if proposals:
-                proposals_path = self.state_dir / "skill_evolution_proposals.json"
-                existing: list = []
-                if proposals_path.exists():
-                    try:
-                        existing = json.loads(proposals_path.read_text())
-                    except Exception as exc:
-                        logger.warning("Failed to parse %s: %s", proposals_path, exc)
-                        existing = []
-                existing.extend(proposals)
-                proposals_path.write_text(json.dumps(existing[-100:], ensure_ascii=False, indent=2))
-
-            ctx.step("learn_done", {"candidates_added": candidates_added, "proposals": len(proposals)})
-            result = {"candidates_added": candidates_added, "proposals": len(proposals), "degraded": ctx._degraded}
-            ctx.set_result(result)
-        return result
+                ctx.set_result(result)
+                return result
+            finally:
+                self._cleanup_tmp_snapshot(snapshot_path, ctx)
 
     # ── 7. judge ──────────────────────────────────────────────────────────────
 
@@ -611,6 +701,20 @@ class SpineRoutines:
             # Expire memory units past their TTL.
             mem_result = self.memory.expire()
             ctx.step("memory_expire", mem_result)
+            source_policy = self.memory.apply_source_ttl_policy(actor="spine.tend")
+            ctx.step("memory_source_policy_expire", source_policy)
+
+            # Capacity pressure signal.
+            mem_stats = self.memory.stats()
+            total_units = int(mem_stats.get("total_active") or 0)
+            total_units_cap = int(self.compass.get_pref("total_units_cap", "10000") or 10000)
+            memory_pressure = total_units > total_units_cap
+            if memory_pressure:
+                self.nerve.emit(
+                    "memory_pressure",
+                    {"total_units": total_units, "total_units_cap": total_units_cap, "source": "spine.tend"},
+                )
+            ctx.step("memory_pressure", {"active": total_units, "cap": total_units_cap, "triggered": memory_pressure})
 
             # Expire stale attention signals.
             signals_removed = self.compass.expire_signals()
@@ -637,7 +741,12 @@ class SpineRoutines:
                 ctx.step("weave_pressure_checked", weave_count)
 
             result = {
-                "memory_archived": mem_result.get("archived", 0),
+                "memory_archived": mem_result.get("archived", 0) + source_policy.get("archived", 0),
+                "memory_archived_ttl": mem_result.get("archived", 0),
+                "memory_archived_source_policy": source_policy.get("archived", 0),
+                "memory_pressure_triggered": memory_pressure,
+                "memory_total_active": total_units,
+                "memory_total_cap": total_units_cap,
                 "signals_removed": signals_removed,
                 "tasks_replayed": replayed,
                 "traces_cleaned": cleaned,
@@ -664,6 +773,14 @@ class SpineRoutines:
             merge_result = self._librarian_merge_methods()
             ctx.step("methods_merged", merge_result)
 
+            # Cold memory export and external archive upload (best-effort).
+            export_result = self._cold_export_memory()
+            ctx.step("memory_cold_export", export_result)
+            upload_result = self._upload_to_drive(export_result.get("files", []))
+            ctx.step("memory_archive_upload", upload_result)
+            cleanup_result = self._cleanup_local_jsonl()
+            ctx.step("memory_archive_cleanup", cleanup_result)
+
             result = {
                 "hot": tiered.get("hot", 0),
                 "warm": tiered.get("warm", 0),
@@ -671,11 +788,47 @@ class SpineRoutines:
                 "weave_patterns_archived": prune_result.get("archived", 0),
                 "weave_patterns_deleted": prune_result.get("deleted", 0),
                 "methods_merged": merge_result.get("merged", 0),
+                "memory_exported": export_result.get("exported", 0),
+                "memory_deleted": export_result.get("deleted", 0),
+                "archive_files": len(export_result.get("files", [])),
+                "archive_uploaded": upload_result.get("uploaded", 0),
+                "archive_upload_failed": upload_result.get("failed", 0),
+                "archive_local_cleaned": cleanup_result.get("deleted", 0),
             }
             ctx.set_result(result)
         return result
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _write_tmp_snapshot(self, routine: str, payload: dict[str, Any]) -> Path:
+        tmp_dir = self.state_dir / "tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        token = f"{int(time.time())}_{abs(hash(routine)) % 10000:04d}"
+        path = tmp_dir / f"spine_{routine}_{token}.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+
+    def _cleanup_tmp_snapshot(self, path: Path | None, ctx: Any) -> None:
+        if not path:
+            return
+        try:
+            path.unlink(missing_ok=True)
+            ctx.step("snapshot_cleaned", str(path))
+        except Exception as exc:
+            logger.warning("Failed to cleanup snapshot %s: %s", path, exc)
+
+    def _source_rank(self, source_type: str) -> int:
+        st = str(source_type or "").strip().lower()
+        return _SOURCE_PRIORITY.get(st, 99)
+
+    def _best_duplicate_keep(self, candidate_ids: list[str], units: dict[str, dict]) -> str:
+        def _sort_key(uid: str) -> tuple[int, str]:
+            row = units.get(uid) or {}
+            rank = self._source_rank(str(row.get("source_type") or ""))
+            return (rank, str(row.get("created_utc") or ""))
+
+        sorted_ids = sorted(candidate_ids, key=_sort_key)
+        return sorted_ids[0] if sorted_ids else (candidate_ids[0] if candidate_ids else "")
 
     def _probe_gateway(self) -> str:
         if not self.openclaw_home:
@@ -1569,3 +1722,193 @@ class SpineRoutines:
             except Exception as exc:
                 logger.warning("Failed to merge methods %s←%s: %s", keep_id, merge_id, exc)
         return {"merged": merged, "candidates": len(candidates)}
+
+    def _notify_skill_evolution_digest(self, proposals: list[dict], *, threshold: int = 5) -> dict:
+        total = len(proposals)
+        if total < threshold:
+            return {"sent": 0, "skipped": True, "reason": "below_threshold", "total": total}
+        try:
+            last = int(self.compass.get_pref("skill_evolution.digest_last_total", "0") or 0)
+        except Exception:
+            last = 0
+        if total <= last:
+            return {"sent": 0, "skipped": True, "reason": "already_notified", "total": total, "last": last}
+
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+        users = [int(x.strip()) for x in os.environ.get("TELEGRAM_ALLOWED_USERS", "").split(",") if x.strip().isdigit()]
+        if not token or not users:
+            return {"sent": 0, "skipped": True, "reason": "telegram_not_configured", "total": total}
+
+        lines = []
+        for row in proposals[-threshold:]:
+            skill = str(row.get("skill") or "").strip() or "unknown"
+            change = str(row.get("proposed_change") or "").strip().replace("\n", " ")[:120]
+            lines.append(f"- {skill}: {change}")
+        message = (
+            "🧠 Daemon Skill Evolution Digest\n\n"
+            f"累计提案数: {total}\n"
+            "最近提案:\n"
+            + "\n".join(lines)
+            + "\n\n请在 Console 审批。"
+        )
+
+        sent = 0
+        try:
+            import httpx
+
+            with httpx.Client(timeout=10) as client:
+                for uid in users:
+                    try:
+                        resp = client.post(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            json={"chat_id": uid, "text": message},
+                        )
+                        if resp.status_code < 300:
+                            sent += 1
+                    except Exception as exc:
+                        logger.warning("Skill evolution digest notify failed user=%s: %s", uid, exc)
+        except Exception as exc:
+            return {"sent": 0, "skipped": True, "reason": f"telegram_send_failed:{str(exc)[:120]}", "total": total}
+
+        if sent > 0:
+            self.compass.set_pref("skill_evolution.digest_last_total", str(total), source="spine.learn", changed_by="spine.learn")
+        return {"sent": sent, "total": total, "users": len(users)}
+
+    def _cold_export_memory(self, *, archive_after_days: int = 7, batch_limit: int = 2000) -> dict:
+        """Export archived+unreferenced memory units to JSONL, then delete from local DB."""
+        db_path = self.state_dir / "memory.db"
+        if not db_path.exists():
+            return {"exported": 0, "deleted": 0, "files": [], "skipped": True, "reason": "memory_db_missing"}
+
+        cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - max(1, archive_after_days) * 86400))
+        rows: list[dict[str, Any]] = []
+        unit_ids: list[str] = []
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows_raw = conn.execute(
+                """
+                SELECT u.*
+                FROM units u
+                WHERE u.status='archived'
+                  AND COALESCE(u.updated_utc, u.created_utc) <= ?
+                  AND NOT EXISTS (SELECT 1 FROM usage ug WHERE ug.unit_id=u.unit_id)
+                  AND NOT EXISTS (SELECT 1 FROM links l WHERE l.from_id=u.unit_id OR l.to_id=u.unit_id)
+                ORDER BY COALESCE(u.updated_utc, u.created_utc) ASC
+                LIMIT ?
+                """,
+                (cutoff, int(max(1, batch_limit))),
+            ).fetchall()
+            if not rows_raw:
+                return {"exported": 0, "deleted": 0, "files": []}
+
+            for row in rows_raw:
+                unit_id = str(row["unit_id"] or "")
+                if not unit_id:
+                    continue
+                unit_ids.append(unit_id)
+                row_dict = dict(row)
+                src_rows = conn.execute(
+                    "SELECT provider,url,tier,raw_hash FROM sources WHERE unit_id=?",
+                    (unit_id,),
+                ).fetchall()
+                row_dict["sources"] = [dict(s) for s in src_rows]
+                rows.append(row_dict)
+
+            now = time.gmtime()
+            year = time.strftime("%Y", now)
+            month = time.strftime("%m", now)
+            ts = time.strftime("%Y%m%dT%H%M%SZ", now)
+            archive_dir = self.state_dir / "archive" / "memory" / year / month
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            out_path = archive_dir / f"units_{ts}.jsonl"
+            with out_path.open("w", encoding="utf-8") as f:
+                for row in rows:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+            for uid in unit_ids:
+                conn.execute("DELETE FROM sources WHERE unit_id=?", (uid,))
+                conn.execute("DELETE FROM usage WHERE unit_id=?", (uid,))
+                conn.execute("DELETE FROM links WHERE from_id=? OR to_id=?", (uid, uid))
+                conn.execute("DELETE FROM units WHERE unit_id=?", (uid,))
+            conn.commit()
+
+            return {
+                "exported": len(rows),
+                "deleted": len(unit_ids),
+                "files": [str(out_path)],
+                "cutoff_utc": cutoff,
+            }
+        except Exception as exc:
+            conn.rollback()
+            logger.warning("Cold export memory failed: %s", exc)
+            return {"exported": 0, "deleted": 0, "files": [], "error": str(exc)[:300]}
+        finally:
+            conn.close()
+
+    def _cleanup_local_jsonl(self, *, older_than_days: int = 30) -> dict:
+        root = self.state_dir / "archive"
+        if not root.exists():
+            return {"deleted": 0, "skipped": True, "reason": "archive_root_missing"}
+        cutoff = time.time() - max(1, older_than_days) * 86400
+        deleted = 0
+        for p in root.glob("**/*.jsonl"):
+            if not p.is_file():
+                continue
+            try:
+                if p.stat().st_mtime < cutoff:
+                    p.unlink()
+                    deleted += 1
+            except Exception as exc:
+                logger.warning("Failed to cleanup archive jsonl %s: %s", p, exc)
+        return {"deleted": deleted}
+
+    def _upload_to_drive(self, files: list[str]) -> dict:
+        targets = [Path(x) for x in files if str(x).strip()]
+        if not targets:
+            return {"uploaded": 0, "failed": 0, "skipped": True, "reason": "no_files"}
+
+        drive_registry = DriveAccountRegistry(self.state_dir)
+        resolved = drive_registry.resolve_upload_target()
+        if not resolved.get("ok"):
+            msg = str(resolved.get("error") or "drive_local_sync_not_configured")
+            self.nerve.emit("archive_upload_failed", {"reason": msg, "files": [str(p) for p in targets]})
+            return {"uploaded": 0, "failed": len(targets), "skipped": True, "reason": msg}
+        source = str(resolved.get("source") or "unknown")
+        if source != "local_sync":
+            msg = f"unsupported_drive_upload_source:{source}"
+            self.nerve.emit("archive_upload_failed", {"reason": msg, "files": [str(p) for p in targets]})
+            return {"uploaded": 0, "failed": len(targets), "skipped": True, "reason": msg}
+
+        archive_root = str(resolved.get("archive_root") or "").strip()
+        if not archive_root:
+            msg = "archive_root_missing"
+            self.nerve.emit("archive_upload_failed", {"reason": msg, "files": [str(p) for p in targets]})
+            return {"uploaded": 0, "failed": len(targets), "skipped": True, "reason": msg}
+        root = Path(archive_root)
+        if not root.exists() or not root.is_dir():
+            msg = "archive_root_not_found"
+            self.nerve.emit("archive_upload_failed", {"reason": msg, "files": [str(p) for p in targets]})
+            return {"uploaded": 0, "failed": len(targets), "skipped": True, "reason": msg}
+        uploaded = 0
+        failed = 0
+        rows: list[dict[str, Any]] = []
+        for path in targets:
+            try:
+                year = path.parent.parent.name if path.parent.parent.name.isdigit() else time.strftime("%Y", time.gmtime())
+                month = path.parent.name if path.parent.name.isdigit() else time.strftime("%m", time.gmtime())
+                dest_dir = root / year / month
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest = dest_dir / path.name
+                if dest.exists():
+                    stem = dest.stem
+                    suf = dest.suffix
+                    dest = dest_dir / f"{stem}_{int(time.time())}{suf}"
+                shutil.copy2(path, dest)
+                uploaded += 1
+                rows.append({"path": str(path), "local_path": str(dest), "source": source})
+            except Exception as exc:
+                failed += 1
+                self.nerve.emit("archive_upload_failed", {"reason": str(exc)[:300], "path": str(path)})
+        return {"uploaded": uploaded, "failed": failed, "files": rows, "source": source}

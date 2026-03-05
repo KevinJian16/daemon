@@ -132,17 +132,20 @@ class Dispatch:
         plan.setdefault("model_primary", self._compass.get_pref("model_primary", ""))
         plan.setdefault("resource_budgets", self._compass.all_budgets())
         plan = self._apply_strategy(plan)
+        plan = self._apply_complexity_probe(plan)
+        plan = self._preflight_provider_budget(plan)
 
         # Gate check — apply priority to queued vs immediate.
         gate = self._read_gate()
-        if gate.get("status") == "RED":
-            plan["queued"] = True
-            plan["queue_reason"] = "gate_red"
-        elif gate.get("status") == "YELLOW":
-            priority = int(plan.get("priority") or 5)
-            if priority > 5:
+        if not plan.get("queued"):
+            if gate.get("status") == "RED":
                 plan["queued"] = True
-                plan["queue_reason"] = "gate_yellow_low_priority"
+                plan["queue_reason"] = "gate_red"
+            elif gate.get("status") == "YELLOW":
+                priority = int(plan.get("priority") or 5)
+                if priority > 5:
+                    plan["queued"] = True
+                    plan["queue_reason"] = "gate_yellow_low_priority"
 
         return plan
 
@@ -380,6 +383,9 @@ class Dispatch:
             fingerprint = self.resolve_semantic(plan)
         except SemanticMappingError as exc:
             return {"ok": False, "error": str(exc), "error_code": "semantic_mapping_failed"}
+        except Exception as exc:
+            logger.error("Semantic resolution internal error: %s", exc)
+            return {"ok": False, "error": f"semantic_resolution_internal_error:{str(exc)[:240]}", "error_code": "semantic_mapping_failed"}
 
         # Attach resolved fingerprint to plan.
         plan = dict(plan)
@@ -401,7 +407,18 @@ class Dispatch:
 
         if plan.get("queued"):
             self._queue_task(plan)
-            return {"ok": True, "task_id": task_id, "status": "queued", "reason": plan.get("queue_reason")}
+            out = {"ok": True, "task_id": task_id, "status": "queued", "reason": plan.get("queue_reason")}
+            if str(plan.get("queue_reason") or "") == "provider_budget_insufficient":
+                out["error_code"] = "provider_budget_insufficient"
+                out["provider_routing"] = plan.get("provider_routing") if isinstance(plan.get("provider_routing"), dict) else {}
+                self._nerve.emit(
+                    "provider_budget_insufficient",
+                    {"task_id": task_id, "provider_routing": out["provider_routing"]},
+                )
+            return out
+
+        if str(plan.get("task_scale") or "") == "campaign":
+            return await self._submit_campaign(plan)
 
         if not self._temporal:
             self._record_task(plan, "failed_submission", "")
@@ -445,12 +462,77 @@ class Dispatch:
         await self._maybe_submit_shadow(plan, parent_task_id=task_id)
         return {"ok": True, "task_id": task_id, "status": "running", "run_root": run_root}
 
+    async def _submit_campaign(self, plan: dict) -> dict:
+        task_id = str(plan.get("task_id") or _new_task_id())
+        plan = dict(plan)
+        plan["task_id"] = task_id
+        plan.setdefault("task_scale", "campaign")
+        plan.setdefault("campaign_id", f"cmp_{task_id}")
+        campaign_id = str(plan.get("campaign_id") or f"cmp_{task_id}")
+        workflow_id = f"daemon-campaign-{campaign_id}"
+        plan["_workflow_id"] = workflow_id
+        plan.setdefault("campaign_resume_from", 0)
+        plan.setdefault("campaign_run_index", 0)
+
+        if not self._temporal:
+            self._record_task(plan, "failed_submission", "")
+            return {
+                "ok": False,
+                "task_id": task_id,
+                "campaign_id": campaign_id,
+                "error_code": "temporal_unavailable",
+                "error": "Temporal client unavailable; campaign submission rejected",
+            }
+
+        run_root = self._make_run_root(task_id)
+        self._record_task(plan, "running", run_root)
+
+        try:
+            await self._temporal.submit(
+                workflow_id=workflow_id,
+                plan=plan,
+                run_root=run_root,
+                workflow_name="CampaignWorkflow",
+            )
+        except Exception as exc:
+            logger.error("Campaign submit failed for task %s: %s", task_id, exc)
+            self._record_task({**plan, "last_error": str(exc)[:300]}, "failed_submission", run_root)
+            return {
+                "ok": False,
+                "task_id": task_id,
+                "campaign_id": campaign_id,
+                "error_code": "temporal_submit_failed",
+                "error": str(exc)[:400],
+            }
+
+        self._nerve.emit(
+            "campaign_submitted",
+            {
+                "task_id": task_id,
+                "campaign_id": campaign_id,
+                "workflow_id": workflow_id,
+                "run_root": run_root,
+            },
+        )
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "campaign_id": campaign_id,
+            "workflow_id": workflow_id,
+            "task_scale": "campaign",
+            "status": "running",
+            "run_root": run_root,
+        }
+
     async def submit_sandbox(self, plan: dict, strategy_id: str) -> dict:
         """Submit an isolated sandbox run for candidate/shadow/challenger strategy."""
         try:
             fingerprint = self.resolve_semantic(plan)
         except SemanticMappingError as exc:
             return {"ok": False, "error": str(exc), "error_code": "semantic_mapping_failed"}
+        except Exception as exc:
+            logger.error("Semantic resolution internal error (sandbox): %s", exc)
+            return {"ok": False, "error": f"semantic_resolution_internal_error:{str(exc)[:240]}", "error_code": "semantic_mapping_failed"}
 
         plan = dict(plan)
         plan["semantic_fingerprint"] = fingerprint.to_dict()
@@ -677,6 +759,141 @@ class Dispatch:
             except Exception as exc:
                 logger.warning("Failed to transition candidate to shadow: %s", exc)
         return best
+
+    def _apply_complexity_probe(self, plan: dict) -> dict:
+        out = dict(plan)
+        steps = out.get("steps") or out.get("graph", {}).get("steps") or []
+        if not isinstance(steps, list):
+            steps = []
+        n_steps = len([s for s in steps if isinstance(s, dict)])
+        probe = out.get("complexity_probe") if isinstance(out.get("complexity_probe"), dict) else {}
+        estimated_phases = int(probe.get("estimated_phases") or out.get("estimated_phases") or max(1, n_steps or 1))
+        estimated_hours = float(probe.get("estimated_hours") or out.get("estimated_hours") or max(0.5, n_steps * 0.75))
+        requires_campaign = bool(
+            probe.get("requires_campaign")
+            or out.get("requires_campaign")
+            or estimated_phases > 4
+            or estimated_hours > 4.0
+        )
+        if requires_campaign:
+            task_scale = "campaign"
+        elif estimated_phases <= 2 and estimated_hours <= 1.0:
+            task_scale = "pulse"
+        else:
+            task_scale = "thread"
+        out["complexity_probe"] = {
+            "estimated_phases": estimated_phases,
+            "estimated_hours": round(estimated_hours, 2),
+            "requires_campaign": requires_campaign,
+        }
+        out["task_scale"] = task_scale
+        return out
+
+    def _preflight_provider_budget(self, plan: dict) -> dict:
+        out = dict(plan)
+        registry = self._load_model_registry()
+        current_alias = str(out.get("model_alias") or "").strip()
+        current_provider = str(out.get("model_provider") or "").strip().lower()
+        if current_alias and not current_provider and current_alias in registry:
+            current_provider = str(registry[current_alias].get("provider") or "").strip().lower()
+            out["model_provider"] = current_provider
+            out["model_id"] = str(registry[current_alias].get("model_id") or "")
+
+        chain = []
+        if current_provider:
+            chain.append(current_provider)
+        for p in ("minimax", "qwen", "zhipu", "deepseek"):
+            if p not in chain:
+                chain.append(p)
+
+        scale = str(out.get("task_scale") or "thread")
+        default_budget_probe = {"pulse": 20_000, "thread": 80_000, "campaign": 160_000}
+        est_tokens = int(out.get("estimated_tokens") or default_budget_probe.get(scale, 80_000))
+        checks: list[dict[str, Any]] = []
+        selected_provider = ""
+        selected_alias = ""
+        selected_model_id = ""
+        for provider in chain:
+            budget = self._compass.get_budget(f"{provider}_tokens")
+            if not budget:
+                checks.append(
+                    {
+                        "provider": provider,
+                        "resource_type": f"{provider}_tokens",
+                        "daily_limit": None,
+                        "current_usage": None,
+                        "remaining": None,
+                        "admit": False,
+                        "reason": "budget_not_configured",
+                    }
+                )
+                continue
+            daily_limit = float(budget.get("daily_limit") or 0.0)
+            current_usage = float(budget.get("current_usage") or 0.0)
+            remaining = max(0.0, daily_limit - current_usage)
+            admit = remaining >= float(est_tokens)
+            checks.append(
+                {
+                    "provider": provider,
+                    "resource_type": f"{provider}_tokens",
+                    "daily_limit": daily_limit,
+                    "current_usage": current_usage,
+                    "remaining": remaining,
+                    "admit": admit,
+                    "reason": "ok" if admit else "insufficient_budget",
+                }
+            )
+            if admit and not selected_provider:
+                selected_provider = provider
+
+        if selected_provider:
+            alias, model_id = self._pick_alias_for_provider(selected_provider, registry, prefer_alias=current_alias)
+            selected_alias = alias
+            selected_model_id = model_id
+            if selected_alias:
+                out["model_alias"] = selected_alias
+            out["model_provider"] = selected_provider
+            if selected_model_id:
+                out["model_id"] = selected_model_id
+        else:
+            out["queued"] = True
+            out["queue_reason"] = "provider_budget_insufficient"
+
+        out["provider_routing"] = {
+            "estimated_tokens": est_tokens,
+            "fallback_chain": chain,
+            "selected_provider": selected_provider,
+            "selected_alias": selected_alias,
+            "selected_model_id": selected_model_id,
+            "checks": checks,
+            "checked_utc": _utc(),
+        }
+        return out
+
+    def _pick_alias_for_provider(
+        self,
+        provider: str,
+        registry: dict[str, dict],
+        *,
+        prefer_alias: str = "",
+    ) -> tuple[str, str]:
+        provider = str(provider or "").strip().lower()
+        if prefer_alias:
+            row = registry.get(prefer_alias)
+            if row and str(row.get("provider") or "").strip().lower() == provider:
+                return prefer_alias, str(row.get("model_id") or "")
+
+        for alias in ("fast", "analysis", "review", "qwen", "glm", "fallback"):
+            row = registry.get(alias)
+            if not row:
+                continue
+            if str(row.get("provider") or "").strip().lower() == provider:
+                return alias, str(row.get("model_id") or "")
+
+        for alias, row in registry.items():
+            if str(row.get("provider") or "").strip().lower() == provider:
+                return alias, str(row.get("model_id") or "")
+        return "", ""
 
     def _annotate_capability_graph(self, plan: dict, cluster_id: str) -> None:
         """Ensure each DAG node carries capability_id + quality_contract_id."""

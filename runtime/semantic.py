@@ -68,12 +68,28 @@ class IntentContract:
     def to_dict(self) -> dict:
         return asdict(self)
 
+    @staticmethod
+    def _normalize_kv(value: Any, key: str) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, list):
+            # Accept array-style contract payloads from clients and normalize.
+            return {"items": list(value)}
+        if isinstance(value, str):
+            s = value.strip()
+            return {key: s} if s else {}
+        if value is None:
+            return {}
+        return {key: value}
+
     @classmethod
     def from_dict(cls, d: dict) -> "IntentContract":
+        if not isinstance(d, dict):
+            raise SemanticMappingError("intent_contract_invalid: expected object")
         return cls(
             objective=str(d.get("objective") or ""),
-            constraints=dict(d.get("constraints") or {}),
-            acceptance=dict(d.get("acceptance") or {}),
+            constraints=cls._normalize_kv(d.get("constraints"), "constraint"),
+            acceptance=cls._normalize_kv(d.get("acceptance"), "acceptance"),
         )
 
 

@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -14,16 +15,37 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from daemon_env import load_daemon_env
+
 logger = logging.getLogger(__name__)
+
+# Load .env before resolving adapter constants.
+load_daemon_env(ROOT)
 
 DAEMON_API = os.environ.get("DAEMON_API_URL", "http://127.0.0.1:8000")
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-# Allowed Telegram user IDs (comma-separated). Empty = allow all.
-ALLOWED_USERS = {
-    int(uid.strip())
-    for uid in os.environ.get("TELEGRAM_ALLOWED_USERS", "").split(",")
-    if uid.strip().isdigit()
-}
+TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "").strip()
+TELEGRAM_ADAPTER_HOST = str(os.environ.get("TELEGRAM_ADAPTER_HOST", "127.0.0.1") or "127.0.0.1").strip()
+TELEGRAM_ADAPTER_ALLOW_REMOTE = str(
+    os.environ.get("TELEGRAM_ADAPTER_ALLOW_REMOTE", "0") or "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_allowed_users(raw: str) -> set[int]:
+    out: set[int] = set()
+    for uid in raw.split(","):
+        token = uid.strip()
+        if token.isdigit():
+            out.add(int(token))
+    return out
+
+
+# Allowed Telegram user IDs (comma-separated). Empty is unsafe and rejected in secure mode.
+ALLOWED_USERS = _parse_allowed_users(os.environ.get("TELEGRAM_ALLOWED_USERS", ""))
 
 # Per-user dialog session cache: {user_id: session_id}
 _sessions: dict[int, str] = {}
@@ -133,8 +155,12 @@ def _handle_update(update: dict) -> None:
 
     _log_telegram_event("message_received", {"chat_id": chat_id, "user_id": user_id, "text_len": len(text)})
 
-    # Authorization check.
-    if ALLOWED_USERS and user_id not in ALLOWED_USERS:
+    # Authorization check (fail-closed).
+    if not ALLOWED_USERS:
+        _log_telegram_event("access_denied_unconfigured", {"chat_id": chat_id, "user_id": user_id})
+        _send_message(chat_id, "⛔ Adapter not ready: TELEGRAM_ALLOWED_USERS is not configured.")
+        return
+    if user_id not in ALLOWED_USERS:
         _log_telegram_event("access_denied", {"chat_id": chat_id, "user_id": user_id})
         _send_message(chat_id, "⛔ Access denied.")
         return
@@ -148,6 +174,8 @@ def _handle_update(update: dict) -> None:
             "Commands:\n"
             "`/status` — running tasks\n"
             "`/outcomes` — recent outcomes\n"
+            "`/campaign_confirm <campaign_id>` — confirm campaign phase0 plan\n"
+            "`/campaign_feedback <campaign_id> <milestone_idx> <yes|no> [comment]` — submit campaign milestone feedback\n"
             "`/reset` — start new session\n"
             "`/help` — this message"
         )
@@ -194,6 +222,68 @@ def _handle_update(update: dict) -> None:
             _send_message(chat_id, f"Error: {e}")
         return
 
+    if text.startswith("/campaign_feedback"):
+        _log_telegram_event("command", {"chat_id": chat_id, "user_id": user_id, "cmd": "campaign_feedback"})
+        parts = text.split(maxsplit=4)
+        if len(parts) < 4:
+            _send_message(chat_id, "Usage: /campaign_feedback <campaign_id> <milestone_idx> <yes|no> [comment]")
+            return
+        campaign_id = parts[1].strip()
+        try:
+            milestone_idx = int(parts[2].strip())
+        except Exception:
+            _send_message(chat_id, "milestone_idx must be an integer")
+            return
+        verdict = parts[3].strip().lower()
+        comment = parts[4].strip() if len(parts) > 4 else ""
+        satisfied = verdict in {"yes", "y", "ok", "pass", "1", "满意"}
+        payload = {
+            "source": "telegram",
+            "feedback": {
+                "satisfied": satisfied,
+                "rating": 5 if satisfied else 2,
+                "comment": comment,
+                "raw_verdict": verdict,
+            },
+        }
+        try:
+            resp = httpx.post(
+                f"{DAEMON_API}/campaigns/{campaign_id}/milestones/{milestone_idx}/feedback",
+                json=payload,
+                timeout=20,
+            )
+            resp.raise_for_status()
+            data = resp.json() if resp.text else {}
+            if bool(data.get("accepted")):
+                _send_message(chat_id, f"✓ Feedback accepted: {campaign_id} milestone {milestone_idx}")
+            else:
+                _send_message(chat_id, f"ℹ️ Feedback recorded as late: {campaign_id} milestone {milestone_idx}")
+        except Exception as e:
+            _log_telegram_event("campaign_feedback_failed", {"chat_id": chat_id, "user_id": user_id, "error": str(e)[:200]})
+            _send_message(chat_id, f"✗ campaign feedback failed: {str(e)[:200]}")
+        return
+
+    if text.startswith("/campaign_confirm"):
+        _log_telegram_event("command", {"chat_id": chat_id, "user_id": user_id, "cmd": "campaign_confirm"})
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            _send_message(chat_id, "Usage: /campaign_confirm <campaign_id>")
+            return
+        campaign_id = parts[1].strip()
+        try:
+            resp = httpx.post(
+                f"{DAEMON_API}/campaigns/{campaign_id}/confirm",
+                json={},
+                timeout=20,
+            )
+            resp.raise_for_status()
+            data = resp.json() if resp.text else {}
+            _send_message(chat_id, f"✓ campaign confirmed: {campaign_id}\nresume task: `{data.get('task_id','')}`")
+        except Exception as e:
+            _log_telegram_event("campaign_confirm_failed", {"chat_id": chat_id, "user_id": user_id, "error": str(e)[:200]})
+            _send_message(chat_id, f"✗ campaign confirm failed: {str(e)[:200]}")
+        return
+
     # Regular chat — forward to dialog service.
     try:
         result = _chat(user_id, text)
@@ -229,12 +319,12 @@ _pending_plans: dict[int, dict] = {}
 @app.post("/webhook")
 async def webhook(request: Request):
     """Receive Telegram webhook updates."""
-    # Verify secret token if configured.
-    secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
-    if secret:
-        header_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-        if not hmac.compare_digest(header_secret, secret):
-            raise HTTPException(status_code=403, detail="invalid secret")
+    # Verify secret token (mandatory).
+    if not TELEGRAM_WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="webhook_secret_not_configured")
+    header_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not hmac.compare_digest(header_secret, TELEGRAM_WEBHOOK_SECRET):
+        raise HTTPException(status_code=403, detail="invalid secret")
 
     body = await request.body()
     try:
@@ -268,17 +358,40 @@ async def webhook(request: Request):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "bot": bool(BOT_TOKEN), "daemon_api": DAEMON_API}
+    return {
+        "ok": True,
+        "bot": bool(BOT_TOKEN),
+        "daemon_api": DAEMON_API,
+        "webhook_secret_configured": bool(TELEGRAM_WEBHOOK_SECRET),
+        "allowed_users_count": len(ALLOWED_USERS),
+        "bind_host": TELEGRAM_ADAPTER_HOST,
+    }
 
 
 def register_webhook(url: str) -> None:
     """Register this adapter's webhook URL with Telegram."""
-    secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
     payload: dict[str, Any] = {"url": url}
-    if secret:
-        payload["secret_token"] = secret
+    if TELEGRAM_WEBHOOK_SECRET:
+        payload["secret_token"] = TELEGRAM_WEBHOOK_SECRET
     result = _tg_api("setWebhook", payload)
     logger.info(f"Webhook registered: {result}")
+
+
+def _security_issues() -> list[str]:
+    issues: list[str] = []
+    if not BOT_TOKEN:
+        issues.append("TELEGRAM_BOT_TOKEN missing")
+    if not TELEGRAM_WEBHOOK_SECRET:
+        issues.append("TELEGRAM_WEBHOOK_SECRET missing")
+    if not ALLOWED_USERS:
+        issues.append("TELEGRAM_ALLOWED_USERS missing/empty")
+    host_lower = TELEGRAM_ADAPTER_HOST.lower()
+    is_local = host_lower in {"127.0.0.1", "::1", "localhost"}
+    if not is_local and not TELEGRAM_ADAPTER_ALLOW_REMOTE:
+        issues.append(
+            "TELEGRAM_ADAPTER_HOST is not loopback; set TELEGRAM_ADAPTER_ALLOW_REMOTE=1 only if intentional"
+        )
+    return issues
 
 
 if __name__ == "__main__":
@@ -294,5 +407,10 @@ if __name__ == "__main__":
             sys.exit(1)
         register_webhook(webhook_url)
     else:
+        issues = _security_issues()
+        if issues:
+            for item in issues:
+                logger.error("Telegram adapter secure-mode check failed: %s", item)
+            sys.exit(2)
         port = int(os.environ.get("TELEGRAM_ADAPTER_PORT", "8001"))
-        uvicorn.run(app, host="0.0.0.0", port=port, reload=False)
+        uvicorn.run(app, host=TELEGRAM_ADAPTER_HOST, port=port, reload=False)
