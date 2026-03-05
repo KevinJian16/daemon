@@ -590,7 +590,6 @@ class SystemResetManager:
         _rm(self.home / "state" / "tasks.json")
         _rm(self.home / "state" / "schedule_history.json")
         _rm(self.home / "state" / "gate.json")
-        _rm(self.home / "outcome" / "index.json")
 
         if mode == "strict":
             # Drop runtime sqlite files (including temporal_dev.db).
@@ -613,8 +612,6 @@ class SystemResetManager:
             "state/snapshots",
             "state/nerve_bridge/cursors",
             "state/service_logs",
-            "outcome/manual",
-            "outcome/scheduled",
             "openclaw/runs",
         ]:
             (self.home / rel).mkdir(parents=True, exist_ok=True)
@@ -624,19 +621,16 @@ class SystemResetManager:
         _reset_array_file(self.home / "state" / "schedule_history.json")
         _reset_array_file(self.home / "state" / "skill_evolution_proposals.json")
         _reset_array_file(self.home / "state" / "skill_evolution_queue.json")
-        _reset_array_file(self.home / "outcome" / "index.json")
         _reset_gate(self.home / "state" / "gate.json")
         self._clean_managed_outcome_root(cleaned)
 
         return cleaned
 
     def _clean_managed_outcome_root(self, cleaned: dict[str, Any]) -> None:
-        """Reset managed drive outcome tree with hard scope guard.
+        """Reset managed Drive outcome index.
 
-        Only clears:
-        - <daemon_root>/outcome/manual
-        - <daemon_root>/outcome/scheduled
-        - <daemon_root>/outcome/index.json
+        Only resets ~/My Drive/daemon/outcomes/index.json.
+        User-visible output files (YYYY-MM/ subdirs) are intentionally preserved.
         """
         cleaned.setdefault("external", [])
         try:
@@ -654,25 +648,15 @@ class SystemResetManager:
             daemon_root = Path(str(status.get("daemon_root") or "")).expanduser().resolve()
             outcome_root = Path(str(status.get("outcome_root") or "")).expanduser().resolve()
             outcome_root.relative_to(daemon_root)
-            if outcome_root.name != "outcome":
-                raise ValueError("managed_outcome_root_name_invalid")
 
-            removed: list[str] = []
-            for child in ("manual", "scheduled"):
-                p = outcome_root / child
-                if p.exists():
-                    shutil.rmtree(p, ignore_errors=True)
-                    removed.append(str(p))
-                p.mkdir(parents=True, exist_ok=True)
             idx = outcome_root / "index.json"
             idx.parent.mkdir(parents=True, exist_ok=True)
             idx.write_text("[]", encoding="utf-8")
-            removed.append(str(idx))
             cleaned["external"].append(
                 {
                     "target": str(outcome_root),
                     "action": "reset",
-                    "removed": removed,
+                    "removed": [str(idx)],
                 }
             )
         except Exception as exc:
