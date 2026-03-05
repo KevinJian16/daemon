@@ -109,27 +109,47 @@ Milestone 4  用户确认 + 批量引入
 
 ## 阶段四：暖机
 
-### 4.0 冒烟测试（阶段三 Skills Campaign 之前）
+### 4.0 冷启动特性（重要前提）
 
-跑 3-5 个简单任务验证端到端：
-- 1 个 Pulse：总结一个 URL
-- 1 个 Thread（research_report）：某个技术主题小报告
-- 1 个 Thread（dev_project）：写一个小工具脚本
+学习机制已全部落地，但有明确的冷启动特性：
 
-目的：确认 spine 学习循环跑通、review 评分正常、Telegram 通知正常、Portal 可查看产出。
+| 指标类型 | 生效时机 | 说明 |
+|---|---|---|
+| **Quantitative**（success_rate、value_score、tier）| 第 1 个任务完成后立即 | spine.record 直接写入 playbook，机械更新 |
+| **Qualitative**（新 method candidate、weave_patterns）| 约 5-10 个任务后 | spine.learn 需要足够的 trace 数据才能提炼有效模式 |
+| **Router 行为变化**（读取 runtime_hints 后调整规划）| spine.relay 每 4h 写一次 | 学到的模式最多延迟 4h 反映到下一次任务规划 |
 
-### 4.1 正式暖机（Skills 就绪后）
+因此暖机任务要**覆盖不同 cluster**，否则系统只在一个方向上优化。
+
+### 4.1 冒烟测试（阶段三 Skills Campaign 之前）
+
+目标：验证端到端链路全部跑通，确认 spine 学习循环、review 评分、Telegram 通知、Portal 产出查看均正常。
+
+最少任务集（每个 cluster 至少 1 个）：
+- **Pulse**：总结一个 URL（collect → render，最短路径）
+- **Thread / research_report**：某个技术主题小报告
+- **Thread / dev_project**：写一个小工具脚本
+- **Thread / knowledge_synthesis**：整合几条已有笔记或材料
+
+每个任务完成后：填写用户评价（这是写入 Memory 的第一批 `human` 来源知识）。
+
+验收标准：
+- `state/nerve_bridge/events.jsonl` 有 task_completed 事件
+- `playbook.db` 里对应 method 的 `total_runs` 增加、`success_rate` 有值
+- `openclaw/workspace/router/memory/runtime_hints.json` 的 `best_methods` 里 `runs > 0`
+
+### 4.2 正式暖机（Skills 就绪后）
 
 覆盖 4 个 cluster + 个人产出辅助：
-- 每种 cluster 各跑 3-5 个代表性任务
-- 大小混搭（小技术点 + 综合大项目）
-- 每次任务后填写用户评价，写入 Memory 作为 human 来源知识
+- 每种 cluster 各跑 3-5 个代表性任务，大小混搭
+- 约 10 个任务后检查 `weave_patterns/` 目录，确认有新 pattern 产生
+- 约 15-20 个任务后，`spine.judge` 应开始看到 hot/warm/cold tier 分化
 
-### 4.2 暖机质量评估指标
+### 4.3 暖机质量评估指标
 
-- playbook method 的 value_score 分布：hot/warm/cold 比例是否健康
-- weave_patterns 数量和 hit rate
-- 用户评价平均分（baseline 建立）
+- `playbook.db` method 的 value_score 分布：hot/warm/cold 比例是否健康
+- `weave_patterns/` 数量和 index.json 里的 hit_count
+- 用户评价平均分（建立基线，目标 ≥ 3.5/5）
 - 各 agent 的 P95 延迟（是否需要调整并发配额）
 
 ---
@@ -137,15 +157,9 @@ Milestone 4  用户确认 + 批量引入
 ## 推进顺序
 
 ```
-现在    → 阶段一：§15.2 补全（小改动，1-2小时）
-         → 阶段二 2.1：偏好对齐访谈（需要用户配合，非代码工作）
+现在    → 阶段一：§15.2 补全（小改动）
+         → 阶段二 2.1：偏好对齐访谈（非代码，需要用户配合）
 Week 1  → 阶段二 2.2-2.3：UI 实施 + Tailscale 接入
-         → 阶段三 + 阶段四 4.0：Skills Campaign + 冒烟测试
-Week 2+ → 阶段四 4.1-4.2：正式暖机，持续迭代
+         → 阶段三 + 阶段四 4.1：Skills Campaign + 冒烟测试
+Week 2+ → 阶段四 4.2-4.3：正式暖机，持续迭代
 ```
-
----
-
-## 本文件落地位置
-
-实现开始前，将本计划保存为 `.ref/NEXT_PHASE_PLAN.md` 并 commit。
