@@ -161,3 +161,54 @@
 | P2 | 用户反馈闭环完整实现（§19） | Portal UI 依赖前端工作 |
 | P3 | 自我升级闭环（§15.2） | 暖机后才有足够 proposals |
 | P3 | Context Window 预检（§16.3） | 先跑起来，遇到问题再补 |
+
+---
+
+## 十、增量完成记录（2026-03-05，补充）
+
+> 本节为后续执行补充，不覆盖上文原待办口径；用于交接“已经落地且已验证”的新增工作。
+
+### A. 关键闭环修复（P0）
+
+1. `spine.record -> playbook.evaluate` 真实落库已接通  
+涉及文件：`spine/routines.py`  
+处理：`record()` 优先绑定 `plan.method_id`，找不到再回退按 `method/task_type` 匹配。  
+结果：`evaluations` 从 0 增长到 2（含 success/failure 两类样本），`methods.total_runs` 同步增长。
+
+2. Campaign resume 跨 run_root 交付链路修复  
+涉及文件：`temporal/activities.py`、`temporal/campaign_workflow.py`  
+处理：bootstrap 回填历史 `step_results`；finalize 先读 `step_results[*].output_path`，避免 resume 后找不到 render 输出。  
+结果：Campaign 成功态可从 `phase0_confirm -> milestone_feedback -> resume -> completed/finished` 走通。
+
+3. 语义入参鲁棒性修复（避免 500）  
+涉及文件：`runtime/semantic.py`、`services/dispatch.py`  
+处理：`intent_contract` 的 `constraints/acceptance` 非对象输入统一规范化，内部异常统一转 `semantic_mapping_failed`。  
+结果：`/submit` 遇异常输入不再返回 500，而是可解释失败码。
+
+### B. 重置机制稳定性增强（P0）
+
+1. Restart 阶段进程去重  
+涉及文件：`services/system_reset.py`  
+处理：重启前按端口+签名识别“已运行”进程，避免重复拉起导致端口冲突。  
+结果：`strict --restart` 可稳定执行，避免 API/Worker/Temporal 重复实例。
+
+2. 验收后回基线流程已固化  
+执行方式：每轮端到端完成后执行 `state_reset --mode strict --restart`。  
+基线检查：`state/tasks.json=[]`、`outcome/index.json=[]`、`gate=GREEN`。
+
+### C. 对外暴露面收敛（新增安全项）
+
+1. Telegram adapter 默认收敛到回环地址  
+涉及文件：`interfaces/telegram/adapter.py`  
+处理：默认 `TELEGRAM_ADAPTER_HOST=127.0.0.1`（不再默认 `0.0.0.0`）。
+
+2. Telegram adapter 启动强制安全门  
+涉及文件：`interfaces/telegram/adapter.py`、`services/system_reset.py`  
+处理：未配置 `TELEGRAM_WEBHOOK_SECRET` 或 `TELEGRAM_ALLOWED_USERS` 时拒绝启动；reset 重启器也会跳过不安全配置。  
+结果：外部监听的 8001 已收敛关闭，避免 webhook 伪造入口。
+
+### D. 本轮代码提交记录
+
+1. 已提交 commit：`9bc8483`  
+message：`Fix spine record closure, campaign resume delivery, and lock down telegram exposure`  
+说明：包含闭环修复、Campaign 成功态链路修复、Telegram 暴露面收敛。
