@@ -107,9 +107,27 @@ class TestMemoryFabric:
         import sqlite3, time
         with memory._connect() as conn:
             conn.execute(
-                "INSERT INTO units VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                ("u_exp", "Expired", "d", "breaking", 1.0, None, None, "active",
-                 "2020-01-01T00:00:00Z", "2020-01-01T00:00:00Z", "2020-01-02T00:00:00Z"),
+                """
+                INSERT INTO units (
+                    unit_id, title, domain, tier, confidence, summary_zh, summary_en, status,
+                    source_type, source_agent, created_utc, updated_utc, expires_utc
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "u_exp",
+                    "Expired",
+                    "d",
+                    "breaking",
+                    1.0,
+                    None,
+                    None,
+                    "active",
+                    "synthetic",
+                    "test",
+                    "2020-01-01T00:00:00Z",
+                    "2020-01-01T00:00:00Z",
+                    "2020-01-02T00:00:00Z",
+                ),
             )
         result = memory.expire()
         assert result["archived"] >= 1
@@ -415,10 +433,7 @@ class TestCompassFabric:
         assert fetched["min_sections"] == 1
 
     def test_budget_consume(self, compass):
-        import time
-        tomorrow = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 86400))
-        with compass._connect() as conn:
-            conn.execute("INSERT INTO resource_budgets VALUES (?,?,?,?)", ("openai_tokens", 1000, 0, tomorrow))
+        compass.set_budget("openai_tokens", 1000, changed_by="test")
         assert compass.consume_budget("openai_tokens", 500) is True
         assert compass.consume_budget("openai_tokens", 600) is False  # Would exceed
 

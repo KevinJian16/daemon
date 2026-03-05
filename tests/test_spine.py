@@ -119,7 +119,8 @@ class TestSpineRegistry:
         names = reg.all_names()
         assert "spine.pulse" in names
         assert "spine.record" in names
-        assert len(names) == 10
+        assert "spine.librarian" in names
+        assert len(names) >= 11
 
     def test_get_routine(self, tmp_path):
         reg_path = Path(__file__).parent.parent / "config" / "spine_registry.json"

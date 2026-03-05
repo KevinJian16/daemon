@@ -21,15 +21,39 @@ class TemporalClient:
         client = await Client.connect(f"{host}:{port}", namespace=namespace)
         return cls(client, task_queue)
 
-    async def submit(self, workflow_id: str, plan: dict, run_root: str) -> str:
-        """Submit a workflow and return the run_id."""
-        handle: WorkflowHandle = await self._client.start_workflow(
-            "GraphDispatchWorkflow",
-            args=[{"plan": plan, "run_root": run_root}],
-            id=workflow_id,
-            task_queue=self._task_queue,
-        )
-        return handle.result_run_id or workflow_id
+    async def submit(
+        self,
+        workflow_id: str,
+        plan: dict,
+        run_root: str,
+        workflow_name: str = "GraphDispatchWorkflow",
+    ) -> str:
+        """Submit a workflow and return the run_id.
+
+        Temporal dev server may report transient shard/timeout errors right after
+        startup; retry a few times before surfacing a hard failure.
+        """
+        last_err: Exception | None = None
+        for attempt in range(4):
+            try:
+                handle: WorkflowHandle = await self._client.start_workflow(
+                    workflow_name,
+                    args=[{"plan": plan, "run_root": run_root}],
+                    id=workflow_id,
+                    task_queue=self._task_queue,
+                )
+                return handle.result_run_id or workflow_id
+            except Exception as exc:
+                last_err = exc
+                msg = str(exc).lower()
+                if "already started" in msg:
+                    return workflow_id
+                if attempt >= 3:
+                    break
+                await asyncio.sleep(0.8 + attempt * 0.8)
+        if last_err is not None:
+            raise last_err
+        raise RuntimeError("temporal_submit_failed_without_exception")
 
     async def cancel(self, workflow_id: str) -> None:
         handle = self._client.get_workflow_handle(workflow_id)

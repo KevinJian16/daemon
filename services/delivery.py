@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     from runtime.cortex import Cortex
     from spine.nerve import Nerve
 
+from runtime.drive_accounts import DriveAccountRegistry
+
 
 def _utc() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -39,6 +41,7 @@ class DeliveryService:
         self._nerve = nerve
         self._home = daemon_home
         self._cortex = cortex
+        self._drive_registry = DriveAccountRegistry(self._home / "state")
 
     def deliver(self, run_root: str, plan: dict, step_results: list[dict]) -> dict:
         """Full delivery pipeline: quality gate → archive → channel routing."""
@@ -373,12 +376,13 @@ class DeliveryService:
         task_type = str(plan.get("task_type") or "manual")
         task_id = str(plan.get("task_id") or uuid.uuid4().hex[:8])
         title = str(plan.get("title") or task_id)[:60].replace("/", "-").strip()
+        outcome_root = self._resolve_outcome_root()
 
         if task_type in ("daily_brief", "weekly_brief"):
             today = time.strftime("%Y-%m-%d")
-            dest = self._home / "outcome" / "scheduled" / task_type / today
+            dest = outcome_root / "scheduled" / task_type / today
         else:
-            dest = self._home / "outcome" / "manual" / title
+            dest = outcome_root / "manual" / title
 
         dest.mkdir(parents=True, exist_ok=True)
         out = dest / f"report{render_file.suffix}"
@@ -395,20 +399,33 @@ class DeliveryService:
         return dest
 
     def _update_index(self, outcome_dir: Path, plan: dict) -> None:
-        index_path = self._home / "outcome" / "index.json"
+        outcome_root = self._resolve_outcome_root()
+        index_path = outcome_root / "index.json"
         try:
             index = json.loads(index_path.read_text())
         except Exception as exc:
             logger.warning("Failed to parse outcome index %s: %s", index_path, exc)
             index = []
+        try:
+            rel_path = str(outcome_dir.relative_to(outcome_root))
+        except Exception:
+            rel_path = str(outcome_dir)
         index.append({
-            "path": str(outcome_dir.relative_to(self._home / "outcome")),
+            "path": rel_path,
             "title": plan.get("title", ""),
             "task_type": plan.get("task_type", "manual"),
             "task_id": plan.get("task_id", ""),
             "delivered_utc": _utc(),
         })
         index_path.write_text(json.dumps(index[-1000:], ensure_ascii=False, indent=2))
+
+    def _resolve_outcome_root(self) -> Path:
+        resolved = self._drive_registry.resolve_outcome_root()
+        if not resolved.get("ok"):
+            raise RuntimeError(f"drive_outcome_unavailable: {resolved.get('error', '')}")
+        root = Path(str(resolved.get("outcome_root") or "")).expanduser()
+        root.mkdir(parents=True, exist_ok=True)
+        return root
 
     def _route_telegram(self, content: str, plan: dict, prefs: dict[str, str]) -> None:
         if prefs.get("telegram_enabled") != "true":

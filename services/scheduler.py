@@ -164,11 +164,19 @@ class Scheduler:
     async def _check_adaptive_routines(self) -> None:
         """Check adaptive routines using Compass rhythm + routine offset semantics."""
         now = time.time()
+        gate_status = self._gate_status()
         for rdef in self._registry.all():
             routine_name = rdef.name
             schedule = self._effective_schedule(routine_name, rdef.schedule)
             if not self._is_enabled(routine_name) or not schedule or not schedule.startswith("adaptive:"):
                 continue
+            if gate_status != "GREEN":
+                # Gate closed: pause adaptive routines until recovery.
+                self._next_run[routine_name] = None
+                continue
+            if self._next_run.get(routine_name) is None:
+                # Gate recovered: reset baseline interval from "now".
+                self._last_run[routine_name] = now
             interval = self._adaptive_interval(routine_name, schedule)
             last = self._last_run.get(routine_name, 0)
             elapsed = now - last
@@ -368,11 +376,41 @@ class Scheduler:
         else:
             interval = rhythm_s
         interval = max(60, interval)
+
+        # Queue-depth adaptive tuning: idle -> shorter interval, busy -> longer interval.
+        running_count = self._running_tasks_count()
+        if running_count <= 0:
+            interval = int(interval * 0.6)
+        elif running_count > 3:
+            interval = int(interval * 1.5)
+
         if min_s:
             interval = max(interval, min_s)
         if max_s:
             interval = min(interval, max_s)
         return interval
+
+    def _gate_status(self) -> str:
+        gate_path = self._state / "gate.json"
+        if not gate_path.exists():
+            return "GREEN"
+        try:
+            data = json.loads(gate_path.read_text(encoding="utf-8"))
+        except Exception:
+            return "GREEN"
+        return str(data.get("status") or "GREEN").upper()
+
+    def _running_tasks_count(self) -> int:
+        tasks_path = self._state / "tasks.json"
+        if not tasks_path.exists():
+            return 0
+        try:
+            rows = json.loads(tasks_path.read_text(encoding="utf-8"))
+        except Exception:
+            return 0
+        if not isinstance(rows, list):
+            return 0
+        return sum(1 for row in rows if isinstance(row, dict) and str(row.get("status") or "") in {"running", "running_shadow"})
 
     @staticmethod
     def _is_supported_schedule(schedule: str) -> bool:

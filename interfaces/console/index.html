@@ -85,6 +85,8 @@
   <button onclick="show('agents', this)">Agents</button>
   <button onclick="show('skill-evolution', this)">Skill Evolution</button>
   <button onclick="show('schedules', this)">Schedules</button>
+  <button onclick="show('campaigns', this)">Campaigns</button>
+  <button onclick="show('system', this)">System</button>
 </nav>
 
 <main>
@@ -401,6 +403,65 @@
   </div>
 </div>
 
+<!-- CAMPAIGNS -->
+<div id="panel-campaigns" class="panel">
+  <div class="card">
+    <h3>Campaign List</h3>
+    <div class="search-row">
+      <button class="action" onclick="loadCampaigns()">Refresh</button>
+    </div>
+    <table>
+      <thead><tr><th>Campaign</th><th>Task</th><th>Status</th><th>Phase</th><th>Milestone</th><th>Updated</th><th>Action</th></tr></thead>
+      <tbody id="campaigns-tbody"><tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <h3>Campaign Detail</h3>
+    <pre id="campaign-detail">Select a campaign row to inspect manifest/milestones.</pre>
+  </div>
+</div>
+
+<!-- SYSTEM -->
+<div id="panel-system" class="panel">
+  <div class="card">
+    <h3>Managed Drive Storage</h3>
+    <div class="search-row">
+      <input id="storage-daemon-dir-name" placeholder="daemon directory name (e.g. daemon)" style="width:280px">
+      <button class="action" onclick="loadSystemStorage()">Load</button>
+      <button class="action" style="background:#14532d" onclick="saveSystemStorage()">Save</button>
+    </div>
+    <div style="color:var(--muted);font-size:11px;line-height:1.6">
+      Managed structure: <code>My Drive/&lt;daemon_dir_name&gt;/{archive,outcome}</code>.
+    </div>
+    <pre id="system-storage-status">Loading…</pre>
+  </div>
+  <div class="card">
+    <h3>System Reset (Localhost Only)</h3>
+    <div class="search-row">
+      <select id="reset-mode">
+        <option value="strict">strict</option>
+        <option value="light">light</option>
+      </select>
+      <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px">
+        <input type="checkbox" id="reset-restart"> restart after reset
+      </label>
+      <button class="action" style="background:#7f1d1d" onclick="issueResetChallenge()">Issue Challenge</button>
+      <button class="action" style="background:#14532d" onclick="confirmSystemReset()">Confirm Reset</button>
+    </div>
+    <div style="color:var(--muted);font-size:11px;line-height:1.5">
+      Reset requires challenge + confirm. Confirm action is one-time and expires automatically.
+    </div>
+    <pre id="system-reset-state">No reset challenge issued.</pre>
+  </div>
+  <div class="card">
+    <h3>Last Reset Report</h3>
+    <div class="search-row">
+      <button class="action" onclick="loadSystemResetReport()">Refresh Report</button>
+    </div>
+    <pre id="system-reset-report">No report.</pre>
+  </div>
+</div>
+
 </main>
 
 <script>
@@ -413,6 +474,7 @@ let currentPolicyScope = 'quality';
 let currentPolicyType = 'default';
 let currentPolicyVersions = [];
 let currentModelPolicy = {};
+let resetChallenge = null;
 
 function show(panel, el) {
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
@@ -431,6 +493,8 @@ function show(panel, el) {
   else if (panel === 'agents') loadAgents();
   else if (panel === 'skill-evolution') loadSkillEvolution();
   else if (panel === 'schedules') loadSchedules();
+  else if (panel === 'campaigns') loadCampaigns();
+  else if (panel === 'system') loadSystemResetPanel();
 }
 
 async function api(path) {
@@ -542,8 +606,8 @@ async function showFabric(type) {
   content.innerHTML = 'Loading…';
   if (type === 'memory') {
     const units = await api('/console/fabric/memory?limit=50');
-    let html = '<div class="card"><h3>Memory Units (latest 50)</h3><table><thead><tr><th>Action</th><th>Title</th><th>Domain</th><th>Tier</th><th>Confidence</th><th>Created</th></tr></thead><tbody>';
-    html += units.map(u => `<tr><td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewMemoryUnit('${u.unit_id}')">View</button></td><td>${esc(u.title)}</td><td>${u.domain}</td><td>${u.tier}</td><td>${(u.confidence*100).toFixed(0)}%</td><td style="color:var(--muted)">${(u.created_utc||'').replace('T',' ').replace('Z','')}</td></tr>`).join('');
+    let html = '<div class="card"><h3>Memory Units (latest 50)</h3><table><thead><tr><th>Action</th><th>Title</th><th>Domain</th><th>Tier</th><th>Source</th><th>Confidence</th><th>Created</th></tr></thead><tbody>';
+    html += units.map(u => `<tr><td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewMemoryUnit('${u.unit_id}')">View</button></td><td>${esc(u.title)}</td><td>${u.domain}</td><td>${u.tier}</td><td>${esc(u.source_type || 'synthetic')}</td><td>${(u.confidence*100).toFixed(0)}%</td><td style="color:var(--muted)">${(u.created_utc||'').replace('T',' ').replace('Z','')}</td></tr>`).join('');
     html += '</tbody></table></div>';
     html += '<div class="card"><h3>Memory Unit Detail</h3><pre id="memory-detail">Select a unit to inspect usage/links/audit details.</pre></div>';
     content.innerHTML = html;
@@ -1762,6 +1826,207 @@ async function loadScheduleHistory() {
   }
 }
 
+async function loadCampaigns() {
+  const tbody = document.getElementById('campaigns-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr>';
+  try {
+    const rows = await api('/campaigns?limit=200');
+    tbody.innerHTML = (rows || []).map(r => `
+      <tr>
+        <td style="color:var(--muted);font-size:11px">${esc(r.campaign_id || '')}</td>
+        <td style="color:var(--muted);font-size:11px">${esc(r.task_id || '')}</td>
+        <td><span class="badge ${r.status==='completed' ? 'ok' : r.status==='running' ? 'hybrid' : r.status==='paused' ? 'degraded' : r.status==='cancelled' ? 'error' : 'deterministic'}">${esc(r.status || '')}</span></td>
+        <td>${esc(r.current_phase || '')}</td>
+        <td>${Number(r.current_milestone_index || 0)} / ${Number(r.total_milestones || 0)}</td>
+        <td style="color:var(--muted)">${(r.updated_utc || '').replace('T', ' ').replace('Z', '')}</td>
+        <td>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewCampaign('${encodeURIComponent(r.campaign_id || '')}')">View</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#0f766e" onclick="confirmCampaign('${encodeURIComponent(r.campaign_id || '')}')">Confirm</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#14532d" onclick="resumeCampaign('${encodeURIComponent(r.campaign_id || '')}')">Resume</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="cancelCampaign('${encodeURIComponent(r.campaign_id || '')}')">Cancel</button>
+        </td>
+      </tr>
+    `).join('') || '<tr><td colspan="7" style="color:var(--muted)">No campaigns</td></tr>';
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function viewCampaign(campaignKey) {
+  const campaignId = decodeURIComponent(campaignKey || '');
+  if (!campaignId) return;
+  const target = document.getElementById('campaign-detail');
+  if (!target) return;
+  target.textContent = 'Loading campaign detail…';
+  try {
+    const row = await api('/campaigns/' + encodeURIComponent(campaignId));
+    target.textContent = JSON.stringify(row, null, 2);
+  } catch (e) {
+    target.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function resumeCampaign(campaignKey) {
+  const campaignId = decodeURIComponent(campaignKey || '');
+  if (!campaignId) return;
+  let detail = null;
+  try {
+    detail = await api('/campaigns/' + encodeURIComponent(campaignId));
+  } catch (e) {
+    alert('Load campaign detail failed: ' + e.message);
+    return;
+  }
+  const manifest = detail?.manifest || {};
+  const phase = String(manifest.current_phase || '');
+  const payload = {};
+  if (phase === 'phase0_waiting_confirmation') {
+    payload.confirmed = true;
+  }
+  if (phase === 'milestone_waiting_feedback') {
+    const satisfied = confirm(`Campaign ${campaignId} milestone feedback: click OK=满意, Cancel=不满意`);
+    const comment = prompt('Feedback comment (optional):', '') || '';
+    payload.feedback = {
+      satisfied,
+      rating: satisfied ? 5 : 2,
+      comment,
+      source: 'console',
+    };
+  }
+  const resumeFromRaw = prompt(`Resume ${campaignId} from milestone index (0-based, empty = current):`, '');
+  if (resumeFromRaw !== null && String(resumeFromRaw).trim() !== '') {
+    const v = Number(resumeFromRaw);
+    if (!Number.isNaN(v)) payload.resume_from = Math.max(0, Math.floor(v));
+  }
+  try {
+    await apiWrite('/campaigns/' + encodeURIComponent(campaignId) + '/resume', 'POST', payload);
+    await loadCampaigns();
+    await viewCampaign(encodeURIComponent(campaignId));
+  } catch (e) {
+    alert('Resume campaign failed: ' + e.message);
+  }
+}
+
+async function confirmCampaign(campaignKey) {
+  const campaignId = decodeURIComponent(campaignKey || '');
+  if (!campaignId) return;
+  if (!confirm(`Confirm campaign ${campaignId} and start execution?`)) return;
+  try {
+    await apiWrite('/campaigns/' + encodeURIComponent(campaignId) + '/confirm', 'POST', {});
+    await loadCampaigns();
+    await viewCampaign(encodeURIComponent(campaignId));
+  } catch (e) {
+    alert('Confirm campaign failed: ' + e.message);
+  }
+}
+
+async function cancelCampaign(campaignKey) {
+  const campaignId = decodeURIComponent(campaignKey || '');
+  if (!campaignId) return;
+  if (!confirm(`Cancel campaign ${campaignId}?`)) return;
+  try {
+    await apiWrite('/campaigns/' + encodeURIComponent(campaignId) + '/cancel', 'POST', {});
+    await loadCampaigns();
+    await viewCampaign(encodeURIComponent(campaignId));
+  } catch (e) {
+    alert('Cancel campaign failed: ' + e.message);
+  }
+}
+
+async function loadSystemResetPanel() {
+  await loadSystemStorage();
+  await loadSystemResetReport();
+  const state = document.getElementById('system-reset-state');
+  if (!state) return;
+  if (!resetChallenge) {
+    state.textContent = 'No reset challenge issued.';
+    return;
+  }
+  state.textContent = JSON.stringify(resetChallenge, null, 2);
+}
+
+async function issueResetChallenge() {
+  const mode = document.getElementById('reset-mode')?.value || 'strict';
+  const restart = !!document.getElementById('reset-restart')?.checked;
+  try {
+    const data = await apiWrite('/console/system/reset/challenge', 'POST', {
+      mode,
+      restart,
+      ttl_seconds: 180,
+    });
+    resetChallenge = data;
+    await loadSystemResetPanel();
+  } catch (e) {
+    alert('Issue challenge failed: ' + e.message);
+  }
+}
+
+async function confirmSystemReset() {
+  if (!resetChallenge || !resetChallenge.challenge_id || !resetChallenge.confirm_code) {
+    alert('Issue challenge first.');
+    return;
+  }
+  if (!confirm('Confirm system reset now? This will stop services and clean runtime state.')) return;
+  const mode = document.getElementById('reset-mode')?.value || resetChallenge.mode || 'strict';
+  const restart = !!document.getElementById('reset-restart')?.checked;
+  try {
+    const data = await apiWrite('/console/system/reset/confirm', 'POST', {
+      challenge_id: resetChallenge.challenge_id,
+      confirm_code: resetChallenge.confirm_code,
+      mode,
+      restart,
+    });
+    const state = document.getElementById('system-reset-state');
+    if (state) state.textContent = JSON.stringify(data, null, 2);
+    resetChallenge = null;
+    alert('Reset accepted. Refresh report in a few seconds.');
+  } catch (e) {
+    alert('Confirm reset failed: ' + e.message);
+  }
+}
+
+async function loadSystemResetReport() {
+  const target = document.getElementById('system-reset-report');
+  if (!target) return;
+  target.textContent = 'Loading reset report…';
+  try {
+    const data = await api('/console/system/reset/last-report');
+    target.textContent = data && Object.keys(data).length ? JSON.stringify(data, null, 2) : 'No report.';
+  } catch (e) {
+    target.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function loadSystemStorage() {
+  const status = document.getElementById('system-storage-status');
+  const input = document.getElementById('storage-daemon-dir-name');
+  if (status) status.textContent = 'Loading storage status…';
+  try {
+    const data = await api('/console/system/storage');
+    if (input) input.value = String(data.daemon_dir_name || 'daemon');
+    if (status) status.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    if (status) status.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function saveSystemStorage() {
+  const input = document.getElementById('storage-daemon-dir-name');
+  const daemonDirName = String(input?.value || '').trim();
+  if (!daemonDirName) {
+    alert('daemon_dir_name is required.');
+    return;
+  }
+  try {
+    const data = await apiWrite('/console/system/storage', 'PUT', {daemon_dir_name: daemonDirName});
+    if (input) input.value = String(data.daemon_dir_name || daemonDirName);
+    const status = document.getElementById('system-storage-status');
+    if (status) status.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    alert('Save storage settings failed: ' + e.message);
+  }
+}
+
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function refreshAll() {
   const active = document.querySelector('.panel.active');
@@ -1776,6 +2041,8 @@ function refreshAll() {
   else if (active?.id === 'panel-agents') loadAgents();
   else if (active?.id === 'panel-skill-evolution') loadSkillEvolution();
   else if (active?.id === 'panel-schedules') loadSchedules();
+  else if (active?.id === 'panel-campaigns') loadCampaigns();
+  else if (active?.id === 'panel-system') loadSystemResetPanel();
 }
 
 // Auto-load on start.

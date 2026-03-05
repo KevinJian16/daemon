@@ -80,13 +80,7 @@ def bootstrap(daemon_home: Path | None = None, openclaw_home: Path | None | obje
         for q in BOOTSTRAP_QUALITY_PROFILES:
             compass.set_quality_profile(q["task_type"], q["rules"], changed_by="bootstrap")
         for b in BOOTSTRAP_BUDGETS:
-            import time
-            tomorrow = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 86400))
-            with compass._connect() as conn:
-                conn.execute(
-                    "INSERT OR IGNORE INTO resource_budgets VALUES (?,?,?,?)",
-                    (b["resource_type"], b["daily_limit"], 0, tomorrow),
-                )
+            compass.set_budget(b["resource_type"], float(b["daily_limit"]), changed_by="bootstrap")
         for pref in BOOTSTRAP_PREFERENCES:
             compass.set_pref(pref["pref_key"], pref["value"], source="bootstrap")
     report["fabric"]["compass"] = {

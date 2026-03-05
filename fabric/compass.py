@@ -114,10 +114,14 @@ BOOTSTRAP_QUALITY_PROFILES: list[dict] = [
 ]
 
 BOOTSTRAP_BUDGETS: list[dict] = [
+    # V2 provider budget baseline (per-day token caps).
+    {"resource_type": "minimax_tokens",    "daily_limit": 2_000_000},
+    {"resource_type": "qwen_tokens",       "daily_limit": 1_000_000},
+    {"resource_type": "zhipu_tokens",      "daily_limit": 500_000},
+    {"resource_type": "deepseek_tokens",   "daily_limit": 500_000},
+    # Compatibility budgets for optional providers/tools.
     {"resource_type": "openai_tokens",     "daily_limit": 500_000},
     {"resource_type": "anthropic_tokens",  "daily_limit": 200_000},
-    {"resource_type": "deepseek_tokens",   "daily_limit": 1_000_000},
-    {"resource_type": "minimax_tokens",    "daily_limit": 500_000},
     {"resource_type": "concurrent_tasks",  "daily_limit": 10},
 ]
 
@@ -127,6 +131,7 @@ BOOTSTRAP_PREFERENCES: list[dict] = [
     {"pref_key": "pdf_enabled",      "value": "true",   "source": "default"},
     {"pref_key": "learning_rhythm",  "value": "4h",     "source": "default"},
     {"pref_key": "model_primary",    "value": "deepseek", "source": "default"},
+    {"pref_key": "skill_evolution.sandbox_gate", "value": "open", "source": "default"},
 ]
 
 
@@ -151,9 +156,54 @@ class CompassFabric:
         finally:
             conn.close()
 
+    # Backward-compatible alias for legacy callers/tests.
+    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
+        return self._conn()
+
     def _init_db(self) -> None:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            self._seed_bootstrap_defaults(conn)
+
+    def _seed_bootstrap_defaults(self, conn: sqlite3.Connection) -> None:
+        """Seed required defaults idempotently for direct Compass users.
+
+        This keeps Dispatch preflight semantics deterministic even when callers
+        instantiate CompassFabric without running bootstrap.py first.
+        """
+        now = _utc()
+        for p in BOOTSTRAP_PRIORITIES:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO priorities (domain, weight, reason, updated_utc, source)
+                VALUES (?,?,?,?,?)
+                """,
+                (p["domain"], float(p["weight"]), p.get("reason", ""), now, "bootstrap"),
+            )
+        for q in BOOTSTRAP_QUALITY_PROFILES:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO quality_profiles (task_type, rules_json, updated_utc)
+                VALUES (?,?,?)
+                """,
+                (q["task_type"], json.dumps(q["rules"], ensure_ascii=False), now),
+            )
+        for b in BOOTSTRAP_BUDGETS:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO resource_budgets (resource_type, daily_limit, current_usage, reset_utc)
+                VALUES (?,?,0,?)
+                """,
+                (b["resource_type"], float(b["daily_limit"]), now),
+            )
+        for pref in BOOTSTRAP_PREFERENCES:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO preferences (pref_key, value, updated_utc, source)
+                VALUES (?,?,?,?)
+                """,
+                (pref["pref_key"], str(pref["value"]), now, str(pref.get("source") or "bootstrap")),
+            )
 
     def _version(self, conn: sqlite3.Connection, key: str, value: Any, changed_by: str, reason: str | None) -> int:
         cur_ver = conn.execute(

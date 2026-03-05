@@ -6,6 +6,8 @@ import json
 import sqlite3
 import time
 import uuid
+import math
+import calendar
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Generator
@@ -29,6 +31,8 @@ CREATE TABLE IF NOT EXISTS units (
     summary_zh   TEXT,
     summary_en   TEXT,
     status       TEXT NOT NULL DEFAULT 'active',
+    source_type  TEXT NOT NULL DEFAULT 'synthetic',
+    source_agent TEXT,
     created_utc  TEXT NOT NULL,
     updated_utc  TEXT NOT NULL,
     expires_utc  TEXT
@@ -86,6 +90,16 @@ TIER_TTL_DAYS: dict[str, int | None] = {
     "permanent": None,
 }
 
+SOURCE_TYPES = {"empirical", "synthetic", "collected", "human"}
+SOURCE_PRIORITY = {"human": 0, "empirical": 1, "synthetic": 2, "collected": 3}
+
+
+def _normalize_source_type(v: Any, fallback: str = "synthetic") -> str:
+    s = str(v or "").strip().lower()
+    if s in SOURCE_TYPES:
+        return s
+    return fallback if fallback in SOURCE_TYPES else "synthetic"
+
 
 class MemoryFabric:
     def __init__(self, db_path: Path) -> None:
@@ -108,9 +122,31 @@ class MemoryFabric:
         finally:
             conn.close()
 
+    # Backward-compatible alias for legacy callers/tests.
+    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
+        return self._conn()
+
     def _init_db(self) -> None:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            cols = {
+                str(r["name"])
+                for r in conn.execute("PRAGMA table_info(units)").fetchall()
+            }
+            if "source_type" not in cols:
+                try:
+                    conn.execute("ALTER TABLE units ADD COLUMN source_type TEXT NOT NULL DEFAULT 'synthetic'")
+                except sqlite3.OperationalError:
+                    pass
+            if "source_agent" not in cols:
+                try:
+                    conn.execute("ALTER TABLE units ADD COLUMN source_agent TEXT")
+                except sqlite3.OperationalError:
+                    pass
+            try:
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_units_source ON units(source_type)")
+            except sqlite3.OperationalError:
+                pass
 
     def _audit(self, conn: sqlite3.Connection, action: str, actor: str, detail: Any = None) -> None:
         conn.execute(
@@ -118,11 +154,22 @@ class MemoryFabric:
             (_new_id("a"), action, actor, _utc(), json.dumps(detail) if detail is not None else None),
         )
 
-    def intake(self, units: list[dict], actor: str = "spine.intake") -> dict:
+    def intake(
+        self,
+        units: list[dict],
+        actor: str = "spine.intake",
+        source_type: str | None = None,
+        source_agent: str | None = None,
+    ) -> dict:
         """Batch-write raw knowledge units. Skips duplicates by raw_hash."""
         inserted = []
         skipped = []
         now = _utc()
+        default_source_type = _normalize_source_type(
+            source_type,
+            fallback="collected" if actor.startswith("spine.intake") else "synthetic",
+        )
+        default_source_agent = str(source_agent or ("collect" if actor.startswith("spine.intake") else actor)).strip()
         with self._conn() as conn:
             for raw in units:
                 title = str(raw.get("title") or "").strip()
@@ -134,6 +181,8 @@ class MemoryFabric:
                 summary_en = raw.get("summary_en")
                 provider = str(raw.get("provider") or "unknown")
                 url = raw.get("url")
+                unit_source_type = _normalize_source_type(raw.get("source_type"), fallback=default_source_type)
+                unit_source_agent = str(raw.get("source_agent") or default_source_agent).strip()
                 raw_content = json.dumps(raw, sort_keys=True)
                 raw_hash = hashlib.sha256(raw_content.encode()).hexdigest()
 
@@ -147,6 +196,8 @@ class MemoryFabric:
                 ttl = TIER_TTL_DAYS.get(tier)
                 expires = None
                 if ttl is not None:
+                    if unit_source_type == "collected":
+                        ttl = max(1, int(math.ceil(ttl * 0.5)))
                     expires = time.strftime(
                         "%Y-%m-%dT%H:%M:%SZ",
                         time.gmtime(time.time() + ttl * 86400),
@@ -156,11 +207,11 @@ class MemoryFabric:
                 conn.execute(
                     """INSERT INTO units
                        (unit_id, title, domain, tier, confidence, summary_zh, summary_en,
-                        status, created_utc, updated_utc, expires_utc)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        status, source_type, source_agent, created_utc, updated_utc, expires_utc)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (uid, title, domain, tier,
                      float(raw.get("confidence", 1.0)),
-                     summary_zh, summary_en, "active", now, now, expires),
+                     summary_zh, summary_en, "active", unit_source_type, unit_source_agent, now, now, expires),
                 )
                 conn.execute(
                     "INSERT INTO sources VALUES (?,?,?,?,?,?)",
@@ -176,6 +227,7 @@ class MemoryFabric:
         tier: str | None = None,
         since: str | None = None,
         keyword: str | None = None,
+        source_type: str | None = None,
         status: str = "active",
         limit: int = 100,
     ) -> list[dict]:
@@ -194,6 +246,11 @@ class MemoryFabric:
             clauses.append("(u.title LIKE ? OR u.summary_zh LIKE ? OR u.summary_en LIKE ?)")
             k = f"%{keyword}%"
             params.extend([k, k, k])
+        if source_type:
+            st = _normalize_source_type(source_type, fallback="")
+            if st:
+                clauses.append("u.source_type = ?")
+                params.append(st)
         params.append(limit)
 
         sql = f"""
@@ -202,7 +259,15 @@ class MemoryFabric:
             LEFT JOIN sources s ON s.unit_id = u.unit_id
             WHERE {' AND '.join(clauses)}
             GROUP BY u.unit_id
-            ORDER BY u.created_utc DESC
+            ORDER BY
+                CASE COALESCE(u.source_type,'synthetic')
+                    WHEN 'human' THEN 0
+                    WHEN 'empirical' THEN 1
+                    WHEN 'synthetic' THEN 2
+                    WHEN 'collected' THEN 3
+                    ELSE 4
+                END,
+                u.created_utc DESC
             LIMIT ?
         """
         with self._conn() as conn:
@@ -278,11 +343,44 @@ class MemoryFabric:
                 self._audit(conn, "expire", "spine.tend", {"archived": count})
         return {"archived": count}
 
+    def apply_source_ttl_policy(self, actor: str = "spine.tend") -> dict:
+        """Archive collected units earlier (50% TTL window vs empirical)."""
+        archived = 0
+        now_ts = time.time()
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT unit_id, source_type, tier, created_utc FROM units WHERE status='active'"
+            ).fetchall()
+            for row in rows:
+                st = _normalize_source_type(row["source_type"], fallback="synthetic")
+                if st != "collected":
+                    continue
+                tier = str(row["tier"] or "standard").strip()
+                ttl_days = TIER_TTL_DAYS.get(tier)
+                if ttl_days is None:
+                    continue
+                created = str(row["created_utc"] or "")
+                try:
+                    created_ts = float(calendar.timegm(time.strptime(created, "%Y-%m-%dT%H:%M:%SZ")))
+                except Exception:
+                    continue
+                policy_ttl_s = max(1, int(math.ceil(ttl_days * 0.5 * 86400)))
+                if now_ts - created_ts < policy_ttl_s:
+                    continue
+                conn.execute(
+                    "UPDATE units SET status='archived', updated_utc=? WHERE unit_id=?",
+                    (_utc(), row["unit_id"]),
+                )
+                archived += 1
+            if archived:
+                self._audit(conn, "expire_source_policy", actor, {"archived": archived, "source_type": "collected"})
+        return {"archived": archived, "source_type": "collected"}
+
     def snapshot(self) -> dict:
         """Export a read-only snapshot for Agent consumption."""
         with self._conn() as conn:
             units = [dict(r) for r in conn.execute(
-                "SELECT unit_id, title, domain, tier, confidence, summary_zh, summary_en FROM units WHERE status='active' ORDER BY created_utc DESC LIMIT 500"
+                "SELECT unit_id, title, domain, tier, confidence, summary_zh, summary_en, source_type, source_agent FROM units WHERE status='active' ORDER BY created_utc DESC LIMIT 500"
             ).fetchall()]
             links = [dict(r) for r in conn.execute(
                 "SELECT from_id, to_id, relation, confidence FROM links LIMIT 2000"
@@ -304,12 +402,19 @@ class MemoryFabric:
                     "SELECT tier, COUNT(*) as cnt FROM units WHERE status='active' GROUP BY tier"
                 ).fetchall()
             }
+            by_source_type = {
+                r["source_type"]: r["cnt"]
+                for r in conn.execute(
+                    "SELECT source_type, COUNT(*) as cnt FROM units WHERE status='active' GROUP BY source_type"
+                ).fetchall()
+            }
             usage_count = conn.execute("SELECT COUNT(*) FROM usage").fetchone()[0]
             link_count = conn.execute("SELECT COUNT(*) FROM links").fetchone()[0]
         return {
             "total_active": total,
             "by_domain": by_domain,
             "by_tier": by_tier,
+            "by_source_type": by_source_type,
             "usage_records": usage_count,
             "link_count": link_count,
         }

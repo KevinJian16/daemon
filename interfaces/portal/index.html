@@ -122,7 +122,9 @@
   <button class="active" onclick="show('chat', this)">Chat</button>
   <button onclick="show('outcomes', this)">Outcomes</button>
   <button onclick="show('timeline', this)">Timeline</button>
+  <button onclick="show('campaigns', this)">Campaigns</button>
   <button onclick="show('tasks', this)">Tasks</button>
+  <button onclick="show('integrations', this)">Integrations</button>
 </nav>
 
 <!-- CHAT -->
@@ -201,6 +203,70 @@
   </div>
 </div>
 
+<!-- CAMPAIGNS -->
+<div id="panel-campaigns" class="panel">
+  <div style="display:flex;gap:8px;padding:14px 24px;border-bottom:1px solid var(--border);align-items:center;flex-shrink:0;">
+    <span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:1px">Campaigns</span>
+    <button class="sm" style="margin-left:auto" onclick="loadCampaignsPortal()">↻ Refresh</button>
+  </div>
+  <div style="display:flex;flex:1;overflow:hidden;">
+    <div style="width:360px;border-right:1px solid var(--border);overflow:auto;">
+      <table>
+        <thead><tr><th>Campaign</th><th>Status</th><th>Phase</th><th>Action</th></tr></thead>
+        <tbody id="campaigns-tbody-portal"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <div style="flex:1;overflow:auto;padding:20px;">
+      <pre id="campaign-detail-portal" style="background:#0a0c12;padding:14px;border-radius:6px;color:#cbd5e1;">Select a campaign</pre>
+    </div>
+  </div>
+</div>
+
+<!-- INTEGRATIONS -->
+<div id="panel-integrations" class="panel">
+  <div style="display:flex;gap:8px;padding:14px 24px;border-bottom:1px solid var(--border);align-items:center;flex-shrink:0;">
+    <span style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:1px">Managed Drive Storage</span>
+    <button class="sm" style="margin-left:auto" onclick="loadDrivePanel()">↻ Refresh</button>
+  </div>
+  <div style="display:flex;flex:1;overflow:hidden;">
+    <div style="width:420px;border-right:1px solid var(--border);overflow:auto;padding:18px;">
+      <div style="color:var(--muted);font-size:12px;margin-bottom:10px">系统固定使用 `My Drive/daemon/{archive,outcome}`。目录名可在 Console 修改。</div>
+      <pre id="drive-path-summary" style="background:#0a0c12;padding:12px;border-radius:6px;color:#cbd5e1;min-height:180px;">Loading…</pre>
+      <div style="margin-top:10px;color:var(--muted);font-size:12px;line-height:1.6">
+        Portal 不提供路径选择，只展示状态并管理 archive/outcome 文件。
+      </div>
+    </div>
+    <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
+      <div style="padding:16px 20px;border-bottom:1px solid var(--border);">
+        <div style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Integration Status</div>
+        <pre id="drive-register-result" style="background:#0a0c12;padding:12px;border-radius:6px;color:#cbd5e1;max-height:180px;overflow:auto;">No status yet.</pre>
+      </div>
+      <div style="flex:1;overflow:auto;padding:16px 20px;display:flex;flex-direction:column;gap:14px;">
+        <div>
+          <div style="display:flex;align-items:center;margin-bottom:6px;">
+            <strong style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Archive</strong>
+            <button class="sm" style="margin-left:auto" onclick="loadDriveFiles('archive')">↻</button>
+          </div>
+          <table>
+            <thead><tr><th>Name</th><th>Type</th><th>Action</th></tr></thead>
+            <tbody id="drive-archive-files"><tr><td colspan="3" style="color:var(--muted)">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div>
+          <div style="display:flex;align-items:center;margin-bottom:6px;">
+            <strong style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Outcome</strong>
+            <button class="sm" style="margin-left:auto" onclick="loadDriveFiles('outcome')">↻</button>
+          </div>
+          <table>
+            <thead><tr><th>Name</th><th>Type</th><th>Action</th></tr></thead>
+            <tbody id="drive-outcome-files"><tr><td colspan="3" style="color:var(--muted)">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- FEEDBACK MODAL -->
 <div id="feedback-modal">
   <div id="fmodal-box">
@@ -263,7 +329,9 @@ function show(panel, el) {
   if (el) el.classList.add('active');
   if (panel === 'outcomes') loadOutcomes();
   else if (panel === 'timeline') loadTimeline();
+  else if (panel === 'campaigns') loadCampaignsPortal();
   else if (panel === 'tasks') loadTasks();
+  else if (panel === 'integrations') loadDrivePanel();
 }
 
 // ── Gate status ───────────────────────────────────────────────────────────────
@@ -277,6 +345,23 @@ async function checkGate() {
     badge.className = gate;
   } catch(e) {
     document.getElementById('gate-badge').textContent = '?';
+  }
+}
+
+async function loadPendingFeedbackHint() {
+  const el = document.getElementById('header-status');
+  if (!el) return;
+  try {
+    const rows = await apiFetch('/feedback/pending?limit=5');
+    if (!Array.isArray(rows) || !rows.length) {
+      el.textContent = '';
+      return;
+    }
+    const first = rows[0] || {};
+    const taskId = first.task_id || '';
+    el.textContent = `Pending feedback: ${rows.length} (latest: ${taskId})`;
+  } catch(e) {
+    el.textContent = '';
   }
 }
 
@@ -525,6 +610,182 @@ async function loadTasks() {
   }
 }
 
+// ── Campaigns (Portal) ───────────────────────────────────────────────────────
+
+async function loadCampaignsPortal() {
+  const tbody = document.getElementById('campaigns-tbody-portal');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr>';
+  try {
+    const rows = await apiFetch('/campaigns?limit=200');
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">No campaigns</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">${esc(r.campaign_id || '')}</td>
+        <td><span class="badge ${r.status==='completed'?'ok':r.status==='paused'?'degraded':r.status==='cancelled'?'error':'running'}">${esc(r.status || '')}</span></td>
+        <td style="color:var(--muted)">${esc(r.current_phase || '')}</td>
+        <td>
+          <button class="sm" onclick="viewCampaignPortal('${encodeURIComponent(r.campaign_id || '')}')">View</button>
+          <button class="sm" onclick="confirmCampaignPortal('${encodeURIComponent(r.campaign_id || '')}')">Confirm</button>
+          <button class="sm" onclick="resumeCampaignPortal('${encodeURIComponent(r.campaign_id || '')}')">Resume</button>
+        </td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function viewCampaignPortal(campaignKey) {
+  const campaignId = decodeURIComponent(campaignKey || '');
+  if (!campaignId) return;
+  const target = document.getElementById('campaign-detail-portal');
+  if (!target) return;
+  target.textContent = 'Loading…';
+  try {
+    const row = await apiFetch('/campaigns/' + encodeURIComponent(campaignId));
+    target.textContent = JSON.stringify(row, null, 2);
+  } catch (e) {
+    target.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function confirmCampaignPortal(campaignKey) {
+  const campaignId = decodeURIComponent(campaignKey || '');
+  if (!campaignId) return;
+  if (!confirm(`Confirm campaign ${campaignId}?`)) return;
+  try {
+    await apiFetch('/campaigns/' + encodeURIComponent(campaignId) + '/confirm', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    await loadCampaignsPortal();
+    await viewCampaignPortal(encodeURIComponent(campaignId));
+  } catch (e) {
+    alert('Confirm failed: ' + e.message);
+  }
+}
+
+async function resumeCampaignPortal(campaignKey) {
+  const campaignId = decodeURIComponent(campaignKey || '');
+  if (!campaignId) return;
+  const detail = await apiFetch('/campaigns/' + encodeURIComponent(campaignId));
+  const phase = String(detail?.manifest?.current_phase || '');
+  const payload = {};
+  if (phase === 'phase0_waiting_confirmation') payload.confirmed = true;
+  if (phase === 'milestone_waiting_feedback') {
+    const satisfied = confirm(`Campaign ${campaignId}: milestone feedback satisfied? OK=满意, Cancel=不满意`);
+    const comment = prompt('Feedback comment (optional):', '') || '';
+    payload.feedback = { satisfied, rating: satisfied ? 5 : 2, comment, source: 'portal' };
+  }
+  try {
+    await apiFetch('/campaigns/' + encodeURIComponent(campaignId) + '/resume', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    await loadCampaignsPortal();
+    await viewCampaignPortal(encodeURIComponent(campaignId));
+  } catch (e) {
+    alert('Resume failed: ' + e.message);
+  }
+}
+
+// ── Integrations: Drive ─────────────────────────────────────────────────────
+
+async function loadDrivePanel() {
+  await Promise.all([
+    loadDriveStatus(),
+    loadDriveFiles('archive'),
+    loadDriveFiles('outcome'),
+  ]);
+}
+
+function formatDriveSummary(status) {
+  if (!status || !status.ok) {
+    return 'Drive storage unavailable.\nCheck local My Drive sync directory permissions.';
+  }
+  const lines = [
+    `daemon_dir_name: ${status.daemon_dir_name || 'daemon'}`,
+    `my_drive_root: ${status.my_drive_root || ''}`,
+    `daemon_root:   ${status.daemon_root || ''}`,
+    `archive_root:  ${status.archive_root || ''}`,
+    `outcome_root:  ${status.outcome_root || ''}`,
+    `updated_utc:   ${status.updated_utc || ''}`,
+  ];
+  return lines.join('\n');
+}
+
+function driveFilesTarget(kind) {
+  return kind === 'outcome'
+    ? document.getElementById('drive-outcome-files')
+    : document.getElementById('drive-archive-files');
+}
+
+function renderDriveFileRows(kind, items) {
+  if (!Array.isArray(items) || !items.length) {
+    return '<tr><td colspan="3" style="color:var(--muted)">No files</td></tr>';
+  }
+  return items.map((it) => {
+    const name = esc(it.name || '');
+    const type = it.is_dir ? 'dir' : 'file';
+    const enc = encodeURIComponent(String(it.path || ''));
+    const action = it.is_dir
+      ? '<span style="color:var(--muted)">folder</span>'
+      : `<button class="sm" onclick="deleteDriveFile('${kind}','${enc}')">Delete</button>`;
+    return `
+      <tr>
+        <td title="${esc(it.path || '')}">${name}</td>
+        <td style="color:var(--muted)">${type}</td>
+        <td>${action}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+async function loadDriveFiles(kind) {
+  const tbody = driveFilesTarget(kind);
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="3" style="color:var(--muted)">Loading…</td></tr>';
+  try {
+    const data = await apiFetch('/portal/integrations/drive/files?kind=' + encodeURIComponent(kind) + '&limit=200');
+    tbody.innerHTML = renderDriveFileRows(kind, data.items || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="3" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function deleteDriveFile(kind, encodedPath) {
+  const path = decodeURIComponent(encodedPath || '');
+  if (!path) return;
+  if (!confirm(`Delete ${kind} file?\n${path}`)) return;
+  try {
+    await apiFetch('/portal/integrations/drive/files/delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({kind, path}),
+    });
+    await loadDriveFiles(kind);
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+  }
+}
+
+async function loadDriveStatus() {
+  const resultBox = document.getElementById('drive-register-result');
+  const summary = document.getElementById('drive-path-summary');
+  if (resultBox) resultBox.textContent = 'Loading integration status…';
+  if (summary) summary.textContent = 'Loading managed paths…';
+  try {
+    const data = await apiFetch('/portal/integrations/drive/status');
+    if (resultBox) resultBox.textContent = JSON.stringify(data, null, 2);
+    if (summary) summary.textContent = formatDriveSummary(data);
+  } catch (e) {
+    if (resultBox) resultBox.textContent = 'Status load failed: ' + e.message;
+    if (summary) summary.textContent = 'Status load failed: ' + e.message;
+  }
+}
+
 // ── Feedback Q&A ──────────────────────────────────────────────────────────────
 
 let fbQuestions = [];
@@ -636,6 +897,7 @@ async function submitFeedback() {
     // Update trigger button to reflect submitted state.
     const trigger = document.getElementById('feedback-trigger');
     if (trigger) trigger.innerHTML = '<span style="color:var(--muted);font-size:12px">✓ 反馈已提交</span>';
+    loadPendingFeedbackHint();
     setTimeout(closeFeedbackModal, 1200);
   } catch(e) {
     status.style.color = 'var(--red)';
@@ -648,7 +910,9 @@ async function submitFeedback() {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 checkGate();
+loadPendingFeedbackHint();
 setInterval(checkGate, 60000);
+setInterval(loadPendingFeedbackHint, 60000);
 </script>
 </body>
 </html>

@@ -4,4 +4,4 @@ Keep this module import-light: workflow sandbox validation imports package metad
 so importing non-deterministic activity dependencies here can break worker startup.
 """
 
-__all__ = ["GraphDispatchWorkflow", "DaemonActivities", "start_worker"]
+__all__ = ["GraphDispatchWorkflow", "CampaignWorkflow", "DaemonActivities", "start_worker"]

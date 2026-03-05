@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "routines": {
     "spine.pulse": {
       "mode": "deterministic",
@@ -94,7 +94,7 @@
     "spine.librarian": {
       "mode": "deterministic",
       "schedule": "0 2 * * 0",
-      "nerve_triggers": ["weave_pressure"],
+      "nerve_triggers": ["weave_pressure", "memory_pressure"],
       "reads": ["fabric:playbook:methods", "openclaw:weave_patterns"],
       "writes": ["fabric:playbook:methods:tiers", "openclaw:weave_patterns:gc"],
       "depends_on": ["spine.judge"],
