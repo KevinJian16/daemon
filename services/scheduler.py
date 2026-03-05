@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from spine.contracts import ContractError, check_contract
+from services.state_store import StateStore
 
 if TYPE_CHECKING:
     from fabric.compass import CompassFabric
@@ -40,6 +41,7 @@ class Scheduler:
         self._nerve = nerve
         self._state = state_dir
         self._dispatch = dispatch
+        self._store = StateStore(state_dir)
         self._last_run: dict[str, float] = {}
         self._next_run: dict[str, float] = {}
         self._running = False
@@ -48,7 +50,6 @@ class Scheduler:
         self._handlers_registered = False
         self._overrides_path = self._state / "schedules.json"
         self._overrides = self._load_overrides()
-        self._history_path = self._state / "schedule_history.json"
         self._history = self._load_history()
 
     async def start(self) -> None:
@@ -244,19 +245,10 @@ class Scheduler:
         self._overrides_path.write_text(json.dumps(self._overrides, ensure_ascii=False, indent=2))
 
     def _load_history(self) -> list[dict]:
-        if not self._history_path.exists():
-            return []
-        try:
-            data = json.loads(self._history_path.read_text())
-            if isinstance(data, list):
-                return [x for x in data if isinstance(x, dict)]
-        except Exception as exc:
-            logger.warning("Failed to load schedule history: %s", exc)
-        return []
+        return self._store.load_schedule_history()
 
     def _save_history(self) -> None:
-        self._history_path.parent.mkdir(parents=True, exist_ok=True)
-        self._history_path.write_text(json.dumps(self._history[-2000:], ensure_ascii=False, indent=2))
+        self._store.save_schedule_history(self._history, max_items=2000)
 
     def _append_history(self, routine_name: str, trigger: str, status: str, detail: dict | None = None) -> None:
         self._history.append(
@@ -391,25 +383,11 @@ class Scheduler:
         return interval
 
     def _gate_status(self) -> str:
-        gate_path = self._state / "gate.json"
-        if not gate_path.exists():
-            return "GREEN"
-        try:
-            data = json.loads(gate_path.read_text(encoding="utf-8"))
-        except Exception:
-            return "GREEN"
+        data = self._store.load_gate()
         return str(data.get("status") or "GREEN").upper()
 
     def _running_tasks_count(self) -> int:
-        tasks_path = self._state / "tasks.json"
-        if not tasks_path.exists():
-            return 0
-        try:
-            rows = json.loads(tasks_path.read_text(encoding="utf-8"))
-        except Exception:
-            return 0
-        if not isinstance(rows, list):
-            return 0
+        rows = self._store.load_tasks()
         return sum(1 for row in rows if isinstance(row, dict) and str(row.get("status") or "") in {"running", "running_shadow"})
 
     @staticmethod

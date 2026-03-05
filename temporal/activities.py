@@ -16,6 +16,20 @@ from temporalio import activity
 from runtime.drive_accounts import DriveAccountRegistry
 from runtime.event_bridge import EventBridge
 from runtime.openclaw import OpenClawAdapter
+from temporal.activities_campaign import (
+    run_campaign_bootstrap as _run_campaign_bootstrap_impl,
+    run_campaign_record_milestone as _run_campaign_record_milestone_impl,
+    run_campaign_set_status as _run_campaign_set_status_impl,
+)
+from temporal.activities_delivery import (
+    run_finalize_delivery as _run_finalize_delivery_impl,
+    run_update_task_status as _run_update_task_status_impl,
+)
+from temporal.activities_exec import (
+    run_openclaw_step as _run_openclaw_step_impl,
+    run_spine_routine as _run_spine_routine_impl,
+)
+from services.state_store import StateStore
 
 
 def _utc() -> str:
@@ -40,475 +54,59 @@ class DaemonActivities:
         self._openclaw: OpenClawAdapter | None = None
         self._drive_registry = DriveAccountRegistry(self._home / "state")
         self._event_bridge = EventBridge(self._home / "state", source="worker")
+        self._store = StateStore(self._home / "state")
         try:
             self._openclaw = OpenClawAdapter(self._oc_home)
         except Exception as exc:
             activity.logger.warning("Failed to initialize OpenClawAdapter from %s: %s", self._oc_home, exc)
+
+    def _utc(self) -> str:
+        return _utc()
 
     # ── OpenClaw step ─────────────────────────────────────────────────────────
 
     @activity.defn(name="activity_openclaw_step")
     async def activity_openclaw_step(self, run_root: str, plan: dict, step: dict) -> dict:
         """Execute one DAG step through OpenClawAdapter single-channel gateway."""
-        if not self._openclaw:
-            raise RuntimeError("OpenClawAdapter unavailable (OPENCLAW_HOME missing or openclaw.json invalid)")
-
-        agent_id = str(step.get("agent") or "").strip()
-        step_id = str(step.get("id") or "step").strip()
-        task_id = str(plan.get("task_id") or run_root.split("/")[-1] or uuid.uuid4().hex[:8])
-        session_key = self._openclaw.session_key(agent_id, task_id, step_id)
-        instruction = str(step.get("instruction") or step.get("message") or "").strip()
-        timeout_s = int(step.get("timeout_s") or plan.get("default_step_timeout_s") or 480)
-
-        # Checkpoint restore: if this step has already completed, skip re-run.
-        checkpoint = self._read_step_checkpoint(run_root, step_id)
-        if checkpoint and str(checkpoint.get("status") or "") in {"ok", "degraded"}:
-            checkpoint["restored_from_checkpoint"] = True
-            return checkpoint
-
-        # Build context payload including Fabric snapshots.
-        context_payload = self._build_step_context(run_root, plan, step)
-        context_payload = self._apply_context_window_precheck(
-            run_root=run_root,
-            plan=plan,
-            step=step,
-            instruction=instruction,
-            context=context_payload,
-        )
-
-        # Send message to Agent.
-        composed_message = (
-            f"{instruction}\n\n{json.dumps(context_payload, ensure_ascii=False)}"
-            if context_payload
-            else instruction
-        )
-        await asyncio.to_thread(self._openclaw.send, session_key, composed_message, agent_id)
-
-        # Poll for completion.
-        deadline = time.time() + timeout_s
-        poll_interval = 5
-        last_content = ""
-
-        while time.time() < deadline:
-            await asyncio.sleep(poll_interval)
-            try:
-                messages = await asyncio.to_thread(self._openclaw.history, session_key, 8)
-            except Exception as exc:
-                activity.logger.warning("history poll failed for %s: %s", session_key, exc)
-                poll_interval = min(poll_interval * 1.2, 30)
-                continue
-            if not isinstance(messages, list):
-                messages = []
-
-            newest_assistant = None
-            for msg in reversed(messages):
-                if not isinstance(msg, dict):
-                    continue
-                role = str(msg.get("role") or "").strip().lower()
-                if role != "assistant":
-                    continue
-                content = str(msg.get("content") or msg.get("text") or "").strip()
-                if not content:
-                    continue
-                newest_assistant = msg
-                break
-
-            if newest_assistant:
-                content = str(newest_assistant.get("content") or newest_assistant.get("text") or "").strip()
-                if content:
-                    raw = newest_assistant.get("raw") if isinstance(newest_assistant.get("raw"), dict) else {}
-                    stop_reason = str(raw.get("stopReason") or "").strip().lower()
-                    has_done_signal = any(
-                        signal in content.lower()
-                        for signal in ["[done]", "[complete]", "task complete", "completed successfully"]
-                    )
-                    if content != last_content:
-                        last_content = content
-                    # OpenClaw sessions_send is turn-based in current runtime: a concrete assistant turn
-                    # with terminal stopReason is sufficient to mark the step complete.
-                    if has_done_signal or stop_reason in {"stop", "end_turn"}:
-                        output_path = self._write_step_output(run_root, step_id, content)
-                        result = {
-                            "status": "ok",
-                            "step_id": step_id,
-                            "agent": agent_id,
-                            "session_key": session_key,
-                            "output_path": output_path,
-                        }
-                        self._write_step_checkpoint(run_root, step_id, result)
-                        return result
-
-            poll_interval = min(poll_interval * 1.2, 30)
-
-        # Timeout — mark as degraded, not error (Temporal will handle retry policy).
-        activity.logger.warning(f"Step {step_id} timed out after {timeout_s}s — marking degraded")
-        result = {
-            "status": "degraded",
-            "step_id": step_id,
-            "agent": agent_id,
-            "session_key": session_key,
-            "error": f"timeout_after_{timeout_s}s",
-            "degraded": True,
-        }
-        self._write_step_checkpoint(run_root, step_id, result)
-        return result
+        return await _run_openclaw_step_impl(self, run_root, plan, step)
 
     # ── Spine routine ─────────────────────────────────────────────────────────
 
     @activity.defn(name="activity_spine_routine")
     async def activity_spine_routine(self, run_root: str, plan: dict, routine_name: str) -> dict:
         """Execute a Spine Routine directly (no OpenClaw, no LLM unless hybrid)."""
-        from fabric.memory import MemoryFabric
-        from fabric.playbook import PlaybookFabric
-        from fabric.compass import CompassFabric
-        from runtime.cortex import Cortex
-        from spine.nerve import Nerve
-        from spine.trace import Tracer
-        from spine.routines import SpineRoutines
-
-        home = self._home
-        state = home / "state"
-        memory = MemoryFabric(state / "memory.db")
-        playbook = PlaybookFabric(state / "playbook.db")
-        compass = CompassFabric(state / "compass.db")
-        cortex = Cortex(compass)
-        nerve = Nerve()
-        tracer = Tracer(state / "traces")
-
-        routines = SpineRoutines(
-            memory=memory, playbook=playbook, compass=compass,
-            cortex=cortex, nerve=nerve, tracer=tracer,
-            daemon_home=home, openclaw_home=self._oc_home,
-        )
-
-        method = getattr(routines, routine_name.replace("spine.", ""), None)
-        if not callable(method):
-            raise ValueError(f"Unknown spine routine: {routine_name}")
-        result = method()
-        return {"status": "ok", "routine": routine_name, "result": result}
+        return await _run_spine_routine_impl(self, run_root, plan, routine_name)
 
     # ── Delivery finalization ─────────────────────────────────────────────────
 
     @activity.defn(name="activity_finalize_delivery")
     async def activity_finalize_delivery(self, run_root: str, plan: dict, step_results: list[dict]) -> dict:
         """Contract quality gate + drift check + archive + bridge emit."""
-        from fabric.compass import CompassFabric
-
-        home = self._home
-        state = home / "state"
-        compass = CompassFabric(state / "compass.db")
-        is_shadow = bool(plan.get("is_shadow", False))
-
-        task_type = str(plan.get("task_type") or "default").strip()
-        cluster_id = str(plan.get("cluster_id") or "").strip()
-        profile = compass.get_quality_profile(task_type)
-        contract = self._load_quality_contract(cluster_id, task_type)
-
-        # Find render output.
-        render_path = self._find_render_output(run_root, step_results)
-        if not render_path:
-            return {
-                "ok": False,
-                "error_code": "render_output_missing",
-                "detail": "No render output found",
-                **self._failure_meta(plan),
-            }
-
-        content = render_path.read_text()
-
-        # Structural quality checks.
-        check_result = self._structural_check(content, profile)
-        if not check_result["ok"]:
-            return {
-                "ok": False,
-                "error_code": check_result["error_code"],
-                "detail": check_result["detail"],
-                **self._failure_meta(plan),
-            }
-
-        # Contract score gate (semantic cluster contract + evidence score).
-        quality_score, score_components = self._quality_score(content, plan, step_results, contract, profile)
-        min_quality = float(contract.get("min_quality_score") or profile.get("min_quality_score") or 0.60)
-        if quality_score < min_quality:
-            return {
-                "ok": False,
-                "error_code": "quality_gate_failed",
-                "detail": f"quality_score={round(quality_score,4)} below min_quality_score={round(min_quality,4)}",
-                "quality_score": round(quality_score, 4),
-                "min_quality_score": min_quality,
-                "global_score_components": score_components,
-                **self._failure_meta(plan),
-            }
-
-        drift = self._quality_drift_check(plan, quality_score, contract)
-        if drift.get("blocked"):
-            return {
-                "ok": False,
-                "error_code": "quality_drift_detected",
-                "detail": str(drift.get("detail") or "quality drift detected"),
-                "quality_score": round(quality_score, 4),
-                "drift": drift,
-                "global_score_components": score_components,
-                **self._failure_meta(plan),
-            }
-        self._append_quality_score(plan, quality_score, score_components, drift)
-
-        if is_shadow:
-            outcome_path = self._archive_shadow_outcome(run_root, plan, render_path, step_results)
-        else:
-            # Archive to outcome/.
-            outcome_root = self._resolve_outcome_root()
-            outcome_path = self._archive_outcome(run_root, plan, render_path, step_results, outcome_root=outcome_root)
-            # Update outcome index.
-            self._update_outcome_index(outcome_path, plan, outcome_root=outcome_root)
-
-        # Update task status.
-        self._update_task_status(
-            run_root,
-            plan,
-            "completed_shadow" if is_shadow else "completed",
-            outcome_path=str(outcome_path),
-        )
-
-        feedback_survey: dict[str, Any] | None = None
-        if not is_shadow:
-            try:
-                feedback_survey = self._generate_feedback_survey(plan=plan, outcome_path=outcome_path)
-                self._write_feedback_survey(feedback_survey)
-                self._event_bridge.emit("feedback_survey_generated", feedback_survey)
-            except Exception as exc:
-                activity.logger.warning("Failed to generate feedback survey for task %s: %s", plan.get("task_id", ""), exc)
-
-        # Emit cross-process events for API process.
-        task_id = str(plan.get("task_id") or "")
-        delivery_payload = {
-            "task_id": task_id,
-            "plan": plan,
-            "step_results": step_results,
-            "outcome": {
-                "ok": True,
-                "score": round(quality_score, 4),
-                "outcome_path": str(outcome_path),
-                "is_shadow": is_shadow,
-                "global_score_components": score_components,
-            },
-        }
-        if feedback_survey:
-            delivery_payload["feedback_survey"] = feedback_survey
-        if not is_shadow:
-            self._event_bridge.emit("delivery_completed", delivery_payload)
-        self._event_bridge.emit("task_completed", delivery_payload)
-        activity.logger.info(f"Delivery completed for task {task_id}; bridge events emitted")
-
-        return {
-            "ok": True,
-            "outcome_path": str(outcome_path),
-            "task_id": task_id,
-            "delivered_utc": _utc(),
-            "is_shadow": is_shadow,
-            "quality_score": round(quality_score, 4),
-            "global_score_components": score_components,
-            "feedback_survey": feedback_survey or {},
-        }
+        return await _run_finalize_delivery_impl(self, run_root, plan, step_results)
 
     # ── Task status ───────────────────────────────────────────────────────────
 
     @activity.defn(name="activity_update_task_status")
     async def activity_update_task_status(self, run_root: str, plan: dict, status: str) -> dict:
         """Update task status in state/tasks.json (append-only for safety)."""
-        self._update_task_status(run_root, plan, status)
-        # Failure/terminal signal for spine.record when delivery path does not complete.
-        if status in {"failed", "cancelled"}:
-            task_id = str(plan.get("task_id") or "")
-            self._event_bridge.emit(
-                "task_completed",
-                {
-                    "task_id": task_id,
-                    "plan": plan,
-                    "step_results": [],
-                    "outcome": {
-                        "ok": False,
-                        "score": 0.0,
-                        "status": status,
-                        "error": plan.get("last_error", ""),
-                        **self._failure_meta(plan),
-                    },
-                },
-            )
-        return {"ok": True, "status": status}
+        return await _run_update_task_status_impl(self, run_root, plan, status)
 
     # ── Campaign state ────────────────────────────────────────────────────────
 
     @activity.defn(name="activity_campaign_bootstrap")
     async def activity_campaign_bootstrap(self, run_root: str, plan: dict) -> dict:
         """Initialize or refresh campaign manifest and milestone layout."""
-        task_id = str(plan.get("task_id") or run_root.split("/")[-1] or "")
-        campaign_id = str(plan.get("campaign_id") or f"cmp_{task_id}")
-        campaign_dir = self._home / "state" / "campaigns" / campaign_id
-        campaign_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = campaign_dir / "manifest.json"
-
-        steps = self._normalized_steps(plan)
-        milestones = self._derive_campaign_milestones(plan, steps)
-        resume_from = int(plan.get("campaign_resume_from") or 0)
-        resume_from = max(0, min(resume_from, len(milestones)))
-
-        manifest: dict[str, Any] = {}
-        if manifest_path.exists():
-            try:
-                old = json.loads(manifest_path.read_text(encoding="utf-8"))
-                if isinstance(old, dict):
-                    manifest = old
-            except Exception:
-                manifest = {}
-
-        milestone_summaries = []
-        for i, m in enumerate(milestones):
-            row = {
-                "milestone_id": str(m.get("milestone_id") or f"m{i + 1:02d}"),
-                "title": str(m.get("title") or f"Milestone {i + 1}"),
-                "expected_output": str(m.get("expected_output") or ""),
-                "input_dependencies": m.get("input_dependencies") if isinstance(m.get("input_dependencies"), list) else [],
-                "step_ids": [str(s.get("id") or "") for s in (m.get("steps") or []) if isinstance(s, dict)],
-                "status": "pending",
-            }
-            # Keep previous status if exists.
-            old_rows = manifest.get("milestones") if isinstance(manifest.get("milestones"), list) else []
-            if i < len(old_rows) and isinstance(old_rows[i], dict):
-                row["status"] = str(old_rows[i].get("status") or row["status"])
-                if old_rows[i].get("objective_score") is not None:
-                    row["objective_score"] = old_rows[i].get("objective_score")
-                if old_rows[i].get("attempts") is not None:
-                    row["attempts"] = old_rows[i].get("attempts")
-            milestone_summaries.append(row)
-
-        manifest.update(
-            {
-                "campaign_id": campaign_id,
-                "task_id": task_id,
-                "title": str(plan.get("title") or task_id),
-                "status": str(manifest.get("status") or "running"),
-                "current_phase": str(manifest.get("current_phase") or "phase0_planning"),
-                "current_milestone_index": resume_from,
-                "workflow_id": str(plan.get("_workflow_id") or manifest.get("workflow_id") or ""),
-                "run_root": run_root,
-                "plan": plan,
-                "milestones": milestone_summaries,
-                "total_milestones": len(milestone_summaries),
-                "updated_utc": _utc(),
-                "created_utc": str(manifest.get("created_utc") or _utc()),
-            }
-        )
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        historical_step_results: list[dict] = []
-        for i in range(0, resume_from):
-            result_path = campaign_dir / "milestones" / str(i + 1) / "result.json"
-            if not result_path.exists():
-                continue
-            try:
-                payload = json.loads(result_path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            rows = payload.get("step_results") if isinstance(payload.get("step_results"), list) else []
-            for row in rows:
-                if isinstance(row, dict):
-                    historical_step_results.append(row)
-
-        return {
-            "campaign_id": campaign_id,
-            "milestones": milestones,
-            "next_milestone_index": resume_from,
-            "manifest_path": str(manifest_path),
-            "historical_step_results": historical_step_results,
-        }
+        return await _run_campaign_bootstrap_impl(self, run_root, plan)
 
     @activity.defn(name="activity_campaign_record_milestone")
     async def activity_campaign_record_milestone(self, campaign_id: str, milestone_index: int, result: dict) -> dict:
         """Persist one milestone result and update manifest pointer/status."""
-        campaign_dir = self._home / "state" / "campaigns" / campaign_id
-        campaign_dir.mkdir(parents=True, exist_ok=True)
-        milestones_dir = campaign_dir / "milestones" / str(max(1, int(milestone_index) + 1))
-        milestones_dir.mkdir(parents=True, exist_ok=True)
-
-        payload = dict(result or {})
-        payload["milestone_index"] = int(milestone_index)
-        payload["recorded_utc"] = _utc()
-        result_path = milestones_dir / "result.json"
-        result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        manifest_path = campaign_dir / "manifest.json"
-        manifest: dict[str, Any] = {}
-        if manifest_path.exists():
-            try:
-                data = json.loads(manifest_path.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    manifest = data
-            except Exception:
-                manifest = {}
-        rows = manifest.get("milestones") if isinstance(manifest.get("milestones"), list) else []
-        idx = int(milestone_index)
-        if 0 <= idx < len(rows) and isinstance(rows[idx], dict):
-            rows[idx]["status"] = str(payload.get("status") or rows[idx].get("status") or "")
-            rows[idx]["objective_score"] = payload.get("objective_score")
-            rows[idx]["attempts"] = int(payload.get("attempts") or 0)
-        manifest["milestones"] = rows
-        manifest["current_milestone_index"] = idx + 1 if str(payload.get("status") or "") == "passed" else idx
-        manifest["updated_utc"] = _utc()
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        self._event_bridge.emit(
-            "campaign_milestone_recorded",
-            {
-                "campaign_id": campaign_id,
-                "milestone_index": int(milestone_index),
-                "status": str(payload.get("status") or ""),
-                "objective_score": payload.get("objective_score"),
-                "attempts": int(payload.get("attempts") or 0),
-                "title": str(payload.get("title") or ""),
-            },
-        )
-        return {"ok": True, "campaign_id": campaign_id, "result_path": str(result_path)}
+        return await _run_campaign_record_milestone_impl(self, campaign_id, milestone_index, result)
 
     @activity.defn(name="activity_campaign_set_status")
     async def activity_campaign_set_status(self, campaign_id: str, status: str, phase: str, extra: dict | None = None) -> dict:
         """Update campaign manifest status/phase with mergeable metadata."""
-        campaign_dir = self._home / "state" / "campaigns" / campaign_id
-        campaign_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = campaign_dir / "manifest.json"
-        manifest: dict[str, Any] = {}
-        if manifest_path.exists():
-            try:
-                data = json.loads(manifest_path.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    manifest = data
-            except Exception:
-                manifest = {}
-        manifest["campaign_id"] = campaign_id
-        manifest["status"] = str(status or manifest.get("status") or "")
-        manifest["current_phase"] = str(phase or manifest.get("current_phase") or "")
-        manifest["updated_utc"] = _utc()
-        if isinstance(extra, dict) and extra:
-            meta = manifest.get("meta") if isinstance(manifest.get("meta"), dict) else {}
-            meta.update(extra)
-            manifest["meta"] = meta
-            if "current_milestone_index" in extra:
-                try:
-                    manifest["current_milestone_index"] = int(extra.get("current_milestone_index"))
-                except Exception:
-                    pass
-            if "workflow_id" in extra:
-                manifest["workflow_id"] = str(extra.get("workflow_id") or "")
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        self._event_bridge.emit(
-            "campaign_status_changed",
-            {
-                "campaign_id": campaign_id,
-                "status": str(manifest.get("status") or ""),
-                "phase": str(manifest.get("current_phase") or ""),
-                "current_milestone_index": int(manifest.get("current_milestone_index") or 0),
-            },
-        )
-        return {"ok": True, "campaign_id": campaign_id, "status": manifest.get("status"), "phase": manifest.get("current_phase")}
+        return await _run_campaign_set_status_impl(self, campaign_id, status, phase, extra)
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -1167,12 +765,7 @@ class DaemonActivities:
 
     def _update_outcome_index(self, outcome_path: Path, plan: dict, outcome_root: Path | None = None) -> None:
         root = outcome_root or self._resolve_outcome_root()
-        index_path = root / "index.json"
-        try:
-            index = json.loads(index_path.read_text())
-        except Exception as exc:
-            activity.logger.warning("Failed to read outcome index %s: %s", index_path, exc)
-            index = []
+        index = self._store.load_outcome_index(root)
         try:
             rel_path = str(outcome_path.relative_to(root))
         except Exception:
@@ -1186,8 +779,7 @@ class DaemonActivities:
             "delivered_utc": _utc(),
         }
         index.append(entry)
-        # Keep last 1000 entries.
-        index_path.write_text(json.dumps(index[-1000:], ensure_ascii=False, indent=2))
+        self._store.save_outcome_index(root, index, max_items=1000)
 
     def _resolve_outcome_root(self) -> Path:
         resolved = self._drive_registry.resolve_outcome_root()
@@ -1198,12 +790,7 @@ class DaemonActivities:
         return root
 
     def _update_task_status(self, run_root: str, plan: dict, status: str, outcome_path: str | None = None) -> None:
-        tasks_path = self._home / "state" / "tasks.json"
-        try:
-            tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
-        except Exception as exc:
-            activity.logger.warning("Failed to read tasks.json %s: %s", tasks_path, exc)
-            tasks = []
+        tasks = self._store.load_tasks()
         task_id = str(plan.get("task_id") or "")
         last_error = str(plan.get("last_error") or "")
         for task in tasks:
@@ -1222,11 +809,7 @@ class DaemonActivities:
             if outcome_path:
                 row["outcome_path"] = outcome_path
             tasks.append(row)
-        tasks_path.parent.mkdir(parents=True, exist_ok=True)
-        # Write atomically via temp file to avoid partial writes.
-        tmp = tasks_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(tasks, ensure_ascii=False, indent=2))
-        tmp.replace(tasks_path)
+        self._store.save_tasks(tasks)
 
     def _generate_pdf_best_effort(self, outcome_dir: Path, render_path: Path) -> None:
         pdf_path = outcome_dir / "report.pdf"

@@ -13,7 +13,6 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from fabric.memory import MemoryFabric
@@ -29,9 +28,22 @@ from runtime.event_bridge import EventBridge
 from runtime.temporal import TemporalClient
 from services.dispatch import Dispatch
 from services.dialog import DialogService
+from services.api_routes.basic import register_basic_routes
+from services.api_routes.campaigns import register_campaign_routes
+from services.api_routes.chat import register_chat_routes
+from services.api_routes.console_agents_skill import register_console_agents_skill_routes
+from services.api_routes.console_observe import register_console_observe_routes
+from services.api_routes.console_policy import register_console_policy_routes
+from services.api_routes.console_spine_fabric import register_console_spine_fabric_routes
+from services.api_routes.console_strategy_model import register_console_strategy_model_routes
+from services.api_routes.feedback import register_feedback_routes
+from services.api_routes.submit import register_submit_route
+from services.api_routes.system import register_system_routes
 from services.scheduler import Scheduler
+from services.state_store import StateStore
 from services.system_reset import SystemResetManager
 from daemon_env import load_daemon_env
+from bootstrap import normalize_openclaw_config
 
 
 def _daemon_home() -> Path:
@@ -95,6 +107,7 @@ def create_app() -> FastAPI:
     home = _daemon_home()
     oc_home = _openclaw_home()
     state = home / "state"
+    store = StateStore(state)
 
     # Initialize Fabric.
     memory = MemoryFabric(state / "memory.db")
@@ -132,6 +145,7 @@ def create_app() -> FastAPI:
     semantic_rules_path = home / "config" / "semantics" / "mapping_rules.json"
     model_policy_path = home / "config" / "model_policy.json"
     model_registry_path = home / "config" / "model_registry.json"
+    app_started_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     app = FastAPI(title="Daemon API", version="0.1.0")
     temporal_client: TemporalClient | None = None
@@ -170,6 +184,13 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def _startup():
         nonlocal bridge_task, bridge_running
+        # Keep OpenClaw on daemon canonical topology (no legacy main default).
+        norm = normalize_openclaw_config(oc_home)
+        if norm.get("updated"):
+            logger.info("OpenClaw config normalized on startup: %s", norm.get("changes"))
+        if norm.get("warnings"):
+            for warn in norm.get("warnings") or []:
+                logger.warning("OpenClaw config warning: %s", warn)
         # Validate required semantic config files — hard error if missing.
         _validate_semantic_config(home)
         # Bootstrap semantic clusters into Playbook DB.
@@ -914,49 +935,23 @@ def create_app() -> FastAPI:
             return _apply_config_proposal(proposal)
         return _apply_skill_proposal(proposal)
 
-    # ── Health ────────────────────────────────────────────────────────────────
-
-    @app.get("/health")
-    async def health():
-        await _ensure_temporal_client(retries=1, delay_s=0.1)
-        gate_path = state / "gate.json"
-        gate = {"status": "GREEN"}
-        if gate_path.exists():
-            try:
-                gate = json.loads(gate_path.read_text())
-            except Exception as exc:
-                logger.warning("Failed to read gate.json: %s", exc)
-        model_registry_valid = False
-        if model_registry_path.exists():
-            try:
-                reg = json.loads(model_registry_path.read_text(encoding="utf-8"))
-                if isinstance(reg, dict):
-                    _validate_model_registry(reg)
-                    model_registry_valid = True
-            except Exception:
-                model_registry_valid = False
-        dependencies = {
-            "temporal_connected": temporal_client is not None,
-            "cortex_available": bool(cortex and cortex.is_available()),
-            "model_policy_exists": model_policy_path.exists(),
-            "model_registry_exists": (home / "config" / "model_registry.json").exists(),
-            "model_registry_valid": model_registry_valid,
-            "openclaw_config_exists": (oc_home / "openclaw.json").exists(),
-        }
-        dependencies_ready = (
-            dependencies["cortex_available"]
-            and dependencies["model_policy_exists"]
-            and dependencies["model_registry_exists"]
-            and dependencies["model_registry_valid"]
-        )
-        return {
-            "ok": True,
-            "gate": gate["status"],
-            "dependencies": dependencies,
-            "dependencies_ready": dependencies_ready,
-        }
-
-    # ── Console — System Reset ──────────────────────────────────────────────
+    register_basic_routes(
+        app,
+        app_started_utc=app_started_utc,
+        ensure_temporal_client=_ensure_temporal_client,
+        store=store,
+        cortex=cortex,
+        model_policy_path=model_policy_path,
+        model_registry_path=model_registry_path,
+        openclaw_home=oc_home,
+        validate_model_registry=_validate_model_registry,
+        task_view=_task_view,
+        log_portal_event=_log_portal_event,
+        require_outcome_root=_require_outcome_root,
+        memory=memory,
+        playbook=playbook,
+        compass=compass,
+    )
 
     def _require_localhost(request: Request) -> str:
         host = request.client.host if request.client else ""
@@ -964,524 +959,90 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=403, detail="localhost_only")
         return host
 
-    @app.post("/console/system/reset/challenge")
-    async def system_reset_challenge(request: Request):
-        host = _require_localhost(request)
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        mode = str(body.get("mode") or "strict")
-        restart = bool(body.get("restart", False))
-        ttl = int(body.get("ttl_seconds") or 180)
-        payload = reset_manager.issue_challenge(mode=mode, restart=restart, ttl_seconds=ttl)
-        return {
-            "ok": True,
-            "challenge_id": payload.get("challenge_id", ""),
-            "confirm_code": payload.get("confirm_code", ""),
-            "mode": payload.get("mode", "strict"),
-            "restart": bool(payload.get("restart", False)),
-            "expires_utc": payload.get("expires_utc", ""),
-            "host": host,
-        }
+    register_system_routes(
+        app,
+        require_localhost=_require_localhost,
+        reset_manager=reset_manager,
+        drive_accounts=drive_accounts,
+        log_portal_event=_log_portal_event,
+    )
 
-    @app.post("/console/system/reset/confirm")
-    async def system_reset_confirm(request: Request):
-        host = _require_localhost(request)
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        challenge_id = str(body.get("challenge_id") or "")
-        confirm_code = str(body.get("confirm_code") or "")
-        mode = body.get("mode")
-        restart = body.get("restart")
-        if not challenge_id or not confirm_code:
-            raise HTTPException(status_code=400, detail="challenge_id_and_confirm_code_required")
-        try:
-            record = reset_manager.validate_and_consume_challenge(
-                challenge_id=challenge_id,
-                confirm_code=confirm_code,
-                requester_host=host,
-                mode=str(mode) if mode is not None else None,
-                restart=bool(restart) if restart is not None else None,
-            )
-        except PermissionError as exc:
-            raise HTTPException(status_code=403, detail=str(exc))
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        launch = reset_manager.launch_detached_reset(
-            mode=str(record.get("mode") or "strict"),
-            restart=bool(record.get("restart", False)),
-            reason="api_confirm",
-        )
-        return {
-            "ok": True,
-            "accepted": True,
-            "challenge_id": record.get("challenge_id", ""),
-            "mode": record.get("mode", "strict"),
-            "restart": bool(record.get("restart", False)),
-            "launch": launch,
-        }
+    register_submit_route(
+        app,
+        ensure_temporal_client=_ensure_temporal_client,
+        dispatch=dispatch,
+        log_portal_event=_log_portal_event,
+    )
 
-    @app.get("/console/system/reset/last-report")
-    def system_reset_last_report(request: Request):
-        _require_localhost(request)
-        return reset_manager.last_report()
+    console_ctx = type("ConsoleRouteContext", (), {})()
+    console_ctx.logger = logger
+    console_ctx.state = state
+    console_ctx.oc_home = oc_home
+    console_ctx.scheduler = scheduler
+    console_ctx.registry = registry
+    console_ctx.nerve = nerve
+    console_ctx.memory = memory
+    console_ctx.playbook = playbook
+    console_ctx.compass = compass
+    console_ctx.cortex = cortex
+    console_ctx.tracer = tracer
+    console_ctx.store = store
+    console_ctx.dispatch = dispatch
+    console_ctx.skill_queue_path = skill_queue_path
+    console_ctx.utc = _utc
+    console_ctx.sync_skill_proposals = _sync_skill_proposals
+    console_ctx.write_json_list = _write_json_list
+    console_ctx.sandbox_gate_open = _sandbox_gate_open
+    console_ctx.apply_evolution_proposal = _apply_evolution_proposal
+    console_ctx.semantic_catalog_path = semantic_catalog_path
+    console_ctx.semantic_rules_path = semantic_rules_path
+    console_ctx.model_policy_path = model_policy_path
+    console_ctx.model_registry_path = model_registry_path
+    console_ctx.semantic_target_spec = _semantic_target_spec
+    console_ctx.write_semantic_target = _write_semantic_target
+    console_ctx.validate_model_registry = _validate_model_registry
+    console_ctx.validate_model_policy = _validate_model_policy
+    console_ctx.model_registry_aliases = _model_registry_aliases
+    console_ctx.sync_compass_provider_budgets_from_policy = _sync_compass_provider_budgets_from_policy
 
-    # ── Portal — Integrations (Drive) ───────────────────────────────────────
+    register_console_spine_fabric_routes(app, ctx=console_ctx)
+    register_console_strategy_model_routes(app, ctx=console_ctx)
+    register_console_policy_routes(app, ctx=console_ctx)
+    register_console_observe_routes(app, ctx=console_ctx)
+    register_console_agents_skill_routes(app, ctx=console_ctx)
 
-    @app.get("/portal/integrations/drive/status")
-    def drive_status():
-        return drive_accounts.integration_status()
+    campaign_ctx = type("CampaignRouteContext", (), {})()
+    campaign_ctx.logger = logger
+    campaign_ctx.state = state
+    campaign_ctx.dispatch = dispatch
+    campaign_ctx.telemetry_dir = telemetry_dir
+    campaign_ctx.time_time = time.time
+    campaign_ctx.utc = _utc
+    campaign_ctx.ensure_temporal_client = _ensure_temporal_client
+    campaign_ctx.get_temporal_client = lambda: temporal_client
+    campaign_ctx.campaign_summaries = _campaign_summaries
+    campaign_ctx.load_campaign_manifest = _load_campaign_manifest
+    campaign_ctx.save_campaign_manifest = _save_campaign_manifest
+    campaign_ctx.campaign_result_rows = _campaign_result_rows
+    campaign_ctx.append_campaign_feedback = _append_campaign_feedback
+    campaign_ctx.apply_campaign_feedback_decision = _apply_campaign_feedback_decision
+    campaign_ctx.campaign_result_payload = _campaign_result_payload
+    campaign_ctx.feedback_satisfied = _feedback_satisfied
+    campaign_ctx.append_jsonl = _append_jsonl
 
-    @app.get("/portal/integrations/drive/files")
-    def drive_files(kind: str = "archive", subpath: str = "", limit: int = 200):
-        result = drive_accounts.list_files(kind=kind, subpath=subpath, limit=limit)
-        if not result.get("ok"):
-            raise HTTPException(status_code=400, detail=result)
-        return result
-
-    @app.post("/portal/integrations/drive/files/delete")
-    async def drive_delete_file(request: Request):
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        kind = str(body.get("kind") or "archive")
-        path = str(body.get("path") or "").strip()
-        result = drive_accounts.delete_file(kind=kind, rel_path=path)
-        if not result.get("ok"):
-            _log_portal_event(
-                "drive_file_delete_failed",
-                {"kind": kind, "path": path, "error": str(result.get("error") or "")},
-                request,
-            )
-            raise HTTPException(status_code=400, detail=result)
-        _log_portal_event(
-            "drive_file_deleted",
-            {"kind": kind, "path": path},
-            request,
-        )
-        return result
-
-    @app.get("/console/system/storage")
-    def console_storage_status(request: Request):
-        _require_localhost(request)
-        return drive_accounts.integration_status()
-
-    @app.put("/console/system/storage")
-    async def console_storage_update(request: Request):
-        _require_localhost(request)
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        daemon_dir_name = str(body.get("daemon_dir_name") or "").strip()
-        if not daemon_dir_name:
-            raise HTTPException(status_code=400, detail="daemon_dir_name_required")
-        result = drive_accounts.set_daemon_dir_name(daemon_dir_name)
-        if not result.get("ok"):
-            raise HTTPException(status_code=400, detail=result)
-        return result
-
-    # ── Task submission (Portal) ───────────────────────────────────────────────
-
-    @app.post("/submit")
-    async def submit_task(request: Request):
-        await _ensure_temporal_client(retries=3, delay_s=0.4)
-        plan = await request.json()
-        _log_portal_event(
-            "submit_requested",
-            {
-                "task_type": plan.get("task_type", ""),
-                "title": str(plan.get("title", ""))[:120],
-                "priority": plan.get("priority"),
-            },
-            request,
-        )
-        result = await dispatch.submit(plan)
-        if not result.get("ok"):
-            code = str(result.get("error_code") or "")
-            _log_portal_event("submit_failed", {"error_code": code, "task_id": result.get("task_id", "")}, request)
-            if code.startswith("temporal_"):
-                raise HTTPException(status_code=503, detail=result)
-            if code in {"invalid_plan", "semantic_mapping_failed", "strategy_guard_blocked"}:
-                raise HTTPException(status_code=400, detail=result)
-            raise HTTPException(status_code=500, detail=result)
-        _log_portal_event("submit_ok", {"task_id": result.get("task_id", ""), "status": result.get("status", "")}, request)
-        return result
-
-    @app.get("/tasks")
-    def list_tasks(request: Request, status: str | None = None, limit: int = 50):
-        tasks_path = state / "tasks.json"
-        if not tasks_path.exists():
-            _log_portal_event("tasks_list", {"status": status, "count": 0}, request)
-            return []
-        try:
-            tasks = json.loads(tasks_path.read_text())
-        except Exception as exc:
-            logger.warning("Failed to read tasks.json: %s", exc)
-            return []
-        if status:
-            tasks = [t for t in tasks if t.get("status") == status]
-        result = [_task_view(t) for t in tasks[-limit:]]
-        _log_portal_event("tasks_list", {"status": status, "count": len(result)}, request)
-        return result
-
-    @app.get("/tasks/{task_id}")
-    def get_task(task_id: str, request: Request):
-        tasks_path = state / "tasks.json"
-        try:
-            tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
-        except Exception as exc:
-            logger.warning("Failed to read tasks.json: %s", exc)
-            tasks = []
-        for t in tasks:
-            if t.get("task_id") == task_id:
-                _log_portal_event("task_get", {"task_id": task_id, "status": t.get("status", "")}, request)
-                return _task_view(t)
-        _log_portal_event("task_not_found", {"task_id": task_id}, request)
-        raise HTTPException(status_code=404, detail="task not found")
-
-    # ── Campaigns ────────────────────────────────────────────────────────────
-
-    @app.get("/campaigns")
-    def list_campaigns(limit: int = 200):
-        return _campaign_summaries(limit=limit)
-
-    @app.get("/campaigns/{campaign_id}")
-    def get_campaign(campaign_id: str, result_limit: int = 200):
-        manifest = _load_campaign_manifest(campaign_id)
-        if not manifest:
-            raise HTTPException(status_code=404, detail="campaign not found")
-        return {
-            "manifest": manifest,
-            "milestone_results": _campaign_result_rows(campaign_id, limit=result_limit),
-        }
-
-    @app.post("/campaigns/{campaign_id}/resume")
-    async def resume_campaign(campaign_id: str, request: Request):
-        manifest = _load_campaign_manifest(campaign_id)
-        if not manifest:
-            raise HTTPException(status_code=404, detail="campaign not found")
-
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-
-        status = str(manifest.get("status") or "").lower()
-        if status in {"completed", "cancelled"}:
-            raise HTTPException(status_code=409, detail={"ok": False, "error": f"campaign_not_resumable:{status}"})
-
-        current_idx = int(manifest.get("current_milestone_index") or 0)
-        resume_from = int(body.get("resume_from") or current_idx)
-        resume_from = max(0, min(resume_from, int(manifest.get("total_milestones") or current_idx)))
-        phase = str(manifest.get("current_phase") or "").strip().lower()
-        confirmed = bool(body.get("confirmed") or body.get("campaign_confirmed"))
-        if phase == "phase0_waiting_confirmation" and not confirmed:
-            raise HTTPException(
-                status_code=409,
-                detail={"ok": False, "error": "campaign_confirmation_required", "phase": phase},
-            )
-
-        feedback = body.get("feedback")
-        decision_payload: dict[str, Any] | None = None
-        if isinstance(feedback, dict):
-            _append_campaign_feedback(campaign_id, current_idx, feedback)
-            decision_payload = _apply_campaign_feedback_decision(campaign_id, current_idx, feedback, source="resume_api")
-
-        # Milestone waiting feedback gate must have an accepted decision.
-        if phase == "milestone_waiting_feedback":
-            result_payload = _campaign_result_payload(campaign_id, current_idx)
-            decision_row = result_payload.get("user_feedback_decision") if isinstance(result_payload.get("user_feedback_decision"), dict) else {}
-            if decision_payload and bool(decision_payload.get("accepted")):
-                decision_row = decision_payload.get("decision") if isinstance(decision_payload.get("decision"), dict) else decision_row
-            if not isinstance(decision_row, dict) or not decision_row:
-                raise HTTPException(
-                    status_code=409,
-                    detail={"ok": False, "error": "campaign_milestone_feedback_required", "milestone_index": current_idx},
-                )
-            decision_feedback = decision_row.get("feedback") if isinstance(decision_row.get("feedback"), dict) else {}
-            if _feedback_satisfied(decision_feedback):
-                resume_from = max(resume_from, current_idx + 1)
-            else:
-                resume_from = current_idx
-
-        base_plan = manifest.get("plan") if isinstance(manifest.get("plan"), dict) else {}
-        if not base_plan:
-            raise HTTPException(status_code=409, detail={"ok": False, "error": "campaign_plan_missing"})
-        await _ensure_temporal_client(retries=3, delay_s=0.4)
-        if not temporal_client:
-            raise HTTPException(status_code=503, detail={"ok": False, "error_code": "temporal_unavailable"})
-
-        task_id = str(body.get("task_id") or f"{manifest.get('task_id', 'task')}_resume_{int(time.time())}")
-        run_root = str(state / "runs" / task_id)
-        run_index = int(manifest.get("run_index") or 0) + 1
-        workflow_id = f"daemon-campaign-{campaign_id}-r{run_index}"
-
-        plan = dict(base_plan)
-        plan["task_id"] = task_id
-        plan["campaign_id"] = campaign_id
-        plan["campaign_resume_from"] = resume_from
-        plan["campaign_run_index"] = run_index
-        plan["_workflow_id"] = workflow_id
-        plan["task_scale"] = "campaign"
-        plan["campaign_confirmed"] = True
-
-        if phase == "milestone_waiting_feedback":
-            result_payload = _campaign_result_payload(campaign_id, current_idx)
-            decision_row = result_payload.get("user_feedback_decision") if isinstance(result_payload.get("user_feedback_decision"), dict) else {}
-            decision_feedback = decision_row.get("feedback") if isinstance(decision_row.get("feedback"), dict) else {}
-            satisfied = _feedback_satisfied(decision_feedback)
-            plan["campaign_feedback_milestone_index"] = current_idx
-            plan["campaign_feedback_satisfied"] = satisfied
-            plan["campaign_feedback_comment"] = str(decision_feedback.get("comment") or "")
-            plan["campaign_force_user_rework"] = not satisfied
-
-        dispatch._record_task(plan, "running", run_root)
-        try:
-            await temporal_client.submit(
-                workflow_id=workflow_id,
-                plan=plan,
-                run_root=run_root,
-                workflow_name="CampaignWorkflow",
-            )
-        except Exception as exc:
-            dispatch._record_task({**plan, "last_error": str(exc)[:300]}, "failed_submission", run_root)
-            raise HTTPException(
-                status_code=503,
-                detail={"ok": False, "error_code": "temporal_submit_failed", "error": str(exc)[:300]},
-            )
-
-        manifest["status"] = "running"
-        manifest["current_phase"] = "resume_requested"
-        manifest["current_milestone_index"] = resume_from
-        manifest["workflow_id"] = workflow_id
-        manifest["run_index"] = run_index
-        if phase == "phase0_waiting_confirmation":
-            manifest["confirmed_utc"] = _utc()
-        manifest["updated_utc"] = _utc()
-        _save_campaign_manifest(campaign_id, manifest)
-        return {
-            "ok": True,
-            "campaign_id": campaign_id,
-            "workflow_id": workflow_id,
-            "task_id": task_id,
-            "resume_from": resume_from,
-        }
-
-    @app.post("/campaigns/{campaign_id}/confirm")
-    async def confirm_campaign(campaign_id: str):
-        manifest = _load_campaign_manifest(campaign_id)
-        if not manifest:
-            raise HTTPException(status_code=404, detail="campaign not found")
-        phase = str(manifest.get("current_phase") or "").strip().lower()
-        if phase != "phase0_waiting_confirmation":
-            raise HTTPException(
-                status_code=409,
-                detail={"ok": False, "error": f"campaign_confirm_not_allowed_in_phase:{phase}"},
-            )
-        # Reuse resume endpoint semantics with explicit confirmation.
-        class _Req:
-            async def json(self):
-                return {"confirmed": True}
-        return await resume_campaign(campaign_id, _Req())  # type: ignore[arg-type]
-
-    @app.post("/campaigns/{campaign_id}/milestones/{milestone_index}/feedback")
-    async def campaign_milestone_feedback(campaign_id: str, milestone_index: int, request: Request):
-        manifest = _load_campaign_manifest(campaign_id)
-        if not manifest:
-            raise HTTPException(status_code=404, detail="campaign not found")
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        source = str(body.get("source") or "portal")
-        feedback = body.get("feedback") if isinstance(body.get("feedback"), dict) else {
-            "rating": body.get("rating"),
-            "satisfied": body.get("satisfied"),
-            "comment": str(body.get("comment") or ""),
-        }
-        result = _apply_campaign_feedback_decision(
-            campaign_id,
-            int(milestone_index),
-            feedback,
-            source=source,
-        )
-        _append_jsonl(
-            telemetry_dir / "campaign_feedback.jsonl",
-            {
-                "campaign_id": campaign_id,
-                "milestone_index": int(milestone_index),
-                "source": source,
-                "accepted": bool(result.get("accepted")),
-                "feedback": feedback,
-                "created_utc": _utc(),
-            },
-        )
-        return {
-            "ok": True,
-            "campaign_id": campaign_id,
-            "milestone_index": int(milestone_index),
-            "accepted": bool(result.get("accepted")),
-            "decision": result.get("decision", {}),
-        }
-
-    @app.post("/campaigns/{campaign_id}/cancel")
-    async def cancel_campaign(campaign_id: str):
-        manifest = _load_campaign_manifest(campaign_id)
-        if not manifest:
-            raise HTTPException(status_code=404, detail="campaign not found")
-        workflow_id = str(manifest.get("workflow_id") or "")
-        await _ensure_temporal_client(retries=2, delay_s=0.3)
-        if temporal_client and workflow_id:
-            try:
-                await temporal_client.cancel(workflow_id)
-            except Exception as exc:
-                logger.warning("Campaign cancel failed workflow_id=%s: %s", workflow_id, exc)
-        manifest["status"] = "cancelled"
-        manifest["current_phase"] = "cancelled"
-        manifest["updated_utc"] = _utc()
-        _save_campaign_manifest(campaign_id, manifest)
-        return {"ok": True, "campaign_id": campaign_id, "workflow_id": workflow_id, "status": "cancelled"}
-
-    # ── Chat (Portal) ─────────────────────────────────────────────────────────
-
-    @app.post("/chat/session")
-    def new_chat_session(request: Request):
-        sid = dialog.new_session()
-        _log_portal_event("chat_session_created", {"session_id": sid}, request)
-        return {"session_id": sid}
-
-    @app.post("/chat/{session_id}")
-    async def chat(session_id: str, request: Request):
-        body = await request.json()
-        message = str(body.get("message") or "")
-        if not message:
-            raise HTTPException(status_code=400, detail="message required")
-        _log_portal_event("chat_message", {"session_id": session_id, "message_len": len(message)}, request)
-        result = dialog.chat(session_id, message)
-        if not result.get("ok"):
-            _log_portal_event("chat_failed", {"session_id": session_id, "error": result.get("error", "")}, request)
-            raise HTTPException(status_code=502, detail=result.get("error"))
-        _log_portal_event(
-            "chat_ok",
-            {"session_id": session_id, "has_plan": bool(result.get("plan")), "response_len": len(str(result.get("content") or ""))},
-            request,
-        )
-        return result
-
-    # ── Outcome (Portal) ──────────────────────────────────────────────────────
-
-    @app.get("/outcome")
-    def list_outcomes(request: Request, limit: int = 50):
-        outcome_root = _require_outcome_root()
-        index_path = outcome_root / "index.json"
-        try:
-            index = json.loads(index_path.read_text()) if index_path.exists() else []
-        except Exception as exc:
-            logger.warning("Failed to read outcome index: %s", exc)
-            index = []
-        _log_portal_event("outcome_list", {"limit": limit, "count": min(len(index), limit)}, request)
-        return list(reversed(index))[:limit]
-
-    @app.get("/outcome/timeline")
-    def outcome_timeline(request: Request, days: int = 30, limit_per_day: int = 50):
-        outcome_root = _require_outcome_root()
-        index_path = outcome_root / "index.json"
-        try:
-            index = json.loads(index_path.read_text()) if index_path.exists() else []
-        except Exception as exc:
-            logger.warning("Failed to read outcome index for timeline: %s", exc)
-            index = []
-
-        limit_days = max(1, min(days, 365))
-        per_day = max(1, min(limit_per_day, 200))
-
-        # Sort by delivered timestamp descending.
-        entries = []
-        for item in index:
-            ts = str(item.get("delivered_utc") or item.get("archived_utc") or "")
-            day_key = ts[:10] if len(ts) >= 10 else "unknown"
-            entries.append(
-                {
-                    "path": item.get("path", ""),
-                    "title": item.get("title", ""),
-                    "task_type": item.get("task_type", ""),
-                    "task_id": item.get("task_id", ""),
-                    "delivered_utc": ts,
-                    "day": day_key,
-                }
-            )
-        entries.sort(key=lambda x: x.get("delivered_utc", ""), reverse=True)
-
-        grouped: dict[str, list[dict]] = {}
-        for entry in entries:
-            day = str(entry.get("day") or "unknown")
-            grouped.setdefault(day, [])
-            if len(grouped[day]) < per_day:
-                grouped[day].append(entry)
-
-        days_sorted = sorted(grouped.keys(), reverse=True)[:limit_days]
-        out = [
-            {
-                "day": day,
-                "count": len(grouped.get(day, [])),
-                "items": grouped.get(day, []),
-            }
-            for day in days_sorted
-        ]
-        _log_portal_event("outcome_timeline", {"days": limit_days, "groups": len(out)}, request)
-        return {"days": out}
-
-    @app.get("/outcome/{path:path}")
-    def get_outcome_file(path: str, request: Request):
-        outcome_root = _require_outcome_root()
-        full = outcome_root / path
-        try:
-            full.resolve().relative_to(outcome_root.resolve())
-        except Exception:
-            raise HTTPException(status_code=400, detail="path_outside_outcome_root")
-        if not full.exists():
-            _log_portal_event("outcome_file_missing", {"path": path}, request)
-            raise HTTPException(status_code=404)
-        _log_portal_event("outcome_file_access", {"path": path}, request)
-        return FileResponse(full)
+    register_campaign_routes(app, ctx=campaign_ctx)
+    register_chat_routes(app, dialog=dialog, log_portal_event=_log_portal_event)
 
     # ── User feedback (Portal) ────────────────────────────────────────────────
 
-    @app.get("/feedback/pending")
-    def list_pending_feedback(limit: int = 100):
-        return _pending_feedback_surveys(limit=limit)
-
-    @app.get("/feedback/{task_id}/state")
-    def get_feedback_state(task_id: str):
-        return _feedback_state(task_id)
-
-    @app.get("/feedback/{task_id}/questions")
-    async def get_feedback_questions(task_id: str):
+    async def _get_feedback_questions(task_id: str):
         """Generate task-specific feedback questions via Cortex (LLM).
         Falls back to a minimal default set if Cortex is unavailable.
         """
         # Load task context.
-        tasks_path = state / "tasks.json"
         task_record: dict = {}
         try:
-            tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
+            tasks = store.load_tasks()
             task_record = next((t for t in tasks if t.get("task_id") == task_id), {})
         except Exception:
             pass
@@ -1494,8 +1055,7 @@ def create_app() -> FastAPI:
         content_snippet = ""
         try:
             outcome_root = _require_outcome_root()
-            index_path = outcome_root / "index.json"
-            index = json.loads(index_path.read_text()) if index_path.exists() else []
+            index = store.load_outcome_index(outcome_root)
             entry = next((e for e in reversed(index) if e.get("task_id") == task_id), None)
             if entry:
                 out_path = outcome_root / str(entry["path"])
@@ -1607,12 +1167,7 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=400, detail="deep_feedback_requires_comment_or_rating")
 
         # Find task record to get method_id and task_type.
-        tasks_path = state / "tasks.json"
-        tasks: list[dict] = []
-        try:
-            tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
-        except Exception as exc:
-            logger.warning("Failed to read tasks.json for feedback: %s", exc)
+        tasks = store.load_tasks()
         task_record = next((t for t in tasks if t.get("task_id") == task_id), None)
 
         task_type = ""
@@ -1770,1058 +1325,12 @@ def create_app() -> FastAPI:
             "history_count": len(survey.get("history") or []),
         }
 
-    @app.post("/feedback/submit")
-    async def submit_feedback_compat(request: Request):
-        """Compatibility endpoint used by Portal JS payload {task_id, rating, comment, ...}."""
-        body = await request.json()
-        if not isinstance(body, dict):
-            body = {}
-        task_id = str(body.get("task_id") or "").strip()
-        if not task_id:
-            raise HTTPException(status_code=400, detail="task_id_required")
-        return await _submit_feedback_internal(task_id, body, request=request)
-
-    @app.post("/feedback/{task_id}")
-    async def submit_feedback(task_id: str, request: Request):
-        """Submit quick/detailed feedback. Quick requires rating; deep can include comment."""
-        body = await request.json()
-        if not isinstance(body, dict):
-            body = {}
-        return await _submit_feedback_internal(task_id, body, request=request)
-
-    @app.post("/feedback/{task_id}/append")
-    async def append_feedback(task_id: str, request: Request):
-        """Append comment-only feedback after initial review."""
-        body = await request.json()
-        if not isinstance(body, dict):
-            body = {}
-        body["type"] = "append"
-        return await _submit_feedback_internal(task_id, body, request=request)
-
-    @app.post("/tasks/{task_id}/feedback")
-    async def submit_task_feedback_compat(task_id: str, request: Request):
-        """Compatibility endpoint used by Telegram adapter quick rating callbacks."""
-        body = await request.json()
-        if not isinstance(body, dict):
-            body = {}
-        if body.get("rating") is None and body.get("quick_rating") is not None:
-            body["rating"] = body.get("quick_rating")
-        if not str(body.get("type") or "").strip():
-            body["type"] = "quick" if body.get("rating") is not None else "append"
-        if not str(body.get("source") or "").strip():
-            body["source"] = "telegram"
-        return await _submit_feedback_internal(task_id, body, request=None)
-
-    # ── Console — System overview ──────────────────────────────────────────────
-
-    @app.get("/console/overview")
-    def console_overview():
-        gate_path = state / "gate.json"
-        gate = {"status": "GREEN"}
-        if gate_path.exists():
-            try:
-                gate = json.loads(gate_path.read_text())
-            except Exception as exc:
-                logger.warning("Failed to read gate.json: %s", exc)
-        tasks_path = state / "tasks.json"
-        try:
-            tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
-        except Exception as exc:
-            logger.warning("Failed to read tasks.json: %s", exc)
-            tasks = []
-        running = [t for t in tasks if t.get("status") == "running"]
-        return {
-            "gate": gate,
-            "running_tasks": len(running),
-            "memory": memory.stats(),
-            "playbook": playbook.stats(),
-            "compass": compass.stats(),
-            "cortex_usage": cortex.usage_today(),
-        }
-
-    # ── Console — Spine ───────────────────────────────────────────────────────
-
-    @app.get("/console/spine/status")
-    def spine_status():
-        return scheduler.status()
-
-    @app.get("/console/spine/dependencies")
-    def spine_dependencies():
-        out = []
-        for rdef in registry.all():
-            out.append(
-                {
-                    "routine": rdef.name,
-                    "depends_on": list(rdef.depends_on or []),
-                    "reads": list(rdef.reads or []),
-                    "writes": list(rdef.writes or []),
-                    "mode": rdef.mode,
-                }
-            )
-        return out
-
-    @app.post("/console/spine/{routine}/trigger")
-    async def spine_trigger(routine: str):
-        full_name = routine if routine.startswith("spine.") else f"spine.{routine}"
-        result = await scheduler.trigger(full_name)
-        if not result.get("ok"):
-            raise HTTPException(status_code=400, detail=result.get("error"))
-        return result
-
-    @app.get("/console/spine/nerve/events")
-    def nerve_events(limit: int = 50):
-        return nerve.recent(limit)
-
-    # ── Console — Fabric ──────────────────────────────────────────────────────
-
-    @app.get("/console/fabric/memory")
-    def fabric_memory(
-        domain: str | None = None,
-        tier: str | None = None,
-        since: str | None = None,
-        keyword: str | None = None,
-        source_type: str | None = None,
-        limit: int = 50,
-    ):
-        return memory.query(domain=domain, tier=tier, since=since, keyword=keyword, source_type=source_type, limit=limit)
-
-    @app.get("/console/fabric/memory/{unit_id}")
-    def fabric_memory_unit(unit_id: str):
-        unit = memory.get(unit_id)
-        if not unit:
-            raise HTTPException(status_code=404)
-        return unit
-
-    @app.get("/console/fabric/playbook")
-    def fabric_playbook(status: str | None = None, category: str = "dag_pattern"):
-        return playbook.list_methods(status=status, category=category, limit=200)
-
-    @app.get("/console/fabric/playbook/{method_id}")
-    def fabric_playbook_method(method_id: str):
-        m = playbook.get(method_id)
-        if not m:
-            raise HTTPException(status_code=404)
-        return m
-
-    @app.get("/console/fabric/compass/priorities")
-    def compass_priorities():
-        return compass.get_priorities()
-
-    @app.get("/console/fabric/compass/budgets")
-    def compass_budgets():
-        return compass.all_budgets()
-
-    @app.get("/console/fabric/compass/signals")
-    def compass_signals():
-        return compass.active_signals()
-
-    # ── Console — Strategy / Semantics / Model Control Plane ────────────────
-
-    @app.get("/console/strategies")
-    def list_strategies(cluster_id: str | None = None, stage: str | None = None):
-        strategies = playbook.list_strategies(cluster_id=cluster_id, stage=stage)
-        cluster_rows = {row.get("cluster_id", ""): row for row in playbook.list_clusters()}
-        for row in strategies:
-            cid = str(row.get("cluster_id") or "")
-            cluster = cluster_rows.get(cid) or {}
-            row["cluster_display_name"] = cluster.get("display_name", cid)
-            row["task_type_compat"] = cluster.get("task_type_compat", "")
-            sid = str(row.get("strategy_id") or "")
-            if not sid:
-                row["risk_level"] = "unknown"
-                row["risk_reasons"] = []
-                row["release_audit_closed"] = False
-                continue
-            try:
-                audit = playbook.strategy_audit_status(sid)
-            except Exception:
-                row["risk_level"] = "high"
-                row["risk_reasons"] = ["audit_lookup_failed"]
-                row["release_audit_closed"] = False
-                continue
-            missing_checks = audit.get("missing_checks") if isinstance(audit.get("missing_checks"), list) else []
-            missing_count = len(missing_checks)
-            if missing_count == 0:
-                risk_level = "low"
-            elif missing_count <= 2:
-                risk_level = "medium"
-            else:
-                risk_level = "high"
-            row["release_audit_closed"] = bool(audit.get("release_audit_closed", False))
-            row["risk_level"] = risk_level
-            row["risk_reasons"] = missing_checks
-        return strategies
-
-    @app.get("/console/strategies/shadow-report")
-    def shadow_report(limit: int = 200):
-        path = state / "telemetry" / "shadow_comparisons.jsonl"
-        if not path.exists():
-            return []
-        rows: list[dict] = []
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except Exception as exc:
-            logger.warning("Failed to read shadow report file: %s", exc)
-            return []
-        for line in reversed(lines):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(row, dict):
-                rows.append(row)
-            if len(rows) >= max(1, min(limit, 2000)):
-                break
-        return rows
-
-    @app.post("/console/strategies/{strategy_id}/promote")
-    async def promote_strategy(strategy_id: str, request: Request):
-        body = await request.json()
-        next_stage = str(body.get("next_stage") or "champion")
-        reason = str(body.get("reason") or "")
-        decided_by = str(body.get("decided_by") or "console")
-        row = playbook.get_strategy(strategy_id)
-        if not row:
-            raise HTTPException(status_code=404, detail="strategy not found")
-        prev_stage = str(row.get("stage") or "candidate")
-        try:
-            promotion_id = playbook.promote_strategy(
-                strategy_id=strategy_id,
-                decision="promote_manual",
-                prev_stage=prev_stage,
-                next_stage=next_stage,
-                reason=reason,
-                decided_by=decided_by,
-            )
-        except ValueError as exc:
-            msg = str(exc)
-            if msg.startswith("invalid_stage_transition:"):
-                raise HTTPException(
-                    status_code=409,
-                    detail={"ok": False, "error_code": "invalid_stage_transition", "error": msg},
-                )
-            if msg.startswith("promotion_audit_incomplete:"):
-                raise HTTPException(
-                    status_code=409,
-                    detail={"ok": False, "error_code": "strategy_guard_blocked", "error": msg},
-                )
-            raise HTTPException(status_code=400, detail={"ok": False, "error": msg})
-        nerve.emit(
-            "strategy_promoted",
-            {"strategy_id": strategy_id, "prev_stage": prev_stage, "next_stage": next_stage, "promotion_id": promotion_id},
-        )
-        return {"ok": True, "strategy_id": strategy_id, "promotion_id": promotion_id, "prev_stage": prev_stage, "next_stage": next_stage}
-
-    @app.post("/console/strategies/{strategy_id}/rollback")
-    async def rollback_strategy(strategy_id: str, request: Request):
-        body = await request.json()
-        reason = str(body.get("reason") or "manual_rollback")
-        decided_by = str(body.get("decided_by") or "console")
-        row = playbook.get_strategy(strategy_id)
-        if not row:
-            raise HTTPException(status_code=404, detail="strategy not found")
-        target = playbook.resolve_latest_rollback_target(strategy_id)
-        if not target:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "ok": False,
-                    "error_code": "strategy_guard_blocked",
-                    "error": "rollback_point_missing_or_previous_champion_unavailable",
-                },
-            )
-        prev = target.get("previous_strategy") if isinstance(target.get("previous_strategy"), dict) else {}
-        rollback_to_strategy_id = str(target.get("previous_champion_strategy_id") or "")
-        prev_stage = str(prev.get("stage") or "unknown")
-        if not rollback_to_strategy_id:
-            raise HTTPException(
-                status_code=409,
-                detail={"ok": False, "error_code": "strategy_guard_blocked", "error": "rollback_target_missing"},
-            )
-        if prev_stage == "retired":
-            raise HTTPException(
-                status_code=409,
-                detail={"ok": False, "error_code": "strategy_guard_blocked", "error": "rollback_target_retired"},
-            )
-        try:
-            promotion_id = playbook.promote_strategy(
-                strategy_id=rollback_to_strategy_id,
-                decision="rollback_manual",
-                prev_stage=prev_stage,
-                next_stage="champion",
-                reason=f"{reason};rollback_from:{strategy_id}",
-                decided_by=decided_by,
-            )
-        except ValueError as exc:
-            msg = str(exc)
-            if msg.startswith("invalid_stage_transition:"):
-                raise HTTPException(
-                    status_code=409,
-                    detail={"ok": False, "error_code": "invalid_stage_transition", "error": msg},
-                )
-            raise HTTPException(status_code=400, detail={"ok": False, "error": msg})
-        nerve.emit(
-            "strategy_rolled_back",
-            {
-                "from_strategy_id": strategy_id,
-                "to_strategy_id": rollback_to_strategy_id,
-                "prev_stage": prev_stage,
-                "next_stage": "champion",
-                "promotion_id": promotion_id,
-            },
-        )
-        return {
-            "ok": True,
-            "strategy_id": strategy_id,
-            "rollback_to_strategy_id": rollback_to_strategy_id,
-            "promotion_id": promotion_id,
-            "prev_stage": prev_stage,
-            "next_stage": "champion",
-        }
-
-    @app.get("/console/strategies/{strategy_id}/experiments")
-    def strategy_experiments(strategy_id: str, limit: int = 200):
-        row = playbook.get_strategy(strategy_id)
-        if not row:
-            raise HTTPException(status_code=404, detail="strategy not found")
-        return playbook.list_experiments(strategy_id=strategy_id, limit=limit)
-
-    @app.get("/console/strategies/{strategy_id}/promotions")
-    def strategy_promotions(strategy_id: str, limit: int = 200):
-        row = playbook.get_strategy(strategy_id)
-        if not row:
-            raise HTTPException(status_code=404, detail="strategy not found")
-        return playbook.list_promotions(strategy_id=strategy_id, limit=limit)
-
-    @app.get("/console/strategies/{strategy_id}/audit")
-    def strategy_audit(strategy_id: str):
-        try:
-            return playbook.strategy_audit_status(strategy_id)
-        except ValueError:
-            raise HTTPException(status_code=404, detail="strategy not found")
-
-    @app.get("/console/strategies/release-events")
-    def strategy_release_events(strategy_id: str | None = None, cluster_id: str | None = None, limit: int = 500):
-        return playbook.list_release_transitions(strategy_id=strategy_id, cluster_id=cluster_id, limit=limit)
-
-    @app.get("/console/strategies/rollback-points")
-    def strategy_rollback_points(cluster_id: str | None = None, limit: int = 200):
-        return playbook.list_rollback_points(cluster_id=cluster_id, limit=limit)
-
-    @app.post("/console/strategies/{strategy_id}/sandbox-submit")
-    async def strategy_sandbox_submit(strategy_id: str, request: Request):
-        body = await request.json()
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="sandbox plan body must be a JSON object")
-        result = await dispatch.submit_sandbox(body, strategy_id=strategy_id)
-        if not result.get("ok"):
-            code = str(result.get("error_code") or "")
-            if code in {"invalid_plan", "semantic_mapping_failed", "strategy_guard_blocked", "strategy_not_found"}:
-                raise HTTPException(status_code=400, detail=result)
-            if code.startswith("temporal_"):
-                raise HTTPException(status_code=503, detail=result)
-            raise HTTPException(status_code=500, detail=result)
-        return result
-
-    @app.get("/console/semantics")
-    def console_semantics():
-        catalog = {}
-        rules = {}
-        try:
-            catalog = json.loads(semantic_catalog_path.read_text(encoding="utf-8")) if semantic_catalog_path.exists() else {}
-        except Exception as exc:
-            logger.warning("Failed to load semantic catalog: %s", exc)
-        try:
-            rules = json.loads(semantic_rules_path.read_text(encoding="utf-8")) if semantic_rules_path.exists() else {}
-        except Exception as exc:
-            logger.warning("Failed to load semantic mapping rules: %s", exc)
-        return {
-            "catalog": catalog,
-            "mapping_rules": rules,
-            "clusters_db": playbook.list_clusters(),
-        }
-
-    @app.put("/console/semantics/catalog")
-    async def set_semantic_catalog(request: Request):
-        body = await request.json()
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="catalog body must be a JSON object")
-        try:
-            return _write_semantic_target("catalog", body, changed_by="console", reason="semantic_catalog_update")
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail={"ok": False, "error": str(exc)})
-
-    @app.put("/console/semantics/mapping-rules")
-    async def set_semantic_rules(request: Request):
-        body = await request.json()
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="mapping rules body must be a JSON object")
-        try:
-            return _write_semantic_target("mapping_rules", body, changed_by="console", reason="semantic_mapping_rules_update")
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail={"ok": False, "error": str(exc)})
-
-    @app.get("/console/semantics/{target}/versions")
-    def semantic_versions(target: str, limit: int = 50):
-        try:
-            cfg_key, _ = _semantic_target_spec(target)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
-        return compass.versions(cfg_key, limit=max(1, min(limit, 200)))
-
-    @app.post("/console/semantics/{target}/rollback/{version}")
-    def semantic_rollback(target: str, version: int):
-        try:
-            cfg_key, _ = _semantic_target_spec(target)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
-        value = compass.version_value(cfg_key, version)
-        if value is None or not isinstance(value, dict):
-            raise HTTPException(status_code=404, detail="semantic config version not found")
-        try:
-            result = _write_semantic_target(target, value, changed_by="console", reason=f"rollback_to:{version}")
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail={"ok": False, "error": str(exc)})
-        result["rolled_back_to"] = version
-        return result
-
-    @app.get("/console/model-policy")
-    def get_model_policy():
-        if not model_policy_path.exists():
-            return {}
-        try:
-            return json.loads(model_policy_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            logger.warning("Failed to read model policy: %s", exc)
-            raise HTTPException(status_code=500, detail="model policy parse failed")
-
-    @app.get("/console/model-registry")
-    def get_model_registry():
-        if not model_registry_path.exists():
-            return {}
-        try:
-            data = json.loads(model_registry_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                _validate_model_registry(data)
-            return data
-        except ValueError as exc:
-            raise HTTPException(status_code=500, detail=f"model registry invalid: {exc}")
-        except Exception as exc:
-            logger.warning("Failed to read model registry: %s", exc)
-            raise HTTPException(status_code=500, detail="model registry parse failed")
-
-    @app.put("/console/model-policy")
-    async def set_model_policy(request: Request):
-        body = await request.json()
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="policy body must be a JSON object")
-        registry = {}
-        if model_registry_path.exists():
-            try:
-                registry = json.loads(model_registry_path.read_text(encoding="utf-8"))
-                if isinstance(registry, dict):
-                    _validate_model_registry(registry)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail={"ok": False, "error": f"model_registry_invalid:{exc}"})
-            except Exception as exc:
-                raise HTTPException(status_code=400, detail={"ok": False, "error": f"model_registry_unreadable:{exc}"})
-        aliases = _model_registry_aliases(registry if isinstance(registry, dict) else {})
-        try:
-            _validate_model_policy(body, aliases)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail={"ok": False, "error": str(exc), "error_code": "invalid_model_policy"})
-        current = {}
-        if model_policy_path.exists():
-            try:
-                current = json.loads(model_policy_path.read_text(encoding="utf-8"))
-            except Exception:
-                current = {}
-        version = str(body.get("_version") or current.get("_version") or "1.0.0")
-        body["_version"] = version
-        body["_updated"] = _utc()[:10]
-        model_policy_path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
-        sync_result = _sync_compass_provider_budgets_from_policy(body, overwrite=True)
-        cv_version = compass.record_config_version("model_policy", body, changed_by="console", reason="model_policy_update")
-        nerve.emit("fabric_updated", {"fabric": "model_policy", "path": str(model_policy_path)})
-        return {
-            "ok": True,
-            "path": str(model_policy_path),
-            "_version": version,
-            "config_version": cv_version,
-            "budget_sync": sync_result,
-        }
-
-    @app.put("/console/model-registry")
-    async def set_model_registry(request: Request):
-        body = await request.json()
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="registry body must be a JSON object")
-        try:
-            _validate_model_registry(body)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail={"ok": False, "error": str(exc), "error_code": "invalid_model_registry"})
-        aliases = _model_registry_aliases(body)
-        current_policy = {}
-        if model_policy_path.exists():
-            try:
-                current_policy = json.loads(model_policy_path.read_text(encoding="utf-8"))
-            except Exception:
-                current_policy = {}
-        if isinstance(current_policy, dict) and current_policy:
-            try:
-                _validate_model_policy(current_policy, aliases)
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"ok": False, "error": str(exc), "error_code": "model_policy_incompatible_with_registry"},
-                )
-        body["_updated"] = _utc()[:10]
-        model_registry_path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
-        cv_version = compass.record_config_version("model_registry", body, changed_by="console", reason="model_registry_update")
-        nerve.emit("fabric_updated", {"fabric": "model_registry", "path": str(model_registry_path)})
-        return {"ok": True, "path": str(model_registry_path), "config_version": cv_version}
-
-    @app.get("/console/model-policy/versions")
-    def model_policy_versions(limit: int = 50):
-        return compass.versions("model_policy", limit=max(1, min(limit, 200)))
-
-    @app.get("/console/model-registry/versions")
-    def model_registry_versions(limit: int = 50):
-        return compass.versions("model_registry", limit=max(1, min(limit, 200)))
-
-    @app.post("/console/model-policy/rollback/{version}")
-    def model_policy_rollback(version: int):
-        value = compass.version_value("model_policy", version)
-        if value is None or not isinstance(value, dict):
-            raise HTTPException(status_code=404, detail="model policy version not found")
-        registry = {}
-        if model_registry_path.exists():
-            try:
-                registry = json.loads(model_registry_path.read_text(encoding="utf-8"))
-                if isinstance(registry, dict):
-                    _validate_model_registry(registry)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=f"model registry invalid: {exc}")
-            except Exception as exc:
-                raise HTTPException(status_code=400, detail=f"model registry unreadable: {exc}")
-        aliases = _model_registry_aliases(registry if isinstance(registry, dict) else {})
-        try:
-            _validate_model_policy(value, aliases)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail={"ok": False, "error": str(exc), "error_code": "invalid_model_policy"},
-            )
-        value["_updated"] = _utc()[:10]
-        model_policy_path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-        sync_result = _sync_compass_provider_budgets_from_policy(value, overwrite=True)
-        cv_version = compass.record_config_version("model_policy", value, changed_by="console", reason=f"rollback_to:{version}")
-        nerve.emit("fabric_updated", {"fabric": "model_policy", "path": str(model_policy_path), "rollback_from_version": version})
-        return {
-            "ok": True,
-            "rolled_back_to": version,
-            "config_version": cv_version,
-            "budget_sync": sync_result,
-        }
-
-    @app.post("/console/model-registry/rollback/{version}")
-    def model_registry_rollback(version: int):
-        value = compass.version_value("model_registry", version)
-        if value is None or not isinstance(value, dict):
-            raise HTTPException(status_code=404, detail="model registry version not found")
-        try:
-            _validate_model_registry(value)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail={"ok": False, "error": str(exc), "error_code": "invalid_model_registry"})
-        aliases = _model_registry_aliases(value)
-        current_policy = {}
-        if model_policy_path.exists():
-            try:
-                current_policy = json.loads(model_policy_path.read_text(encoding="utf-8"))
-            except Exception:
-                current_policy = {}
-        if isinstance(current_policy, dict) and current_policy:
-            try:
-                _validate_model_policy(current_policy, aliases)
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"ok": False, "error": str(exc), "error_code": "model_policy_incompatible_with_registry"},
-                )
-        value["_updated"] = _utc()[:10]
-        model_registry_path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-        cv_version = compass.record_config_version("model_registry", value, changed_by="console", reason=f"rollback_to:{version}")
-        nerve.emit("fabric_updated", {"fabric": "model_registry", "path": str(model_registry_path), "rollback_from_version": version})
-        return {"ok": True, "rolled_back_to": version, "config_version": cv_version}
-
-    @app.get("/console/model-usage")
-    def model_usage(since: str | None = None, until: str | None = None, limit: int = 1000):
-        records = cortex.usage_between(since=since, until=until, limit=limit)
-        by_provider: dict[str, dict[str, int]] = {}
-        by_model: dict[str, dict[str, int]] = {}
-        by_routine: dict[str, dict[str, int]] = {}
-        fallback_chain_hits: dict[str, int] = {}
-
-        for row in records:
-            provider = str(row.get("provider") or "unknown")
-            model = str(row.get("model") or "unknown")
-            routine = str(row.get("routine") or "unknown")
-            in_t = int(row.get("in_tokens") or 0)
-            out_t = int(row.get("out_tokens") or 0)
-            success = bool(row.get("success"))
-
-            p = by_provider.setdefault(provider, {"calls": 0, "errors": 0, "in_tokens": 0, "out_tokens": 0})
-            p["calls"] += 1
-            p["in_tokens"] += in_t
-            p["out_tokens"] += out_t
-            if not success:
-                p["errors"] += 1
-
-            m = by_model.setdefault(model, {"calls": 0, "errors": 0, "in_tokens": 0, "out_tokens": 0})
-            m["calls"] += 1
-            m["in_tokens"] += in_t
-            m["out_tokens"] += out_t
-            if not success:
-                m["errors"] += 1
-
-            r = by_routine.setdefault(routine, {"calls": 0, "errors": 0, "in_tokens": 0, "out_tokens": 0})
-            r["calls"] += 1
-            r["in_tokens"] += in_t
-            r["out_tokens"] += out_t
-            if not success:
-                r["errors"] += 1
-            chain = row.get("fallback_chain")
-            if isinstance(chain, list) and chain:
-                key = "->".join(str(x) for x in chain if str(x))
-                if key:
-                    fallback_chain_hits[key] = fallback_chain_hits.get(key, 0) + 1
-
-        # Semantic-cluster aggregation (task-plane view, complements trace-plane usage).
-        tasks_path = state / "tasks.json"
-        try:
-            task_rows = json.loads(tasks_path.read_text(encoding="utf-8")) if tasks_path.exists() else []
-        except Exception as exc:
-            logger.warning("Failed to read tasks for model usage cluster view: %s", exc)
-            task_rows = []
-        by_semantic_cluster: dict[str, int] = {}
-        by_capability: dict[str, int] = {}
-        by_risk_level: dict[str, int] = {}
-        for row in task_rows if isinstance(task_rows, list) else []:
-            plan_row = row.get("plan") if isinstance(row.get("plan"), dict) else {}
-            cluster = str(
-                row.get("semantic_cluster")
-                or plan_row.get("cluster_id")
-                or ""
-            )
-            if cluster:
-                by_semantic_cluster[cluster] = by_semantic_cluster.get(cluster, 0) + 1
-            fp = plan_row.get("semantic_fingerprint") if isinstance(plan_row.get("semantic_fingerprint"), dict) else {}
-            risk = str(fp.get("risk_level") or "").strip().lower()
-            if risk:
-                by_risk_level[risk] = by_risk_level.get(risk, 0) + 1
-            steps = plan_row.get("steps") or plan_row.get("graph", {}).get("steps") or []
-            if isinstance(steps, list):
-                for st in steps:
-                    if not isinstance(st, dict):
-                        continue
-                    cid = str(st.get("capability_id") or "")
-                    if cid:
-                        by_capability[cid] = by_capability.get(cid, 0) + 1
-
-        return {
-            "records": records,
-            "summary": {
-                "by_provider": by_provider,
-                "by_model": by_model,
-                "by_routine": by_routine,
-                "by_semantic_cluster": by_semantic_cluster,
-                "by_capability": by_capability,
-                "by_risk_level": by_risk_level,
-                "fallback_chain_hits": fallback_chain_hits,
-            },
-        }
-
-    # ── Console — Policy ─────────────────────────────────────────────────────
-
-    @app.get("/console/policy/preferences")
-    def get_preferences():
-        prefs = compass.all_prefs()
-        return [{"pref_key": k, "value": v} for k, v in sorted(prefs.items())]
-
-    @app.get("/console/policy/preferences/{pref_key}")
-    def get_preference(pref_key: str):
-        prefs = compass.all_prefs()
-        if pref_key not in prefs:
-            raise HTTPException(status_code=404, detail="preference not found")
-        return {"pref_key": pref_key, "value": prefs[pref_key]}
-
-    @app.put("/console/policy/preferences/{pref_key}")
-    async def set_preference(pref_key: str, request: Request):
-        body = await request.json()
-        value = str(body.get("value") if isinstance(body, dict) and "value" in body else body)
-        compass.set_pref(pref_key, value, source="console", changed_by="console")
-        nerve.emit("fabric_updated", {"fabric": "compass", "key": f"pref.{pref_key}"})
-        return {"ok": True, "pref_key": pref_key, "value": value}
-
-    @app.get("/console/policy/preferences/{pref_key}/versions")
-    def preference_versions(pref_key: str):
-        return compass.versions(f"pref.{pref_key}")
-
-    @app.post("/console/policy/preferences/{pref_key}/rollback/{version}")
-    def preference_rollback(pref_key: str, version: int):
-        ok = compass.rollback(f"pref.{pref_key}", version, changed_by="console")
-        if not ok:
-            raise HTTPException(status_code=404, detail="version not found")
-        nerve.emit("fabric_updated", {"fabric": "compass", "key": f"pref.{pref_key}"})
-        return {"ok": True}
-
-    @app.get("/console/policy/budgets")
-    def get_budgets():
-        return compass.all_budgets()
-
-    @app.get("/console/policy/budgets/{resource_type}")
-    def get_budget(resource_type: str):
-        budget = compass.get_budget(resource_type)
-        if not budget:
-            raise HTTPException(status_code=404, detail="budget not found")
-        return budget
-
-    @app.put("/console/policy/budgets/{resource_type}")
-    async def set_budget(resource_type: str, request: Request):
-        body = await request.json()
-        if isinstance(body, dict):
-            raw = body.get("daily_limit")
-        else:
-            raw = body
-        try:
-            daily_limit = float(raw)
-        except Exception:
-            raise HTTPException(status_code=400, detail="daily_limit must be numeric")
-        compass.set_budget(resource_type, daily_limit, changed_by="console")
-        nerve.emit("fabric_updated", {"fabric": "compass", "key": f"budget.{resource_type}"})
-        return {"ok": True, "resource_type": resource_type, "daily_limit": daily_limit}
-
-    @app.get("/console/policy/budgets/{resource_type}/versions")
-    def budget_versions(resource_type: str):
-        return compass.versions(f"budget.{resource_type}")
-
-    @app.post("/console/policy/budgets/{resource_type}/rollback/{version}")
-    def budget_rollback(resource_type: str, version: int):
-        ok = compass.rollback(f"budget.{resource_type}", version, changed_by="console")
-        if not ok:
-            raise HTTPException(status_code=404, detail="version not found")
-        nerve.emit("fabric_updated", {"fabric": "compass", "key": f"budget.{resource_type}"})
-        return {"ok": True}
-
-    @app.get("/console/policy/quality/{policy_name}")
-    def get_policy_quality(policy_name: str):
-        profile = compass.get_quality_profile(policy_name)
-        return {"policy": policy_name, "rules": profile}
-
-    @app.put("/console/policy/quality/{policy_name}")
-    async def set_policy_quality(policy_name: str, request: Request):
-        body = await request.json()
-        rules = body.get("rules") or body
-        compass.set_quality_profile(policy_name, rules, changed_by="console")
-        nerve.emit("fabric_updated", {"fabric": "compass", "key": f"quality.{policy_name}"})
-        return {"ok": True}
-
-    @app.get("/console/policy/quality/{policy_name}/versions")
-    def policy_quality_versions(policy_name: str):
-        return compass.versions(f"quality.{policy_name}")
-
-    @app.post("/console/policy/quality/{policy_name}/rollback/{version}")
-    def policy_quality_rollback(policy_name: str, version: int):
-        ok = compass.rollback(f"quality.{policy_name}", version, changed_by="console")
-        if not ok:
-            raise HTTPException(status_code=404, detail="version not found")
-        nerve.emit("fabric_updated", {"fabric": "compass", "key": f"quality.{policy_name}"})
-        return {"ok": True}
-
-    # Backward-compatible aliases.
-    @app.get("/console/policy/{policy_name}")
-    def get_policy(policy_name: str):
-        return get_policy_quality(policy_name)
-
-    @app.put("/console/policy/{policy_name}")
-    async def set_policy(policy_name: str, request: Request):
-        return await set_policy_quality(policy_name, request)
-
-    @app.get("/console/policy/{policy_name}/versions")
-    def policy_versions(policy_name: str):
-        return policy_quality_versions(policy_name)
-
-    @app.post("/console/policy/{policy_name}/rollback/{version}")
-    def policy_rollback(policy_name: str, version: int):
-        return policy_quality_rollback(policy_name, version)
-
-    # ── Console — Traces ──────────────────────────────────────────────────────
-
-    @app.get("/console/traces")
-    def list_traces(
-        routine: str | None = None,
-        status: str | None = None,
-        degraded: bool | None = None,
-        since: str | None = None,
-        limit: int = 50,
-    ):
-        return tracer.query(routine=routine, status=status, degraded=degraded, since=since, limit=limit)
-
-    @app.get("/console/traces/{trace_id}")
-    def get_trace(trace_id: str):
-        trace = tracer.get(trace_id)
-        if trace:
-            rows = cortex.usage_for_trace(trace_id, limit=200)
-            by_provider: dict[str, dict] = {}
-            errors: list[dict] = []
-            for r in rows:
-                provider = str(r.get("provider") or "unknown")
-                agg = by_provider.setdefault(
-                    provider,
-                    {"calls": 0, "in_tokens": 0, "out_tokens": 0, "errors": 0, "avg_elapsed_s": 0.0},
-                )
-                agg["calls"] += 1
-                agg["in_tokens"] += int(r.get("in_tokens") or 0)
-                agg["out_tokens"] += int(r.get("out_tokens") or 0)
-                if not r.get("success"):
-                    agg["errors"] += 1
-                agg["avg_elapsed_s"] += float(r.get("elapsed_s") or 0)
-                if r.get("error"):
-                    errors.append(
-                        {
-                            "provider": provider,
-                            "timestamp": r.get("timestamp", ""),
-                            "error": str(r.get("error", ""))[:200],
-                        }
-                    )
-            for agg in by_provider.values():
-                if agg["calls"] > 0:
-                    agg["avg_elapsed_s"] = round(agg["avg_elapsed_s"] / agg["calls"], 3)
-            trace_out = dict(trace)
-            trace_out["cortex_summary"] = {
-                "total_calls": len(rows),
-                "total_in_tokens": sum(int(r.get("in_tokens") or 0) for r in rows),
-                "total_out_tokens": sum(int(r.get("out_tokens") or 0) for r in rows),
-                "by_provider": by_provider,
-                "latest_calls": rows[-5:],
-                "errors": errors[-10:],
-            }
-            return trace_out
-        raise HTTPException(status_code=404)
-
-    # ── Console — Cortex usage ────────────────────────────────────────────────
-
-    @app.get("/console/cortex/usage")
-    def cortex_usage(since: str | None = None, until: str | None = None, limit: int = 500):
-        return {
-            "today": cortex.usage_today(),
-            "records": cortex.usage_between(since=since, until=until, limit=limit),
-        }
-
-    # ── Console — Schedules ───────────────────────────────────────────────────
-
-    @app.get("/console/schedules")
-    def list_schedules():
-        return scheduler.status()
-
-    @app.get("/console/schedules/history")
-    def list_schedule_history(routine: str | None = None, limit: int = 100):
-        return scheduler.history(routine=routine, limit=limit)
-
-    @app.put("/console/schedules/{job_id}")
-    async def update_schedule(job_id: str, request: Request):
-        body = await request.json()
-        schedule = body.get("schedule") if "schedule" in body else None
-        enabled = body.get("enabled") if "enabled" in body else None
-        result = scheduler.update_schedule(job_id, schedule=schedule, enabled=enabled)
-        if not result.get("ok"):
-            raise HTTPException(status_code=400, detail=result)
-        return result
-
-    @app.post("/console/schedules/{routine}/trigger")
-    async def trigger_schedule(routine: str):
-        return await spine_trigger(routine)
-
-    # ── Console — Agent manager ───────────────────────────────────────────────
-
-    @app.get("/console/agents")
-    def list_agents():
-        cfg_path = oc_home / "openclaw.json"
-        if not cfg_path.exists():
-            return []
-        try:
-            cfg = json.loads(cfg_path.read_text())
-        except Exception as exc:
-            logger.warning("Failed to read openclaw.json: %s", exc)
-            return []
-        agents = cfg.get("agents", {}).get("list", [])
-        result = []
-        for agent in agents:
-            agent_id = agent.get("id", "")
-            workspace = oc_home / "workspace" / agent_id
-            skills_dir = workspace / "skills"
-            skills_count = len(list(skills_dir.glob("*/SKILL.md"))) if skills_dir.exists() else 0
-            result.append({
-                "id": agent_id,
-                "workspace_exists": workspace.exists(),
-                "skills_count": skills_count,
-            })
-        return result
-
-    @app.get("/console/agents/{agent}/skills")
-    def get_agent_skills(agent: str):
-        skills_dir = oc_home / "workspace" / agent / "skills"
-        if not skills_dir.exists():
-            return []
-        out = []
-        for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
-            skill_dir = skill_md.parent
-            disabled = (skill_dir / ".disabled").exists()
-            content = skill_md.read_text()
-            out.append(
-                {
-                    "skill": skill_dir.name,
-                    "enabled": not disabled,
-                    "path": str(skill_md),
-                    "content": content,
-                }
-            )
-        return out
-
-    @app.put("/console/agents/{agent}/skills/{skill}")
-    async def update_agent_skill(agent: str, skill: str, request: Request):
-        body = await request.json()
-        content = str(body.get("content") or "")
-        if not content.strip():
-            raise HTTPException(status_code=400, detail="content required")
-        skill_dir = oc_home / "workspace" / agent / "skills" / skill
-        skill_dir.mkdir(parents=True, exist_ok=True)
-        skill_md = skill_dir / "SKILL.md"
-        skill_md.write_text(content)
-        return {"ok": True, "agent": agent, "skill": skill}
-
-    @app.patch("/console/agents/{agent}/skills/{skill}/enabled")
-    async def set_skill_enabled(agent: str, skill: str, request: Request):
-        body = await request.json()
-        enabled = bool(body.get("enabled"))
-        skill_dir = oc_home / "workspace" / agent / "skills" / skill
-        if not skill_dir.exists():
-            raise HTTPException(status_code=404, detail="skill not found")
-        marker = skill_dir / ".disabled"
-        if enabled:
-            if marker.exists():
-                marker.unlink()
-        else:
-            marker.write_text("disabled")
-        return {"ok": True, "agent": agent, "skill": skill, "enabled": enabled}
-
-    # ── Console — Skill Evolution ────────────────────────────────────────────
-
-    @app.get("/console/skill-evolution/proposals")
-    def list_skill_evolution(status: str | None = None, limit: int = 100):
-        proposals = _sync_skill_proposals()
-        if status:
-            proposals = [p for p in proposals if str(p.get("status", "")) == status]
-        return proposals[: max(1, min(limit, 500))]
-
-    @app.post("/console/skill-evolution/proposals/{proposal_id}/review")
-    async def review_skill_evolution(proposal_id: str, request: Request):
-        body = await request.json()
-        decision = str(body.get("decision") or "").strip().lower()
-        reviewer = str(body.get("reviewer") or "console")
-        note = str(body.get("note") or "")
-        auto_apply = bool(body.get("apply"))
-        if decision not in {"approve", "reject"}:
-            raise HTTPException(status_code=400, detail="decision must be approve|reject")
-
-        proposals = _sync_skill_proposals()
-        target = None
-        for row in proposals:
-            if str(row.get("proposal_id") or "") == proposal_id:
-                target = row
-                break
-        if not target:
-            raise HTTPException(status_code=404, detail="proposal not found")
-
-        target["reviewed_utc"] = _utc()
-        target["reviewed_by"] = reviewer
-        target["review_note"] = note
-        if decision == "reject":
-            target["status"] = "rejected"
-            target["apply_error"] = ""
-            target["applied_utc"] = ""
-            _write_json_list(skill_queue_path, proposals)
-            return {"ok": True, "proposal_id": proposal_id, "status": target["status"]}
-
-        target["status"] = "approved"
-        target["apply_error"] = ""
-        proposal_type = str(target.get("proposal_type") or "skill")
-        if proposal_type == "python":
-            target["status"] = "pending_human_review"
-            target["apply_error"] = "python_change_requires_human_review"
-        elif not _sandbox_gate_open():
-            target["status"] = "sandbox_blocked"
-            target["apply_error"] = "sandbox_gate_closed"
-        elif auto_apply or proposal_type in {"skill", "config"}:
-            ok, err = _apply_evolution_proposal(target)
-            if ok:
-                target["status"] = "applied"
-                target["applied_utc"] = _utc()
-                target["apply_error"] = ""
-            else:
-                target["status"] = "apply_failed"
-                target["apply_error"] = err
-
-        _write_json_list(skill_queue_path, proposals)
-        return {"ok": True, "proposal_id": proposal_id, "status": target["status"], "apply_error": target.get("apply_error", "")}
-
-    @app.post("/console/skill-evolution/proposals/{proposal_id}/apply")
-    def apply_skill_evolution(proposal_id: str):
-        proposals = _sync_skill_proposals()
-        target = None
-        for row in proposals:
-            if str(row.get("proposal_id") or "") == proposal_id:
-                target = row
-                break
-        if not target:
-            raise HTTPException(status_code=404, detail="proposal not found")
-        if str(target.get("status") or "") == "rejected":
-            raise HTTPException(status_code=400, detail="proposal rejected")
-        if str(target.get("proposal_type") or "") == "python":
-            target["status"] = "pending_human_review"
-            target["apply_error"] = "python_change_requires_human_review"
-            _write_json_list(skill_queue_path, proposals)
-            return {"ok": False, "proposal_id": proposal_id, "status": target["status"], "apply_error": target["apply_error"]}
-        if not _sandbox_gate_open():
-            target["status"] = "sandbox_blocked"
-            target["apply_error"] = "sandbox_gate_closed"
-            _write_json_list(skill_queue_path, proposals)
-            return {"ok": False, "proposal_id": proposal_id, "status": target["status"], "apply_error": target["apply_error"]}
-
-        ok, err = _apply_evolution_proposal(target)
-        if ok:
-            target["status"] = "applied"
-            target["applied_utc"] = _utc()
-            target["apply_error"] = ""
-        else:
-            target["status"] = "apply_failed"
-            target["apply_error"] = err
-        _write_json_list(skill_queue_path, proposals)
-        return {"ok": ok, "proposal_id": proposal_id, "status": target["status"], "apply_error": target.get("apply_error", "")}
-
-    # ── Console — Priority management ─────────────────────────────────────────
-
-    @app.put("/console/fabric/compass/priorities/{domain}")
-    async def set_priority(domain: str, request: Request):
-        body = await request.json()
-        weight = float(body.get("weight") or 1.0)
-        reason = str(body.get("reason") or "")
-        compass.set_priority(domain, weight, reason, changed_by="console")
-        nerve.emit("fabric_updated", {"fabric": "compass", "key": f"priority.{domain}"})
-        return {"ok": True}
+    feedback_ctx = type("FeedbackRouteContext", (), {})()
+    feedback_ctx.pending_feedback_surveys = _pending_feedback_surveys
+    feedback_ctx.feedback_state = _feedback_state
+    feedback_ctx.get_feedback_questions = _get_feedback_questions
+    feedback_ctx.submit_feedback_internal = _submit_feedback_internal
+    register_feedback_routes(app, ctx=feedback_ctx)
 
     # ── Startup sync (model policy -> Compass provider budgets) ───────────────
 

@@ -425,7 +425,7 @@ input,textarea{font-family:inherit}
         <div style="height:15vh"></div>
         <div style="text-align:center;pointer-events:none">
           <div style="font-size:24px;font-weight:600;letter-spacing:-.3px;margin-bottom:6px" data-i18n="composeTitle">需要做什么？</div>
-          <div style="font-size:14px;color:var(--muted);max-width:360px;line-height:1.6;margin:0 auto" data-i18n="composeHint">描述你的任务，系统自动判断规模和分配 agent。</div>
+          <div style="font-size:14px;color:var(--muted);max-width:560px;line-height:1.6;margin:0 auto;text-wrap:balance" data-i18n="composeHint">描述你的任务，系统自动判断规模和分配 agent。</div>
         </div>
       </div>
       <div id="chat-history" style="width:100%;max-width:680px;padding:16px 20px 0;display:flex;flex-direction:column;gap:10px"></div>
@@ -552,7 +552,7 @@ const D = {
   },
   en:{
     pending:'Pending',running:'Running',history:'History',none:'None',
-    composeTitle:'What do you need?',composeHint:'Describe your task. The system will determine scale and assign agents.',
+    composeTitle:'What do you need?',composeHint:'Describe your task. Daemon will choose scale and assign agents.',
     planDetected:'Task plan detected',submitPlan:'Submit',rewrite:'Rewrite',
     send:'Send',pause:'Pause',redirect:'Redirect',cancel:'Cancel Task',
     milestones:'Milestone Progress',

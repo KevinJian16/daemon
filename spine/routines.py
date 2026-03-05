@@ -13,6 +13,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from runtime.drive_accounts import DriveAccountRegistry
+from services.state_store import StateStore
+from spine.routines_ops_learn import (
+    run_distill,
+    run_focus,
+    run_judge,
+    run_learn,
+    run_witness,
+)
+from spine.routines_ops_maintenance import run_librarian, run_relay, run_tend
+from spine.routines_ops_record import run_record
 
 if TYPE_CHECKING:
     from fabric.memory import MemoryFabric
@@ -54,6 +64,7 @@ class SpineRoutines:
         self.daemon_home = daemon_home
         self.openclaw_home = openclaw_home
         self.state_dir = daemon_home / "state"
+        self._store = StateStore(self.state_dir)
 
     # ── 1. pulse ─────────────────────────────────────────────────────────────
 
@@ -150,653 +161,55 @@ class SpineRoutines:
 
     def record(self, task_id: str, plan: dict, step_results: list[dict], outcome: dict) -> dict:
         """Record completed task: write Playbook evaluation, Memory usage, trace summary."""
-        with self.tracer.span("spine.record", trigger="nerve:task_completed") as ctx:
-            method_name = plan.get("method") or plan.get("task_type") or "research_report"
-            status = "success" if outcome.get("ok") else "failure"
-            score = float(outcome.get("score", 1.0 if outcome.get("ok") else 0.0))
-
-            method_id: str | None = None
-            plan_method_id = str(plan.get("method_id") or "").strip()
-            if plan_method_id:
-                method_row = self.playbook.get(plan_method_id)
-                if method_row:
-                    method_id = plan_method_id
-
-            # Fallback: resolve by active method name.
-            if not method_id:
-                methods = self.playbook.consult(category="dag_pattern")
-                for m in methods:
-                    if m["name"] == method_name:
-                        method_id = m["method_id"]
-                        break
-
-            if method_id:
-                eval_detail = {
-                    "task_id": task_id,
-                    "steps": len(step_results),
-                    "failed_steps": sum(1 for r in step_results if r.get("status") == "error"),
-                    "plan_title": plan.get("title", "")[:100],
-                }
-                self.playbook.evaluate(method_id, task_id, status, score, eval_detail)
-                ctx.step("playbook_eval", {"method_id": method_id, "outcome": status})
-
-            # Record evidence usage from plan.
-            used_unit_ids: list[str] = plan.get("evidence_unit_ids") or []
-            for uid in used_unit_ids:
-                self.memory.record_usage(uid, task_id, method_id, status)
-            ctx.step("usage_recorded", len(used_unit_ids))
-
-            strategy_id = str(plan.get("strategy_id") or "")
-            cluster_id = str(plan.get("cluster_id") or "")
-            strategy_stage = str(plan.get("strategy_stage") or "")
-            strategy_components: dict[str, Any] = {}
-            strategy_global_score: float | None = None
-            if strategy_id and cluster_id:
-                strategy_components = self._build_global_score_components(step_results, outcome, plan)
-                strategy_global_score = (
-                    0.45 * float(strategy_components.get("quality", 0.0))
-                    + 0.35 * float(strategy_components.get("stability", 0.0))
-                    + 0.10 * float(strategy_components.get("latency", 0.0))
-                    + 0.10 * float(strategy_components.get("cost", 0.0))
-                )
-                self.playbook.record_experiment(
-                    strategy_id=strategy_id,
-                    task_id=task_id,
-                    cluster_id=cluster_id,
-                    score_components=strategy_components,
-                    global_score=strategy_global_score,
-                    outcome=status,
-                    is_shadow=bool(plan.get("is_shadow", False)),
-                )
-                self._update_task_strategy(
-                    task_id=task_id,
-                    semantic_cluster=cluster_id,
-                    strategy_id=strategy_id,
-                    strategy_stage=strategy_stage or "champion",
-                    global_score_components=strategy_components,
-                    global_score=strategy_global_score,
-                    trace_id=ctx.trace_id,
-                )
-                if bool(plan.get("is_shadow")):
-                    self._write_shadow_comparison(
-                        task_id=task_id,
-                        shadow_of=str(plan.get("shadow_of") or ""),
-                        cluster_id=cluster_id,
-                        strategy_id=strategy_id,
-                        champion_strategy_id=str(plan.get("shadow_champion_strategy_id") or ""),
-                        global_score=strategy_global_score,
-                        global_components=strategy_components,
-                    )
-                ctx.step(
-                    "strategy_recorded",
-                    {
-                        "strategy_id": strategy_id,
-                        "cluster_id": cluster_id,
-                        "global_score": round(strategy_global_score, 4),
-                    },
-                )
-
-            result = {
-                "task_id": task_id,
-                "outcome": status,
-                "method_id": method_id,
-                "strategy_id": strategy_id,
-                "semantic_cluster": cluster_id,
-                "global_score": round(strategy_global_score, 4) if strategy_global_score is not None else None,
-            }
-            ctx.set_result(result)
-        return result
+        return run_record(self, task_id, plan, step_results, outcome)
 
     # ── 4. witness ────────────────────────────────────────────────────────────
 
     def witness(self) -> dict:
         """Analyze recent records; extract observations and attention signals (hybrid)."""
-        with self.tracer.span("spine.witness", trigger="cron") as ctx:
-            mem_stats = self.memory.stats()
-            pb_stats = self.playbook.stats()
-            unanalyzed = self.playbook.unanalyzed_evaluations(limit=50)
-            openclaw_obs = self._collect_openclaw_observations()
-            interface_obs = self._collect_interface_observations()
-            router_patterns = self._read_router_patterns(limit=30)
-            trace_obs = self._collect_trace_observations(limit=200)
-            cortex_usage = self.cortex.recent_traces(limit=200)
-            ctx.step(
-                "data_collected",
-                {
-                    "mem_units": mem_stats["total_active"],
-                    "unanalyzed_evals": len(unanalyzed),
-                    "session_files": openclaw_obs.get("session_files", 0),
-                    "portal_events": interface_obs.get("portal_events", 0),
-                    "telegram_events": interface_obs.get("telegram_events", 0),
-                    "router_patterns": len(router_patterns),
-                    "trace_records": trace_obs.get("total_traces", 0),
-                    "cortex_calls": len(cortex_usage),
-                },
-            )
-
-            if len(unanalyzed) < 3:
-                ctx.step("skip", "not enough unanalyzed evaluations")
-                result = {"skipped": True, "reason": "insufficient_data"}
-                ctx.set_result(result)
-                return result
-
-            # Deterministic stats analysis (always runs).
-            by_outcome: dict[str, int] = {}
-            for ev in unanalyzed:
-                o = ev.get("outcome", "unknown")
-                by_outcome[o] = by_outcome.get(o, 0) + 1
-            success_rate = by_outcome.get("success", 0) / max(len(unanalyzed), 1)
-            ctx.step("stats_computed", {"success_rate": round(success_rate, 3), "by_outcome": by_outcome})
-
-            def _llm_analysis() -> dict:
-                summary = json.dumps({
-                    "memory_stats": mem_stats,
-                    "playbook_stats": pb_stats,
-                    "recent_evals": unanalyzed[:10],
-                    "success_rate": success_rate,
-                    "openclaw_observations": openclaw_obs,
-                    "interface_observations": interface_obs,
-                    "router_patterns": router_patterns[:10],
-                    "trace_observations": trace_obs,
-                    "cortex_recent_usage": cortex_usage[-50:],
-                }, ensure_ascii=False)
-                return self.cortex.structured(
-                    f"Analyze these system performance metrics and identify patterns:\n{summary}\n\n"
-                    "Identify: (1) concerning trends, (2) improvement opportunities, (3) attention signals.",
-                    schema={
-                        "observations": ["string"],
-                        "attention_signals": [{"domain": "string", "trend": "string", "severity": "normal|high|critical"}],
-                    },
-                    model="analysis",
-                )
-
-            def _stats_fallback() -> dict:
-                ctx.mark_degraded("Cortex unavailable; stats_only mode")
-                signals = []
-                if success_rate < 0.5:
-                    signals.append({"domain": "system", "trend": f"low success rate: {success_rate:.1%}", "severity": "high"})
-                if int(trace_obs.get("error_traces", 0)) >= 3:
-                    signals.append({"domain": "spine", "trend": f"trace errors: {trace_obs.get('error_traces', 0)}", "severity": "high"})
-                return {"observations": [f"Success rate: {success_rate:.1%}"], "attention_signals": signals}
-
-            analysis = self.cortex.try_or_degrade(_llm_analysis, _stats_fallback)
-            ctx.step("analysis_done", {"observations": len(analysis.get("observations", []))})
-
-            # Write attention signals to Compass.
-            critical_signals = 0
-            for sig in analysis.get("attention_signals", []):
-                sid = self.compass.add_signal(
-                    domain=sig.get("domain", "system"),
-                    trend=sig.get("trend", ""),
-                    severity=sig.get("severity", "normal"),
-                )
-                if sig.get("severity") == "critical":
-                    critical_signals += 1
-                    self.nerve.emit("attention_critical", {"signal_id": sid, "domain": sig["domain"]})
-
-            # Mark evaluations as analyzed.
-            self.playbook.mark_analyzed([ev["eval_id"] for ev in unanalyzed])
-
-            result = {
-                "analyzed": len(unanalyzed),
-                "observations": len(analysis.get("observations", [])),
-                "signals_added": len(analysis.get("attention_signals", [])),
-                "critical_signals": critical_signals,
-                "openclaw_sessions_seen": openclaw_obs.get("session_files", 0),
-                "portal_events_seen": interface_obs.get("portal_events", 0),
-                "telegram_events_seen": interface_obs.get("telegram_events", 0),
-                "router_patterns_seen": len(router_patterns),
-                "trace_records_seen": trace_obs.get("total_traces", 0),
-                "trace_errors_seen": trace_obs.get("error_traces", 0),
-                "degraded": ctx._degraded,
-            }
-            ctx.set_result(result)
-        return result
+        return run_witness(self)
 
     # ── 5. distill ────────────────────────────────────────────────────────────
 
     def distill(self) -> dict:
         """Semantic dedup and link discovery in Memory (hybrid)."""
-        with self.tracer.span("spine.distill", trigger="cron") as ctx:
-            units = self.memory.query(limit=200)
-            snapshot_path = self._write_tmp_snapshot("distill", {"units": units})
-            ctx.step("snapshot_written", str(snapshot_path))
-            try:
-                units_snapshot = units
-                try:
-                    snap_raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
-                    if isinstance(snap_raw, dict) and isinstance(snap_raw.get("units"), list):
-                        units_snapshot = [u for u in snap_raw.get("units", []) if isinstance(u, dict)]
-                except Exception:
-                    units_snapshot = units
-                ctx.step("units_loaded", len(units_snapshot))
-
-                if not units_snapshot:
-                    result = {"units_processed": 0, "links_created": 0, "archived": 0}
-                    ctx.set_result(result)
-                    return result
-
-                def _llm_distill() -> dict:
-                    titles = [{"unit_id": u["unit_id"], "title": u["title"], "domain": u["domain"]} for u in units_snapshot[:50]]
-                    return self.cortex.structured(
-                        f"Find semantic duplicates and relationships among these knowledge units:\n"
-                        f"{json.dumps(titles, ensure_ascii=False)}\n\n"
-                        "Return duplicates to merge and semantic links to create.",
-                        schema={
-                            "duplicates": [{"keep": "unit_id", "merge_from": ["unit_id"]}],
-                            "links": [{"from_id": "unit_id", "to_id": "unit_id", "relation": "supports|contradicts|extends"}],
-                        },
-                        model="analysis",
-                    )
-
-                def _string_fallback() -> dict:
-                    ctx.mark_degraded("Cortex unavailable; string_match_only mode")
-                    # Simple title-based dedup: exact match.
-                    seen_titles: dict[str, str] = {}
-                    duplicates = []
-                    for u in units_snapshot:
-                        t = str(u.get("title") or "").lower().strip()
-                        uid = str(u.get("unit_id") or "")
-                        if not uid:
-                            continue
-                        if t in seen_titles:
-                            duplicates.append({"keep": seen_titles[t], "merge_from": [uid]})
-                        else:
-                            seen_titles[t] = uid
-                    return {"duplicates": duplicates, "links": []}
-
-                analysis = self.cortex.try_or_degrade(_llm_distill, _string_fallback)
-
-                # Apply links.
-                links_created = 0
-                for link in analysis.get("links", []):
-                    from_id = str(link.get("from_id") or "")
-                    to_id = str(link.get("to_id") or "")
-                    relation = str(link.get("relation") or "")
-                    if not from_id or not to_id or not relation:
-                        continue
-                    self.memory.link(from_id, to_id, relation)
-                    links_created += 1
-
-                # Resolve duplicate winner by source priority: human > empirical > synthetic > collected.
-                unit_by_id = {
-                    str(u.get("unit_id") or ""): u
-                    for u in units_snapshot
-                    if str(u.get("unit_id") or "")
-                }
-                archived = 0
-                archived_ids: set[str] = set()
-                for dup in analysis.get("duplicates", []):
-                    keep_hint = str(dup.get("keep") or "")
-                    merge_from = [str(x) for x in (dup.get("merge_from") or []) if str(x)]
-                    ids = [x for x in [keep_hint, *merge_from] if x in unit_by_id]
-                    if len(ids) <= 1:
-                        continue
-                    keep_id = self._best_duplicate_keep(ids, unit_by_id)
-                    for uid in ids:
-                        if uid == keep_id or uid in archived_ids:
-                            continue
-                        self.memory.distill(uid, {"status": "archived"})
-                        archived_ids.add(uid)
-                        archived += 1
-
-                ctx.step("distill_done", {"links": links_created, "archived": archived})
-                result = {
-                    "units_processed": len(units_snapshot),
-                    "links_created": links_created,
-                    "archived": archived,
-                    "degraded": ctx._degraded,
-                }
-                ctx.set_result(result)
-                return result
-            finally:
-                self._cleanup_tmp_snapshot(snapshot_path, ctx)
+        return run_distill(self)
 
     # ── 6. learn ──────────────────────────────────────────────────────────────
 
     def learn(self) -> dict:
         """Extract DAG patterns from evaluations; register Playbook candidates (hybrid)."""
-        with self.tracer.span("spine.learn", trigger="cron") as ctx:
-            active_methods = self.playbook.consult()
-            recent_traces = self.tracer.recent(limit=100)
-            mem_stats = self.memory.stats()
-            router_patterns = self._read_router_patterns(limit=30)
-            snapshot_data = {
-                "active_methods": active_methods,
-                "recent_traces": recent_traces,
-                "memory_stats": mem_stats,
-                "router_patterns": router_patterns,
-            }
-            snapshot_path = self._write_tmp_snapshot("learn", snapshot_data)
-            ctx.step("snapshot_written", str(snapshot_path))
-            ctx.step(
-                "data_collected",
-                {"methods": len(active_methods), "traces": len(recent_traces), "router_patterns": len(router_patterns)},
-            )
-            try:
-                learn_ctx = snapshot_data
-                try:
-                    snap_raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
-                    if isinstance(snap_raw, dict):
-                        learn_ctx = snap_raw
-                except Exception:
-                    learn_ctx = snapshot_data
-
-                methods_ctx = learn_ctx.get("active_methods") if isinstance(learn_ctx.get("active_methods"), list) else active_methods
-                traces_ctx = learn_ctx.get("recent_traces") if isinstance(learn_ctx.get("recent_traces"), list) else recent_traces
-                mem_stats_ctx = learn_ctx.get("memory_stats") if isinstance(learn_ctx.get("memory_stats"), dict) else mem_stats
-                router_ctx = learn_ctx.get("router_patterns") if isinstance(learn_ctx.get("router_patterns"), list) else router_patterns
-
-                def _llm_learn() -> dict:
-                    context = {
-                        "active_methods": [{"name": m["name"], "success_rate": m.get("success_rate"), "total_runs": m.get("total_runs")} for m in methods_ctx],
-                        "recent_traces": [{"routine": t.get("routine"), "status": t.get("status"), "elapsed_s": t.get("elapsed_s")} for t in traces_ctx[:20]],
-                        "memory_stats": mem_stats_ctx,
-                        "router_patterns": router_ctx,
-                    }
-                    return self.cortex.structured(
-                        f"Analyze system execution history and identify improvements:\n{json.dumps(context, ensure_ascii=False)}\n\n"
-                        "Suggest new method candidates or improvements to existing ones.",
-                        schema={
-                            "new_candidates": [{"name": "string", "category": "string", "description": "string", "rationale": "string"}],
-                            "skill_evolution_proposals": [{"skill": "string", "proposed_change": "string", "evidence": "string"}],
-                        },
-                        model="analysis",
-                    )
-
-                def _skip_fallback() -> dict:
-                    ctx.mark_degraded("Cortex unavailable; skipping learn this cycle")
-                    return {"new_candidates": [], "skill_evolution_proposals": []}
-
-                analysis = self.cortex.try_or_degrade(_llm_learn, _skip_fallback)
-
-                candidates_added = 0
-                for cand in analysis.get("new_candidates", []):
-                    name = cand.get("name", "").strip()
-                    if not name or any(m["name"] == name for m in methods_ctx):
-                        continue
-                    self.playbook.register(
-                        name=name,
-                        category=cand.get("category", "dag_pattern"),
-                        spec={"rationale": cand.get("rationale", ""), "steps_template": []},
-                        description=cand.get("description", ""),
-                        status="candidate",
-                    )
-                    candidates_added += 1
-
-                # Write skill evolution proposals to state.
-                proposals = analysis.get("skill_evolution_proposals", [])
-                digest_result = {"sent": 0, "skipped": True, "reason": "no_proposals"}
-                if proposals:
-                    proposals_path = self.state_dir / "skill_evolution_proposals.json"
-                    existing: list = []
-                    if proposals_path.exists():
-                        try:
-                            existing = json.loads(proposals_path.read_text())
-                        except Exception as exc:
-                            logger.warning("Failed to parse %s: %s", proposals_path, exc)
-                            existing = []
-                    existing.extend(proposals)
-                    merged = existing[-100:]
-                    proposals_path.write_text(json.dumps(merged, ensure_ascii=False, indent=2))
-                    digest_result = self._notify_skill_evolution_digest(merged)
-                ctx.step("skill_evolution_digest", digest_result)
-
-                ctx.step("learn_done", {"candidates_added": candidates_added, "proposals": len(proposals)})
-                result = {
-                    "candidates_added": candidates_added,
-                    "proposals": len(proposals),
-                    "digest_sent": digest_result.get("sent", 0),
-                    "degraded": ctx._degraded,
-                }
-                ctx.set_result(result)
-                return result
-            finally:
-                self._cleanup_tmp_snapshot(snapshot_path, ctx)
+        return run_learn(self)
 
     # ── 7. judge ──────────────────────────────────────────────────────────────
 
     def judge(self) -> dict:
         """Promote/retire Playbook methods based on statistical thresholds."""
-        with self.tracer.span("spine.judge", trigger="cron") as ctx:
-            method_result = self.playbook.judge()
-            strategy_result = self._judge_strategies()
-            result = {**method_result, "strategy": strategy_result}
-            ctx.step("judge_done", result)
-            ctx.set_result(result)
-        return result
+        return run_judge(self)
 
     # ── 8. focus ──────────────────────────────────────────────────────────────
 
     def focus(self) -> dict:
         """Adjust Compass domain priorities based on attention signals (hybrid)."""
-        with self.tracer.span("spine.focus", trigger="cron") as ctx:
-            signals = self.compass.active_signals()
-            priorities = self.compass.get_priorities()
-            mem_stats = self.memory.stats()
-            pb_stats = self.playbook.stats()
-            ctx.step("data_collected", {"signals": len(signals), "priorities": len(priorities)})
-
-            if not signals:
-                result = {"adjusted": 0, "skipped": True}
-                ctx.set_result(result)
-                return result
-
-            def _llm_focus() -> dict:
-                context = {
-                    "current_priorities": priorities,
-                    "signals": signals,
-                    "memory_by_domain": mem_stats.get("by_domain", {}),
-                }
-                return self.cortex.structured(
-                    f"Based on these attention signals and current priorities, suggest priority adjustments:\n"
-                    f"{json.dumps(context, ensure_ascii=False)}\n",
-                    schema={
-                        "adjustments": [{"domain": "string", "new_weight": 0.5, "reason": "string"}],
-                    },
-                    model="analysis",
-                )
-
-            def _no_adjustment_fallback() -> dict:
-                ctx.mark_degraded("Cortex unavailable; no_adjustment mode")
-                return {"adjustments": []}
-
-            analysis = self.cortex.try_or_degrade(_llm_focus, _no_adjustment_fallback)
-
-            adjusted = 0
-            for adj in analysis.get("adjustments", []):
-                domain = adj.get("domain", "")
-                weight = float(adj.get("new_weight", 1.0))
-                if domain and 0.1 <= weight <= 3.0:
-                    self.compass.set_priority(domain, weight, adj.get("reason", ""), source="spine.focus", changed_by="spine.focus")
-                    adjusted += 1
-                    ctx.step("priority_adjusted", {"domain": domain, "weight": weight})
-
-            result = {"signals_analyzed": len(signals), "adjusted": adjusted, "degraded": ctx._degraded}
-            ctx.set_result(result)
-        return result
+        return run_focus(self)
 
     # ── 9. relay ──────────────────────────────────────────────────────────────
 
     def relay(self) -> dict:
         """Export Fabric snapshots; refresh skill_index.json in OpenClaw workspace."""
-        with self.tracer.span("spine.relay", trigger="cron") as ctx:
-            snapshots_dir = self.state_dir / "snapshots"
-            snapshots_dir.mkdir(parents=True, exist_ok=True)
-
-            # Export Fabric snapshots.
-            mem_snap = self.memory.snapshot()
-            pb_snap = self.playbook.snapshot()
-            cp_snap = self.compass.snapshot()
-            semantic_snap = self._build_semantic_snapshot()
-            strategy_snap = self._build_strategy_snapshot()
-            model_registry_snap = self._build_model_registry_snapshot()
-
-            (snapshots_dir / "memory_snapshot.json").write_text(json.dumps(mem_snap, ensure_ascii=False, indent=2))
-            (snapshots_dir / "playbook_snapshot.json").write_text(json.dumps(pb_snap, ensure_ascii=False, indent=2))
-            (snapshots_dir / "compass_snapshot.json").write_text(json.dumps(cp_snap, ensure_ascii=False, indent=2))
-            (snapshots_dir / "semantic_snapshot.json").write_text(json.dumps(semantic_snap, ensure_ascii=False, indent=2))
-            (snapshots_dir / "strategy_snapshot.json").write_text(json.dumps(strategy_snap, ensure_ascii=False, indent=2))
-            (snapshots_dir / "model_registry_snapshot.json").write_text(json.dumps(model_registry_snap, ensure_ascii=False, indent=2))
-            ctx.step("snapshots_written", 6)
-
-            # Generate model_policy_snapshot.json — single source of truth for OpenClaw.
-            policy_snapshot = self._build_model_policy_snapshot()
-            snap_path = snapshots_dir / "model_policy_snapshot.json"
-            snap_path.write_text(json.dumps(policy_snapshot, ensure_ascii=False, indent=2))
-            ctx.step("model_policy_snapshot_written", True)
-
-            # Write skill_index.json to router workspace if OpenClaw home is configured.
-            skill_index = self._build_skill_index()
-            index_written = False
-            if self.openclaw_home:
-                router_mem = self.openclaw_home / "workspace" / "router" / "memory"
-                router_mem.mkdir(parents=True, exist_ok=True)
-                (router_mem / "skill_index.json").write_text(json.dumps(skill_index, ensure_ascii=False, indent=2))
-                index_written = True
-            ctx.step("skill_index_written", index_written)
-
-            # Also write compass snapshot and model policy into OpenClaw workspace for agents.
-            if self.openclaw_home:
-                policy_json = json.dumps(policy_snapshot, ensure_ascii=False, indent=2)
-                registry_json = json.dumps(model_registry_snap, ensure_ascii=False, indent=2)
-                for agent in ["router", "collect", "analyze", "build", "review", "render", "apply"]:
-                    agent_mem = self.openclaw_home / "workspace" / agent / "memory"
-                    agent_mem.mkdir(parents=True, exist_ok=True)
-                    (agent_mem / "compass_snapshot.json").write_text(json.dumps(cp_snap, ensure_ascii=False, indent=2))
-                    (agent_mem / "model_policy_snapshot.json").write_text(policy_json)
-                    (agent_mem / "model_registry_snapshot.json").write_text(registry_json)
-                    if agent == "router":
-                        (agent_mem / "semantic_snapshot.json").write_text(json.dumps(semantic_snap, ensure_ascii=False, indent=2))
-                        (agent_mem / "strategy_snapshot.json").write_text(json.dumps(strategy_snap, ensure_ascii=False, indent=2))
-
-                router_mem = self.openclaw_home / "workspace" / "router" / "memory"
-                router_mem.mkdir(parents=True, exist_ok=True)
-                hints = self._build_runtime_hints(mem_snap, pb_snap, cp_snap)
-                (router_mem / "runtime_hints.txt").write_text(hints)
-                ctx.step("runtime_hints_written", True)
-
-                # Write weave_patterns/index.json and structured runtime_hints.json.
-                weave_dir = router_mem / "weave_patterns"
-                weave_dir.mkdir(parents=True, exist_ok=True)
-                weave_index = self._build_weave_index(weave_dir)
-                (weave_dir / "index.json").write_text(
-                    json.dumps(weave_index, ensure_ascii=False, indent=2)
-                )
-                hints_json = self._build_runtime_hints_json(mem_snap, pb_snap, cp_snap, weave_index)
-                (router_mem / "runtime_hints.json").write_text(
-                    json.dumps(hints_json, ensure_ascii=False, indent=2)
-                )
-                ctx.step("weave_index_written", weave_index.get("total_patterns", 0))
-
-            result = {"snapshots": 6, "skill_index": index_written, "model_policy_snapshot": True, "model_registry_snapshot": True}
-            ctx.set_result(result)
-        return result
+        return run_relay(self)
 
     # ── 10. tend ──────────────────────────────────────────────────────────────
 
     def tend(self) -> dict:
         """Housekeeping: expire old data, clean orphaned sessions, replay queued tasks."""
-        with self.tracer.span("spine.tend", trigger="cron") as ctx:
-            # Expire memory units past their TTL.
-            mem_result = self.memory.expire()
-            ctx.step("memory_expire", mem_result)
-            source_policy = self.memory.apply_source_ttl_policy(actor="spine.tend")
-            ctx.step("memory_source_policy_expire", source_policy)
-
-            # Capacity pressure signal.
-            mem_stats = self.memory.stats()
-            total_units = int(mem_stats.get("total_active") or 0)
-            total_units_cap = int(self.compass.get_pref("total_units_cap", "10000") or 10000)
-            memory_pressure = total_units > total_units_cap
-            if memory_pressure:
-                self.nerve.emit(
-                    "memory_pressure",
-                    {"total_units": total_units, "total_units_cap": total_units_cap, "source": "spine.tend"},
-                )
-            ctx.step("memory_pressure", {"active": total_units, "cap": total_units_cap, "triggered": memory_pressure})
-
-            # Expire stale attention signals.
-            signals_removed = self.compass.expire_signals()
-            ctx.step("signals_expire", signals_removed)
-
-            # Reset resource budgets if past reset_utc.
-            self._maybe_reset_budgets()
-            ctx.step("budgets_checked")
-
-            # Check for queued tasks and replay if gate is GREEN.
-            gate = self._read_gate()
-            replayed = 0
-            if gate.get("status") == "GREEN":
-                replayed = self._replay_queued_tasks()
-            ctx.step("replay", replayed)
-
-            # Clean orphaned state files older than 7 days.
-            cleaned = self._clean_old_traces(max_age_days=7)
-            ctx.step("traces_cleaned", cleaned)
-
-            # Check Weave pattern pressure; emit nerve event if over threshold.
-            weave_count = self._check_weave_pressure()
-            if weave_count is not None:
-                ctx.step("weave_pressure_checked", weave_count)
-
-            result = {
-                "memory_archived": mem_result.get("archived", 0) + source_policy.get("archived", 0),
-                "memory_archived_ttl": mem_result.get("archived", 0),
-                "memory_archived_source_policy": source_policy.get("archived", 0),
-                "memory_pressure_triggered": memory_pressure,
-                "memory_total_active": total_units,
-                "memory_total_cap": total_units_cap,
-                "signals_removed": signals_removed,
-                "tasks_replayed": replayed,
-                "traces_cleaned": cleaned,
-                "weave_pattern_count": weave_count,
-            }
-            ctx.set_result(result)
-        return result
+        return run_tend(self)
 
     # ── 11. librarian ─────────────────────────────────────────────────────────
 
     def librarian(self) -> dict:
         """Cache governance: recompute method tiers, prune stale Weave patterns, merge cold duplicates."""
-        with self.tracer.span("spine.librarian", trigger="cron") as ctx:
-            # Recompute value_score and reassign tiers by re-running judge().
-            judge_result = self.playbook.judge()
-            tiered = judge_result.get("tiered", {})
-            ctx.step("tiers_refreshed", tiered)
-
-            # Prune cold Weave patterns (archive >90 days, delete >180 days).
-            prune_result = self._prune_weave_patterns()
-            ctx.step("weave_pruned", prune_result)
-
-            # Merge cold-tier duplicate methods.
-            merge_result = self._librarian_merge_methods()
-            ctx.step("methods_merged", merge_result)
-
-            # Cold memory export and external archive upload (best-effort).
-            export_result = self._cold_export_memory()
-            ctx.step("memory_cold_export", export_result)
-            upload_result = self._upload_to_drive(export_result.get("files", []))
-            ctx.step("memory_archive_upload", upload_result)
-            cleanup_result = self._cleanup_local_jsonl()
-            ctx.step("memory_archive_cleanup", cleanup_result)
-
-            result = {
-                "hot": tiered.get("hot", 0),
-                "warm": tiered.get("warm", 0),
-                "cold": tiered.get("cold", 0),
-                "weave_patterns_archived": prune_result.get("archived", 0),
-                "weave_patterns_deleted": prune_result.get("deleted", 0),
-                "methods_merged": merge_result.get("merged", 0),
-                "memory_exported": export_result.get("exported", 0),
-                "memory_deleted": export_result.get("deleted", 0),
-                "archive_files": len(export_result.get("files", [])),
-                "archive_uploaded": upload_result.get("uploaded", 0),
-                "archive_upload_failed": upload_result.get("failed", 0),
-                "archive_local_cleaned": cleanup_result.get("deleted", 0),
-            }
-            ctx.set_result(result)
-        return result
+        return run_librarian(self)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -1130,18 +543,10 @@ class SpineRoutines:
         return list(runs_dir.glob("**/signals_prepare.json"))
 
     def _read_gate(self) -> dict:
-        gate_path = self.state_dir / "gate.json"
-        if not gate_path.exists():
-            return {"status": "GREEN"}
-        try:
-            return json.loads(gate_path.read_text())
-        except Exception as exc:
-            logger.warning("Failed to parse gate file %s: %s", gate_path, exc)
-            return {"status": "GREEN"}
+        return self._store.load_gate()
 
     def _write_gate(self, gate: dict) -> None:
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        (self.state_dir / "gate.json").write_text(json.dumps(gate, ensure_ascii=False, indent=2))
+        self._store.save_gate(gate)
 
     def _build_skill_index(self) -> dict:
         """Build a skill name+description index from OpenClaw workspace skills."""
@@ -1318,13 +723,8 @@ class SpineRoutines:
         global_score: float,
         trace_id: str,
     ) -> None:
-        tasks_path = self.state_dir / "tasks.json"
-        if not tasks_path.exists():
-            return
-        try:
-            tasks = json.loads(tasks_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            logger.warning("Failed to read task file %s: %s", tasks_path, exc)
+        tasks = self._store.load_tasks()
+        if not tasks:
             return
         updated = False
         for row in tasks if isinstance(tasks, list) else []:
@@ -1342,9 +742,7 @@ class SpineRoutines:
         if not updated:
             return
         try:
-            tmp = tasks_path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(tasks, ensure_ascii=False, indent=2))
-            tmp.replace(tasks_path)
+            self._store.save_tasks(tasks)
         except Exception as exc:
             logger.warning("Failed to write strategy updates to tasks.json: %s", exc)
 
@@ -1536,13 +934,8 @@ class SpineRoutines:
 
     def _replay_queued_tasks(self) -> int:
         """Find queued tasks eligible for replay (backoff respected). Returns count."""
-        tasks_path = self.state_dir / "tasks.json"
-        if not tasks_path.exists():
-            return 0
-        try:
-            tasks = json.loads(tasks_path.read_text())
-        except Exception as exc:
-            logger.warning("Failed to parse queued tasks file %s: %s", tasks_path, exc)
+        tasks = self._store.load_tasks()
+        if not tasks:
             return 0
         now = _utc()
         window_hours = int(self.compass.get_pref("replay_window_hours", "24") or 24)
@@ -1573,9 +966,7 @@ class SpineRoutines:
             replayed += 1
         if changed:
             try:
-                tmp = tasks_path.with_suffix(".tmp")
-                tmp.write_text(json.dumps(tasks, ensure_ascii=False, indent=2))
-                tmp.replace(tasks_path)
+                self._store.save_tasks(tasks)
             except Exception as exc:
                 logger.warning("Failed to persist expired replay tasks: %s", exc)
         return replayed

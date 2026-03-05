@@ -3,24 +3,43 @@ from __future__ import annotations
 
 import json
 import logging
-import random
 import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from runtime.semantic import SemanticFingerprint, SemanticGenerator, SemanticMappingError
+from services.dispatch_model import (
+    apply_model_routing as _apply_model_routing_impl,
+    load_model_policy as _load_model_policy_impl,
+    load_model_registry as _load_model_registry_impl,
+)
+from services.dispatch_replay import (
+    replay as _replay_impl,
+    update_replay_state as _update_replay_state_impl,
+)
+from services.dispatch_semantic import (
+    annotate_capability_graph as _annotate_capability_graph_impl,
+    resolve_semantic as _resolve_semantic_impl,
+)
+from services.dispatch_steps import (
+    apply_complexity_probe,
+    pick_alias_for_provider,
+    preflight_provider_budget,
+)
+from services.dispatch_strategy import (
+    apply_strategy as _apply_strategy_impl,
+    maybe_submit_shadow as _maybe_submit_shadow_impl,
+    pick_shadow_candidate as _pick_shadow_candidate_impl,
+    shadow_ratio as _shadow_ratio_impl,
+)
+from services.state_store import StateStore
 
 if TYPE_CHECKING:
     from fabric.playbook import PlaybookFabric
     from fabric.compass import CompassFabric
     from runtime.cortex import Cortex
     from spine.nerve import Nerve
-
-# Replay backoff schedule in seconds (capped at 4h).
-_REPLAY_BACKOFF = [60, 300, 900, 3600, 14400]
-_REPLAY_MAX_ATTEMPTS = 5
-
 
 def _utc() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -44,6 +63,8 @@ class Dispatch:
         self._compass = compass
         self._nerve = nerve
         self._state = state_dir
+        self._store = StateStore(state_dir)
+        self._logger = logger
         self._temporal = temporal_client
         self._task_queue = task_queue
         self._cortex = cortex
@@ -151,152 +172,20 @@ class Dispatch:
 
     def _apply_strategy(self, plan: dict) -> dict:
         """Inject champion strategy parameters for the resolved semantic cluster."""
-        cluster_id = str(plan.get("cluster_id") or "")
-        if not cluster_id:
-            raise ValueError("missing_cluster_id")
-
-        champion = self._playbook.get_champion(cluster_id)
-        if not champion:
-            # Cold-start resilience: ensure cluster has a seeded champion strategy.
-            try:
-                self._playbook.seed_clusters([{"cluster_id": cluster_id, "display_name": cluster_id}])
-                champion = self._playbook.get_champion(cluster_id)
-            except Exception as exc:
-                logger.warning("Failed to auto-seed champion for cluster=%s: %s", cluster_id, exc)
-        if not champion:
-            raise ValueError(f"no_champion_strategy_for_cluster:{cluster_id}")
-
-        plan["strategy_id"] = champion.get("strategy_id", "")
-        plan["strategy_stage"] = champion.get("stage", "champion")
-        if isinstance(champion.get("score_components"), dict):
-            plan.setdefault("global_score_components", champion.get("score_components") or {})
-
-        spec = champion.get("spec") if isinstance(champion.get("spec"), dict) else {}
-        if spec:
-            if isinstance(spec.get("concurrency"), dict):
-                existing = plan.get("concurrency") if isinstance(plan.get("concurrency"), dict) else {}
-                plan["concurrency"] = {**spec.get("concurrency", {}), **existing}
-            if isinstance(spec.get("timeout_hints"), dict):
-                existing_hints = plan.get("timeout_hints") if isinstance(plan.get("timeout_hints"), dict) else {}
-                plan["timeout_hints"] = {**spec.get("timeout_hints", {}), **existing_hints}
-            if isinstance(spec.get("agent_concurrency"), dict):
-                existing_agent = plan.get("agent_concurrency") if isinstance(plan.get("agent_concurrency"), dict) else {}
-                plan["agent_concurrency"] = {**spec.get("agent_concurrency", {}), **existing_agent}
-            if "rework_budget" in spec:
-                plan.setdefault("rework_budget", int(spec.get("rework_budget") or 2))
-            if "rework_strategy" in spec:
-                plan.setdefault("rework_strategy", str(spec.get("rework_strategy") or "error_code_based"))
-            if "model_alias" in spec:
-                plan.setdefault("model_alias", str(spec.get("model_alias") or ""))
-
-        self._apply_model_routing(plan, spec if isinstance(spec, dict) else {})
-
-        return plan
+        return _apply_strategy_impl(self, plan)
 
     def _load_model_policy(self) -> dict:
-        if not self._model_policy_path.exists():
-            return {}
-        try:
-            data = json.loads(self._model_policy_path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except Exception as exc:
-            logger.warning("Failed to load model policy: %s", exc)
-            return {}
+        return _load_model_policy_impl(self)
 
     def _load_model_registry(self) -> dict[str, dict]:
-        if not self._model_registry_path.exists():
-            return {}
-        try:
-            data = json.loads(self._model_registry_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            logger.warning("Failed to load model registry: %s", exc)
-            return {}
-        models = data.get("models") if isinstance(data.get("models"), list) else []
-        out: dict[str, dict] = {}
-        for m in models:
-            if not isinstance(m, dict):
-                continue
-            alias = str(m.get("alias") or "").strip()
-            if not alias:
-                continue
-            if alias in out:
-                logger.warning("Duplicate alias in model registry ignored: %s", alias)
-                continue
-            out[alias] = m
-        return out
+        return _load_model_registry_impl(self)
 
     def _resolve_capability_key(self, step: dict) -> str:
-        capability_id = str(step.get("capability_id") or "")
-        if not capability_id:
-            return ""
-        if capability_id in {"intake", "record", "tend", "pulse", "judge", "relay", "witness", "learn", "distill", "focus"}:
-            return capability_id
-        # capability_id usually looks like clst_xxx:step_id
-        if ":" in capability_id:
-            return capability_id.split(":")[-1].strip().lower()
-        return capability_id.strip().lower()
+        from services.dispatch_model import resolve_capability_key
+        return resolve_capability_key(step)
 
     def _apply_model_routing(self, plan: dict, strategy_spec: dict) -> None:
-        policy = self._load_model_policy()
-        registry = self._load_model_registry()
-        if not policy or not registry:
-            return
-
-        fp = plan.get("semantic_fingerprint") if isinstance(plan.get("semantic_fingerprint"), dict) else {}
-        risk = str(fp.get("risk_level") or "").strip().lower()
-        cluster_id = str(plan.get("cluster_id") or "").strip()
-
-        by_risk = policy.get("by_risk_level") if isinstance(policy.get("by_risk_level"), dict) else {}
-        by_cluster = policy.get("by_semantic_cluster") if isinstance(policy.get("by_semantic_cluster"), dict) else {}
-        by_cap = policy.get("by_capability") if isinstance(policy.get("by_capability"), dict) else {}
-        default_alias = str(policy.get("default_alias") or "").strip()
-
-        strategy_alias = str(strategy_spec.get("model_alias") or plan.get("model_alias") or "").strip()
-        selected_alias = strategy_alias
-        selected_source = "strategy_spec" if strategy_alias else ""
-        if not selected_alias and risk and str(by_risk.get(risk) or "").strip():
-            selected_alias = str(by_risk.get(risk) or "").strip()
-            selected_source = f"by_risk_level:{risk}"
-        if not selected_alias and cluster_id and str(by_cluster.get(cluster_id) or "").strip():
-            selected_alias = str(by_cluster.get(cluster_id) or "").strip()
-            selected_source = f"by_semantic_cluster:{cluster_id}"
-        if not selected_alias and default_alias:
-            selected_alias = default_alias
-            selected_source = "default_alias"
-
-        if selected_alias:
-            entry = registry.get(selected_alias)
-            if not entry:
-                raise ValueError(f"invalid_model_alias:{selected_alias}")
-            plan["model_alias"] = selected_alias
-            plan["model_provider"] = str(entry.get("provider") or "")
-            plan["model_id"] = str(entry.get("model_id") or "")
-
-        steps = plan.get("steps") or plan.get("graph", {}).get("steps") or []
-        step_aliases: dict[str, str] = {}
-        if isinstance(steps, list):
-            for i, step in enumerate(steps):
-                if not isinstance(step, dict):
-                    continue
-                sid = str(step.get("id") or step.get("step_id") or f"step_{i}")
-                cap_key = self._resolve_capability_key(step)
-                alias = str(by_cap.get(cap_key) or "").strip() if cap_key else ""
-                if not alias:
-                    continue
-                entry = registry.get(alias)
-                if not entry:
-                    raise ValueError(f"invalid_model_alias:{alias}")
-                step["model_alias"] = alias
-                step["model_provider"] = str(entry.get("provider") or "")
-                step["model_id"] = str(entry.get("model_id") or "")
-                step_aliases[sid] = alias
-
-        plan["model_routing"] = {
-            "policy_version": str(policy.get("_version") or ""),
-            "selected_alias": selected_alias,
-            "selected_source": selected_source,
-            "step_aliases": step_aliases,
-        }
+        _apply_model_routing_impl(self, plan, strategy_spec)
 
     def _agent_defaults_from_compass(self) -> dict[str, int]:
         raw = self._compass.get_pref("agent_concurrency_defaults_json", "")
@@ -363,18 +252,7 @@ class Dispatch:
         Path 3: caller provides task_type string → compat cluster mapping.
         Path 4: none of the above → SemanticMappingError (fail-closed, 400).
         """
-        if fp_raw := request.get("semantic_fingerprint"):
-            if isinstance(fp_raw, dict):
-                return self._semantic.from_fingerprint_dict(fp_raw)
-
-        if ic_raw := request.get("intent_contract"):
-            if isinstance(ic_raw, dict):
-                return self._semantic.from_intent_contract(ic_raw, cortex=self._cortex)
-
-        if task_type := str(request.get("task_type") or "").strip():
-            return self._semantic.from_task_type(task_type, title=str(request.get("title") or ""))
-
-        raise SemanticMappingError("semantic_input_missing: provide semantic_fingerprint, intent_contract, or task_type")
+        return _resolve_semantic_impl(self, request)
 
     async def submit(self, plan: dict) -> dict:
         """Semantic resolve → validate → enrich → Temporal submit."""
@@ -639,237 +517,19 @@ class Dispatch:
 
     async def _maybe_submit_shadow(self, plan: dict, parent_task_id: str) -> None:
         """Submit a shadow run on a non-champion strategy without impacting primary delivery."""
-        if plan.get("is_shadow"):
-            return
-        if not self._temporal:
-            return
-        ratio = self._shadow_ratio()
-        if ratio <= 0:
-            return
-        if random.random() > ratio:
-            return
-
-        cluster_id = str(plan.get("cluster_id") or "")
-        champion_strategy_id = str(plan.get("strategy_id") or "")
-        candidate = self._pick_shadow_candidate(cluster_id, champion_strategy_id)
-        if not candidate:
-            return
-
-        shadow_task_id = f"{parent_task_id}_shadow_{uuid.uuid4().hex[:6]}"
-        shadow_plan = dict(plan)
-        shadow_plan["task_id"] = shadow_task_id
-        shadow_plan["is_shadow"] = True
-        shadow_plan["shadow_of"] = parent_task_id
-        shadow_plan["strategy_id"] = candidate.get("strategy_id", "")
-        shadow_plan["strategy_stage"] = "shadow"
-        shadow_plan["shadow_champion_strategy_id"] = champion_strategy_id
-        shadow_plan["delivery_mode"] = "shadow"
-
-        spec = candidate.get("spec") if isinstance(candidate.get("spec"), dict) else {}
-        if spec:
-            if isinstance(spec.get("concurrency"), dict):
-                current = shadow_plan.get("concurrency") if isinstance(shadow_plan.get("concurrency"), dict) else {}
-                shadow_plan["concurrency"] = {**spec.get("concurrency", {}), **current}
-            if isinstance(spec.get("timeout_hints"), dict):
-                current_hints = shadow_plan.get("timeout_hints") if isinstance(shadow_plan.get("timeout_hints"), dict) else {}
-                shadow_plan["timeout_hints"] = {**spec.get("timeout_hints", {}), **current_hints}
-
-        run_root = self._make_run_root(shadow_task_id, is_shadow=True)
-        self._record_task(shadow_plan, "running_shadow", run_root)
-        try:
-            workflow_id = f"daemon-shadow-{shadow_task_id}"
-            await self._temporal.submit(workflow_id, shadow_plan, run_root)
-        except Exception as exc:
-            logger.warning("Shadow submit failed for %s: %s", shadow_task_id, exc)
-            self._record_task({**shadow_plan, "last_error": str(exc)[:300]}, "failed_submission", run_root)
-            return
-
-        self._nerve.emit(
-            "shadow_submitted",
-            {
-                "task_id": shadow_task_id,
-                "shadow_of": parent_task_id,
-                "strategy_id": shadow_plan.get("strategy_id", ""),
-                "cluster_id": cluster_id,
-            },
-        )
-        try:
-            self._playbook.record_release_execution(
-                strategy_id=str(shadow_plan.get("strategy_id") or ""),
-                cluster_id=cluster_id,
-                stage=str(shadow_plan.get("strategy_stage") or "shadow"),
-                mode="shadow",
-                task_id=shadow_task_id,
-                actor="dispatch",
-                reason="shadow_submission",
-                shadow_of=str(parent_task_id or ""),
-            )
-        except Exception as exc:
-            logger.warning("Failed to record shadow release execution for %s: %s", shadow_task_id, exc)
+        await _maybe_submit_shadow_impl(self, plan, parent_task_id)
 
     def _shadow_ratio(self) -> float:
-        raw = self._compass.get_pref("strategy_shadow_ratio", "0.10")
-        try:
-            ratio = float(raw)
-        except Exception:
-            return 0.10
-        return max(0.0, min(1.0, ratio))
+        return _shadow_ratio_impl(self)
 
     def _pick_shadow_candidate(self, cluster_id: str, champion_strategy_id: str) -> dict | None:
-        if not cluster_id:
-            return None
-        all_rows = self._playbook.list_strategies(cluster_id=cluster_id)
-        if not all_rows:
-            return None
-        preferred = [
-            r
-            for r in all_rows
-            if str(r.get("strategy_id") or "") != champion_strategy_id
-            and str(r.get("stage") or "") in {"shadow", "challenger"}
-        ]
-        fallback = [
-            r
-            for r in all_rows
-            if str(r.get("strategy_id") or "") != champion_strategy_id
-            and str(r.get("stage") or "") in {"candidate"}
-        ]
-        candidates = preferred or fallback
-        if not candidates:
-            seeded = self._playbook.spawn_candidate_from_champion(cluster_id=cluster_id, stage="candidate")
-            if not seeded:
-                return None
-            return seeded
-        best = sorted(
-            candidates,
-            key=lambda x: (float(x.get("global_score") or 0.0), int(x.get("sample_n") or 0)),
-            reverse=True,
-        )[0]
-        if str(best.get("stage") or "") == "candidate":
-            try:
-                self._playbook.promote_strategy(
-                    strategy_id=str(best.get("strategy_id") or ""),
-                    decision="enter_shadow_auto",
-                    prev_stage="candidate",
-                    next_stage="shadow",
-                    reason="selected_for_shadow_execution",
-                    decided_by="dispatch",
-                )
-                refreshed = self._playbook.get_strategy(str(best.get("strategy_id") or ""))
-                if refreshed:
-                    return refreshed
-            except Exception as exc:
-                logger.warning("Failed to transition candidate to shadow: %s", exc)
-        return best
+        return _pick_shadow_candidate_impl(self, cluster_id, champion_strategy_id)
 
     def _apply_complexity_probe(self, plan: dict) -> dict:
-        out = dict(plan)
-        steps = out.get("steps") or out.get("graph", {}).get("steps") or []
-        if not isinstance(steps, list):
-            steps = []
-        n_steps = len([s for s in steps if isinstance(s, dict)])
-        probe = out.get("complexity_probe") if isinstance(out.get("complexity_probe"), dict) else {}
-        estimated_phases = int(probe.get("estimated_phases") or out.get("estimated_phases") or max(1, n_steps or 1))
-        estimated_hours = float(probe.get("estimated_hours") or out.get("estimated_hours") or max(0.5, n_steps * 0.75))
-        requires_campaign = bool(
-            probe.get("requires_campaign")
-            or out.get("requires_campaign")
-            or estimated_phases > 4
-            or estimated_hours > 4.0
-        )
-        if requires_campaign:
-            task_scale = "campaign"
-        elif estimated_phases <= 2 and estimated_hours <= 1.0:
-            task_scale = "pulse"
-        else:
-            task_scale = "thread"
-        out["complexity_probe"] = {
-            "estimated_phases": estimated_phases,
-            "estimated_hours": round(estimated_hours, 2),
-            "requires_campaign": requires_campaign,
-        }
-        out["task_scale"] = task_scale
-        return out
+        return apply_complexity_probe(plan)
 
     def _preflight_provider_budget(self, plan: dict) -> dict:
-        out = dict(plan)
-        registry = self._load_model_registry()
-        current_alias = str(out.get("model_alias") or "").strip()
-        current_provider = str(out.get("model_provider") or "").strip().lower()
-        if current_alias and not current_provider and current_alias in registry:
-            current_provider = str(registry[current_alias].get("provider") or "").strip().lower()
-            out["model_provider"] = current_provider
-            out["model_id"] = str(registry[current_alias].get("model_id") or "")
-
-        chain = []
-        if current_provider:
-            chain.append(current_provider)
-        for p in ("minimax", "qwen", "zhipu", "deepseek"):
-            if p not in chain:
-                chain.append(p)
-
-        scale = str(out.get("task_scale") or "thread")
-        default_budget_probe = {"pulse": 20_000, "thread": 80_000, "campaign": 160_000}
-        est_tokens = int(out.get("estimated_tokens") or default_budget_probe.get(scale, 80_000))
-        checks: list[dict[str, Any]] = []
-        selected_provider = ""
-        selected_alias = ""
-        selected_model_id = ""
-        for provider in chain:
-            budget = self._compass.get_budget(f"{provider}_tokens")
-            if not budget:
-                checks.append(
-                    {
-                        "provider": provider,
-                        "resource_type": f"{provider}_tokens",
-                        "daily_limit": None,
-                        "current_usage": None,
-                        "remaining": None,
-                        "admit": False,
-                        "reason": "budget_not_configured",
-                    }
-                )
-                continue
-            daily_limit = float(budget.get("daily_limit") or 0.0)
-            current_usage = float(budget.get("current_usage") or 0.0)
-            remaining = max(0.0, daily_limit - current_usage)
-            admit = remaining >= float(est_tokens)
-            checks.append(
-                {
-                    "provider": provider,
-                    "resource_type": f"{provider}_tokens",
-                    "daily_limit": daily_limit,
-                    "current_usage": current_usage,
-                    "remaining": remaining,
-                    "admit": admit,
-                    "reason": "ok" if admit else "insufficient_budget",
-                }
-            )
-            if admit and not selected_provider:
-                selected_provider = provider
-
-        if selected_provider:
-            alias, model_id = self._pick_alias_for_provider(selected_provider, registry, prefer_alias=current_alias)
-            selected_alias = alias
-            selected_model_id = model_id
-            if selected_alias:
-                out["model_alias"] = selected_alias
-            out["model_provider"] = selected_provider
-            if selected_model_id:
-                out["model_id"] = selected_model_id
-        else:
-            out["queued"] = True
-            out["queue_reason"] = "provider_budget_insufficient"
-
-        out["provider_routing"] = {
-            "estimated_tokens": est_tokens,
-            "fallback_chain": chain,
-            "selected_provider": selected_provider,
-            "selected_alias": selected_alias,
-            "selected_model_id": selected_model_id,
-            "checks": checks,
-            "checked_utc": _utc(),
-        }
-        return out
+        return preflight_provider_budget(plan, compass=self._compass, registry=self._load_model_registry())
 
     def _pick_alias_for_provider(
         self,
@@ -878,106 +538,34 @@ class Dispatch:
         *,
         prefer_alias: str = "",
     ) -> tuple[str, str]:
-        provider = str(provider or "").strip().lower()
-        if prefer_alias:
-            row = registry.get(prefer_alias)
-            if row and str(row.get("provider") or "").strip().lower() == provider:
-                return prefer_alias, str(row.get("model_id") or "")
-
-        for alias in ("fast", "analysis", "review", "qwen", "glm", "fallback"):
-            row = registry.get(alias)
-            if not row:
-                continue
-            if str(row.get("provider") or "").strip().lower() == provider:
-                return alias, str(row.get("model_id") or "")
-
-        for alias, row in registry.items():
-            if str(row.get("provider") or "").strip().lower() == provider:
-                return alias, str(row.get("model_id") or "")
-        return "", ""
+        return pick_alias_for_provider(provider, registry, prefer_alias=prefer_alias)
 
     def _annotate_capability_graph(self, plan: dict, cluster_id: str) -> None:
         """Ensure each DAG node carries capability_id + quality_contract_id."""
-        steps = plan.get("steps") or plan.get("graph", {}).get("steps") or []
-        if not isinstance(steps, list):
-            return
-        contract_id = str(plan.get("task_type") or "default")
-        for i, step in enumerate(steps):
-            if not isinstance(step, dict):
-                continue
-            sid = str(step.get("id") or step.get("step_id") or f"step_{i}")
-            step.setdefault("capability_id", f"{cluster_id}:{sid}")
-            step.setdefault("quality_contract_id", contract_id)
+        _annotate_capability_graph_impl(plan, cluster_id)
 
     async def replay(self, task_id: str, plan: dict) -> dict:
         """Replay a queued task with backoff enforcement (decision §7)."""
-        tasks_path = self._state / "tasks.json"
-        try:
-            tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
-        except Exception as exc:
-            logger.warning("Failed to read tasks.json for replay: %s", exc)
-            tasks = []
-
-        task_record: dict | None = next((t for t in tasks if t.get("task_id") == task_id), None)
-
-        if task_record:
-            attempts = int(task_record.get("replay_attempts", 0))
-            next_replay_utc = str(task_record.get("next_replay_utc") or "")
-            if attempts >= _REPLAY_MAX_ATTEMPTS:
-                self._update_replay_state(task_id, tasks, tasks_path, status="replay_exhausted",
-                                          reason=f"exceeded max_attempts={_REPLAY_MAX_ATTEMPTS}")
-                return {"ok": False, "task_id": task_id, "error_code": "replay_exhausted",
-                        "error": f"Max replay attempts ({_REPLAY_MAX_ATTEMPTS}) exceeded"}
-            if next_replay_utc and next_replay_utc > _utc():
-                return {"ok": False, "task_id": task_id, "error_code": "replay_too_soon",
-                        "error": f"Next replay not due until {next_replay_utc}"}
-
-        replay_plan = dict(plan)
-        replay_plan["task_id"] = task_id
-        replay_plan.pop("queued", None)
-        replay_plan.pop("queue_reason", None)
-        replay_plan.pop("status", None)
-        replay_plan["replay_token"] = f"rpl_{uuid.uuid4().hex[:12]}"
-
-        result = await self.submit(replay_plan)
-
-        if task_record:
-            attempts = int(task_record.get("replay_attempts", 0)) + 1
-            backoff_s = _REPLAY_BACKOFF[min(attempts - 1, len(_REPLAY_BACKOFF) - 1)]
-            next_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + backoff_s))
-            self._update_replay_state(task_id, tasks, tasks_path,
-                                      status="running" if result.get("ok") else "queued",
-                                      attempts=attempts, next_replay_utc=next_utc)
-
-        return result
+        return await _replay_impl(self, task_id, plan)
 
     def _update_replay_state(
         self,
         task_id: str,
         tasks: list,
-        tasks_path: Path,
         status: str,
         attempts: int | None = None,
         next_replay_utc: str | None = None,
         reason: str | None = None,
     ) -> None:
-        for t in tasks:
-            if t.get("task_id") == task_id:
-                t["status"] = status
-                t["updated_utc"] = _utc()
-                if attempts is not None:
-                    t["replay_attempts"] = attempts
-                if next_replay_utc is not None:
-                    t["next_replay_utc"] = next_replay_utc
-                if reason:
-                    t["replay_exhausted_reason"] = reason
-                break
-        try:
-            tmp = tasks_path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(tasks, ensure_ascii=False, indent=2))
-            tmp.replace(tasks_path)
-        except Exception as exc:
-            logger.warning("Failed to update replay state for %s: %s", task_id, exc)
+        _update_replay_state_impl(
+            self,
+            task_id,
+            tasks,
+            status,
+            attempts=attempts,
+            next_replay_utc=next_replay_utc,
+            reason=reason,
+        )
 
     def _notify_task_started(self, plan: dict) -> None:
         """Push task_started notification to the Telegram adapter (best-effort)."""
@@ -1014,12 +602,7 @@ class Dispatch:
         return str(runs_dir)
 
     def _record_task(self, plan: dict, status: str, run_root: str) -> None:
-        tasks_path = self._state / "tasks.json"
-        try:
-            tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
-        except Exception as exc:
-            logger.warning("Failed to parse tasks.json at %s: %s", tasks_path, exc)
-            tasks = []
+        tasks = self._store.load_tasks()
         task_id = plan.get("task_id", "")
         for t in tasks:
             if t.get("task_id") == task_id:
@@ -1055,9 +638,7 @@ class Dispatch:
                 "plan": plan,
                 "last_error": plan.get("last_error", ""),
             })
-        tmp = tasks_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(tasks, ensure_ascii=False, indent=2))
-        tmp.replace(tasks_path)
+        self._store.save_tasks(tasks)
 
     def _queue_task(self, plan: dict) -> None:
         plan_copy = dict(plan)
@@ -1066,14 +647,7 @@ class Dispatch:
         self._record_task(plan_copy, "queued", "")
 
     def _read_gate(self) -> dict:
-        gate_path = self._state / "gate.json"
-        if not gate_path.exists():
-            return {"status": "GREEN"}
-        try:
-            return json.loads(gate_path.read_text())
-        except Exception as exc:
-            logger.warning("Failed to parse gate file %s: %s", gate_path, exc)
-            return {"status": "GREEN"}
+        return self._store.load_gate()
 
 
 def _new_task_id() -> str:

@@ -29,6 +29,97 @@ def _openclaw_home() -> Path:
     return Path(v) if v else _daemon_home() / "openclaw"
 
 
+def normalize_openclaw_config(oc_home: Path) -> dict:
+    """Normalize OpenClaw config to daemon canonical agent topology."""
+    report: dict = {"ok": True, "updated": False, "changes": [], "warnings": []}
+    cfg_path = oc_home / "openclaw.json"
+    if not cfg_path.exists():
+        report["ok"] = False
+        report["warnings"].append(f"openclaw.json not found at {cfg_path}")
+        return report
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        report["ok"] = False
+        report["warnings"].append(f"openclaw.json parse error: {exc}")
+        return report
+
+    agents = cfg.get("agents")
+    if not isinstance(agents, dict):
+        agents = {}
+        cfg["agents"] = agents
+        report["updated"] = True
+        report["changes"].append("agents.created")
+
+    defaults = agents.get("defaults")
+    if not isinstance(defaults, dict):
+        defaults = {}
+        agents["defaults"] = defaults
+        report["updated"] = True
+        report["changes"].append("agents.defaults.created")
+
+    agent_list = agents.get("list")
+    if not isinstance(agent_list, list):
+        report["warnings"].append("agents.list missing or invalid; skip normalization")
+        return report
+
+    filtered_list: list[dict] = []
+    removed_main = 0
+    for row in agent_list:
+        if not isinstance(row, dict):
+            filtered_list.append(row)
+            continue
+        if str(row.get("id") or "").strip() == "main":
+            removed_main += 1
+            continue
+        filtered_list.append(row)
+    if removed_main:
+        agents["list"] = filtered_list
+        agent_list = filtered_list
+        report["updated"] = True
+        report["changes"].append(f"agents.list.removed_main={removed_main}")
+
+    router: dict | None = None
+    for row in agent_list:
+        if isinstance(row, dict) and str(row.get("id") or "").strip() == "router":
+            router = row
+            break
+    if router is None:
+        report["warnings"].append("router agent not found; cannot set default router")
+    else:
+        for row in agent_list:
+            if not isinstance(row, dict):
+                continue
+            if row is not router and row.get("default") is True:
+                row.pop("default", None)
+                report["updated"] = True
+                report["changes"].append(f"agents.list.default_removed:{row.get('id')}")
+        if router.get("default") is not True:
+            router["default"] = True
+            report["updated"] = True
+            report["changes"].append("agents.list.default=router")
+
+    desired_default_workspace = (oc_home / "workspace" / "_default").resolve()
+    current_workspace = str(defaults.get("workspace") or "").strip()
+    root_workspace = (oc_home / "workspace").resolve()
+    resolved_current: Path | None = None
+    if current_workspace:
+        try:
+            resolved_current = Path(current_workspace).expanduser().resolve()
+        except Exception:
+            resolved_current = None
+
+    if not current_workspace or resolved_current == root_workspace:
+        defaults["workspace"] = str(desired_default_workspace)
+        desired_default_workspace.mkdir(parents=True, exist_ok=True)
+        report["updated"] = True
+        report["changes"].append(f"agents.defaults.workspace={desired_default_workspace}")
+
+    if report["updated"]:
+        cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    return report
+
+
 def bootstrap(daemon_home: Path | None = None, openclaw_home: Path | None | object = _UNSET, force: bool = False) -> dict:
     """Run cold-start bootstrap. Returns a report of what was done.
 
@@ -111,6 +202,10 @@ def bootstrap(daemon_home: Path | None = None, openclaw_home: Path | None | obje
 
     # ── OpenClaw environment validation ──────────────────────────────────────
     if oc_home:
+        norm = normalize_openclaw_config(oc_home)
+        report["openclaw_normalization"] = norm
+        if norm.get("warnings"):
+            report["warnings"].extend(list(norm.get("warnings") or []))
         val = _validate_openclaw(oc_home)
         report["openclaw_validation"] = val
         if val.get("warnings"):
