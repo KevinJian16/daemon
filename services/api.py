@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 import time
 from pathlib import Path
 from typing import Any
@@ -148,6 +149,61 @@ def create_app() -> FastAPI:
     app_started_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     app = FastAPI(title="Daemon API", version="0.1.0")
+
+    # ── Access token guard (Tailscale Funnel protection) ──────────────────
+    _access_token = os.environ.get("DAEMON_ACCESS_TOKEN", "").strip()
+    _TOKEN_COOKIE = "daemon_token"
+    _LOGIN_HTML = """<!doctype html><html><head><meta charset=utf-8>
+<title>Daemon — Login</title>
+<style>body{font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#faf9f7}
+form{display:flex;flex-direction:column;gap:12px;width:320px}
+input{padding:10px;border:1px solid #ddd;border-radius:8px;font-size:15px}
+button{padding:10px;background:#1a1a1a;color:#fff;border:none;border-radius:8px;font-size:15px;cursor:pointer}
+p{color:#c00;font-size:13px;text-align:center}</style></head>
+<body><form method=post action=/_login>
+<h2 style="margin:0;font-size:20px">Daemon</h2>
+{error}
+<input type=password name=token placeholder="Access token" autofocus>
+<button type=submit>Enter</button>
+</form></body></html>"""
+
+    @app.post("/_login", include_in_schema=False)
+    async def _do_login(request: Request):
+        from fastapi.responses import HTMLResponse, RedirectResponse
+        if not _access_token:
+            return RedirectResponse("/portal/", status_code=302)
+        form = await request.form()
+        submitted = str(form.get("token") or "").strip()
+        if not secrets.compare_digest(submitted, _access_token):
+            html = _LOGIN_HTML.replace("{error}", "<p>Token incorrect.</p>")
+            return HTMLResponse(html, status_code=401)
+        resp = RedirectResponse(str(request.query_params.get("next") or "/portal/"), status_code=302)
+        resp.set_cookie(_TOKEN_COOKIE, _access_token, httponly=True, samesite="lax", max_age=60*60*24*30)
+        return resp
+
+    @app.middleware("http")
+    async def _auth_middleware(request: Request, call_next):
+        from fastapi.responses import HTMLResponse, RedirectResponse
+        # Skip auth if no token configured or request is from localhost
+        if not _access_token:
+            return await call_next(request)
+        client_host = request.client.host if request.client else "127.0.0.1"
+        if client_host in ("127.0.0.1", "::1"):
+            return await call_next(request)
+        # Allow login endpoint through
+        if request.url.path == "/_login":
+            return await call_next(request)
+        # Check cookie
+        cookie_val = request.cookies.get(_TOKEN_COOKIE, "")
+        if secrets.compare_digest(cookie_val, _access_token):
+            return await call_next(request)
+        # Show login page
+        if request.method == "GET" and "text/html" in request.headers.get("accept", ""):
+            html = _LOGIN_HTML.replace("{error}", "")
+            return HTMLResponse(html, status_code=401)
+        return HTMLResponse("Unauthorized", status_code=401)
+    # ─────────────────────────────────────────────────────────────────────
+
     temporal_client: TemporalClient | None = None
     bridge_task: asyncio.Task | None = None
     bridge_running = True
