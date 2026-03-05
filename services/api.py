@@ -1400,6 +1400,11 @@ p{color:#c00;font-size:13px;text-align:center}</style></head>
 
     # ── Serve static interfaces ────────────────────────────────────────────────
 
+    @app.get("/", include_in_schema=False)
+    async def _root_redirect():
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse("/portal/", status_code=302)
+
     portal_dir = home / "interfaces" / "portal"
     console_dir = home / "interfaces" / "console"
     if portal_dir.exists():
