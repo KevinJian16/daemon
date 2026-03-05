@@ -1,7 +1,7 @@
 async function loadPolicy() {
   const prios = await api('/console/fabric/compass/priorities');
   document.getElementById('priority-tbody').innerHTML = prios.map(p =>
-    `<tr><td>${p.domain}</td><td>${p.weight}</td><td style="color:var(--muted)">${p.source||'system'}</td><td style="color:var(--muted)">${(p.updated_utc||'').replace('T',' ').replace('Z','')}</td></tr>`
+    `<tr><td>${p.domain}</td><td>${p.weight}</td><td style="color:var(--muted)">${p.source||'system'}</td><td style="color:var(--muted)">${fmtTime(p.updated_utc)}</td></tr>`
   ).join('');
   await onPolicyScopeChange();
   const tbody = document.getElementById('policy-versions-tbody');
@@ -225,7 +225,7 @@ async function loadPolicyCatalog() {
           <td title="${esc(k)}">${esc(k)}</td>
           <td style="color:var(--muted)">—</td>
           <td style="color:var(--muted)">—</td>
-          <td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="editPolicyKey('quality','${encodeURIComponent(k)}')">${tx('编辑', 'Edit')}</button></td>
+          <td class="col-action-cell"><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="editPolicyKey('quality','${encodeURIComponent(k)}')">${tx('编辑', 'Edit')}</button></td>
         </tr>
       `).join('') || `<tr><td colspan="4" style="color:var(--muted)">${tx('暂无质量键', 'No quality keys')}</td></tr>`;
     }
@@ -235,7 +235,7 @@ async function loadPolicyCatalog() {
           <td title="${esc(p.pref_key || '')}">${esc(p.pref_key || '')}</td>
           <td style="color:var(--muted)" title="${esc(p.value || '')}">${esc((p.value || '').slice(0, 120))}</td>
           <td style="color:var(--muted)">preference</td>
-          <td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="editPolicyKey('preference','${encodeURIComponent(p.pref_key || '')}')">${tx('编辑', 'Edit')}</button></td>
+          <td class="col-action-cell"><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="editPolicyKey('preference','${encodeURIComponent(p.pref_key || '')}')">${tx('编辑', 'Edit')}</button></td>
         </tr>
       `).join('') || `<tr><td colspan="4" style="color:var(--muted)">${tx('暂无偏好配置', 'No preferences')}</td></tr>`;
     }
@@ -245,7 +245,7 @@ async function loadPolicyCatalog() {
           <td title="${esc(b.resource_type || '')}">${esc(b.resource_type || '')}</td>
           <td>${Number(b.daily_limit || 0).toLocaleString()}</td>
           <td>${Number(b.current_usage || 0).toLocaleString()}</td>
-          <td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="editPolicyKey('budget','${encodeURIComponent(b.resource_type || '')}')">${tx('编辑', 'Edit')}</button></td>
+          <td class="col-action-cell"><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="editPolicyKey('budget','${encodeURIComponent(b.resource_type || '')}')">${tx('编辑', 'Edit')}</button></td>
         </tr>
       `).join('') || `<tr><td colspan="4" style="color:var(--muted)">${tx('暂无预算配置', 'No budgets')}</td></tr>`;
     }
@@ -285,7 +285,7 @@ async function loadPolicyVersions() {
     tbody.innerHTML = currentPolicyVersions.map(v => `
       <tr>
         <td>v${v.version}</td>
-        <td style="color:var(--muted)">${(v.changed_utc||'').replace('T',' ').replace('Z','')}</td>
+        <td style="color:var(--muted)">${fmtTime(v.changed_utc)}</td>
         <td style="color:var(--muted)">${esc(v.changed_by||'')}</td>
         <td style="color:var(--muted)">${esc(v.reason||'')}</td>
         <td>
@@ -381,4 +381,3 @@ async function rollbackSelectedPolicyVersion() {
   }
   await rollbackPolicyVersion(v);
 }
-

@@ -1,4 +1,13 @@
 const API = '';
+
+// Convert UTC ISO string to local time display
+function fmtTime(utcStr) {
+  if (!utcStr) return '—';
+  const d = new Date(utcStr);
+  if (isNaN(d)) return String(utcStr).replace('T',' ').replace('Z','');
+  return d.toLocaleString([], {year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+
 let activeAgentId = '';
 let activeAgentSkills = [];
 let activePlaybookMethod = null;
@@ -445,36 +454,8 @@ function setListPage(key, page, reloadFnName) {
 }
 
 function applyDatePreset(target) {
-  const now = new Date();
-  const toIso = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
-  const selectId = target === 'trace' ? 'trace-date-preset' : target === 'cortex' ? 'cortex-date-preset' : '';
-  if (!selectId) return;
-  const preset = document.getElementById(selectId)?.value || 'manual';
-  if (target === 'cortex') {
-    loadCortexUsage();
-    return;
-  }
-  let since = '';
-  let until = '';
-  if (preset === 'today') {
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
-    since = toIso(d);
-    until = toIso(now);
-  } else if (preset === 'last_24h') {
-    since = toIso(new Date(now.getTime() - 24 * 3600 * 1000));
-    until = toIso(now);
-  } else if (preset === 'last_7d') {
-    since = toIso(new Date(now.getTime() - 7 * 24 * 3600 * 1000));
-    until = toIso(now);
-  } else if (preset === 'last_30d') {
-    since = toIso(new Date(now.getTime() - 30 * 24 * 3600 * 1000));
-    until = toIso(now);
-  }
-  if (target === 'trace') {
-    const s = document.getElementById('trace-since');
-    if (s) s.value = since;
-    loadTraces();
-  }
+  if (target === 'cortex') { loadCortexUsage(); return; }
+  if (target === 'trace') { loadTraces(); return; }
 }
 
 async function api(path) {

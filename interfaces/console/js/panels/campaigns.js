@@ -16,7 +16,7 @@ async function loadCampaigns() {
         <td><span class="badge ${r.status==='completed' ? 'ok' : r.status==='running' ? 'hybrid' : r.status==='paused' ? 'degraded' : r.status==='cancelled' ? 'error' : 'deterministic'}">${esc(r.status || '')}</span></td>
         <td>${esc(r.current_phase || '')}</td>
         <td>${Number(r.current_milestone_index || 0)} / ${Number(r.total_milestones || 0)}</td>
-        <td style="color:var(--muted)">${(r.updated_utc || '').replace('T', ' ').replace('Z', '')}</td>
+        <td style="color:var(--muted)">${fmtTime(r.updated_utc)}</td>
         <td>
           <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewCampaign('${encodeURIComponent(r.campaign_id || '')}')">${tx('查看', 'View')}</button>
           <button class="action" style="font-size:11px;padding:3px 8px;background:#0f766e" onclick="confirmCampaign('${encodeURIComponent(r.campaign_id || '')}')">${tx('确认', 'Confirm')}</button>

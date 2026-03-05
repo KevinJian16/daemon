@@ -1,10 +1,17 @@
 async function loadTraces() {
   const routine = document.getElementById('trace-routine').value;
   const status = document.getElementById('trace-status').value;
-  const since = document.getElementById('trace-since')?.value?.trim() || '';
   const q = document.getElementById('trace-q')?.value?.trim() || '';
   const sizeSel = Number(document.getElementById('trace-page-size')?.value || 50);
   _listState('traces', {size: sizeSel}).size = sizeSel;
+  const preset = document.getElementById('trace-date-preset')?.value || 'last_24h';
+  const now = new Date();
+  const toIso = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  let since = '';
+  if (preset === 'last_1h') since = toIso(new Date(now.getTime() - 1 * 3600 * 1000));
+  else if (preset === 'last_6h') since = toIso(new Date(now.getTime() - 6 * 3600 * 1000));
+  else if (preset === 'last_24h') since = toIso(new Date(now.getTime() - 24 * 3600 * 1000));
+  else if (preset === 'last_7d') since = toIso(new Date(now.getTime() - 7 * 24 * 3600 * 1000));
   let url = '/console/traces?limit=1000';
   if (routine) url += '&routine=' + encodeURIComponent(routine);
   if (status) url += '&status=' + status;
@@ -19,7 +26,7 @@ async function loadTraces() {
         <td>${t.routine}</td>
         <td><span class="badge ${t.status}">${t.status}</span></td>
         <td>${t.degraded ? '<span class="badge degraded">yes</span>' : '—'}</td>
-        <td style="color:var(--muted)">${(t.started_utc||'').replace('T',' ').replace('Z','')}</td>
+        <td style="color:var(--muted)">${fmtTime(t.started_utc)}</td>
         <td>${t.elapsed_s}s</td>
       </tr>`
     ).join('') || `<tr><td colspan="6" style="color:var(--muted)">${tx('未找到 traces', 'No traces found')}</td></tr>`;
@@ -131,7 +138,7 @@ async function loadCortexUsage() {
         ? `<button class="action" style="font-size:10px;padding:2px 6px;background:#334155" onclick="jumpToTrace('${encodeURIComponent(rawTrace)}')">${traceLabel}</button>`
         : '<span style="color:var(--muted)">—</span>';
       return `<tr>
-        <td style="color:var(--muted)">${(r.timestamp||'').replace('T',' ').replace('Z','')}</td>
+        <td style="color:var(--muted)">${fmtTime(r.timestamp)}</td>
         <td>${traceAction}</td>
         <td>${esc(r.provider||'')}</td>
         <td style="color:var(--muted)">${esc(r.model||'')}</td>

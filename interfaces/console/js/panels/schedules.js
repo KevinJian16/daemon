@@ -16,8 +16,8 @@ async function loadSchedules() {
       <td>${r.routine}</td>
       <td><span class="badge ${r.mode}">${r.mode}</span></td>
       <td style="color:var(--muted)">${r.enabled === false ? '(disabled) ' : ''}${r.schedule || '—'}</td>
-      <td style="color:var(--muted)">${r.last_run_utc ? r.last_run_utc.replace('T',' ').replace('Z','') : tx('从未', 'never')}</td>
-      <td style="color:var(--muted)">${r.next_run_utc ? r.next_run_utc.replace('T',' ').replace('Z','') : '—'}</td>
+      <td style="color:var(--muted)">${r.last_run_utc ? fmtTime(r.last_run_utc) : tx('从未', 'never')}</td>
+      <td style="color:var(--muted)">${r.next_run_utc ? fmtTime(r.next_run_utc) : '—'}</td>
       <td>
         <button class="action" onclick="triggerRoutine('${r.routine.replace('spine.','')}')" style="font-size:11px;padding:3px 8px">${tx('▶ 运行', '▶ Run')}</button>
         <button class="action" onclick="editSchedule('${r.routine}')" style="font-size:11px;padding:3px 8px;background:#334155">${tx('✎ 编辑', '✎ Edit')}</button>
@@ -96,7 +96,7 @@ async function loadScheduleHistory() {
     const pageRows = _paginate(filtered, 'schedule_history', 'schedule-history-pager', 'loadScheduleHistory');
     tbody.innerHTML = pageRows.map(r => `
       <tr>
-        <td style="color:var(--muted)">${(r.run_utc||'').replace('T',' ').replace('Z','')}</td>
+        <td style="color:var(--muted)">${fmtTime(r.run_utc)}</td>
         <td>${esc(r.routine||'')}</td>
         <td style="color:var(--muted)">${esc(r.trigger||'')}</td>
         <td><span class="badge ${r.status==='ok'?'ok':r.status==='contract_failed'?'degraded':'error'}">${esc(r.status||'')}</span></td>

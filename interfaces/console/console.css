@@ -277,13 +277,21 @@ textarea.editor:focus { border-color: var(--accent); }
 #panel-policy .table-shell td {
   vertical-align: middle;
 }
+#panel-policy .table-shell th:last-child,
 #panel-policy .table-shell td:last-child {
+  text-align: center;
+}
+#panel-policy .table-shell th.col-action-head,
+#panel-policy .table-shell td.col-action-cell {
   text-align: center;
 }
 #panel-policy .table-shell td .action {
   width: 88px;
   height: 30px;
+  display: inline-flex;
   justify-content: center;
+  align-items: center;
+  margin: 0 auto;
 }
 #panel-model .model-actions {
   justify-content: flex-start;

@@ -94,7 +94,7 @@ async function loadModelControl() {
         <tr>
           <td>${esc(v.target || '')}</td>
           <td>${Number(v.version || 0)}</td>
-          <td style="color:var(--muted)">${esc((v.changed_utc || '').replace('T',' ').replace('Z',''))}</td>
+          <td style="color:var(--muted)">${fmtTime(v.changed_utc)}</td>
           <td>${esc(v.changed_by || '')}</td>
           <td style="color:var(--muted)">${esc(v.reason || '')}</td>
           <td><button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackModelConfigVersion('${encodeURIComponent(v.target || '')}', ${Number(v.version || 0)})">${tx('回滚', 'Rollback')}</button></td>

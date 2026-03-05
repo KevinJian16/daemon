@@ -118,7 +118,7 @@
             <col style="width:25%">
             <col style="width:25%">
           </colgroup>
-          <thead><tr><th>Quality Key</th><th>Profile</th><th>Usage</th><th>Action</th></tr></thead>
+          <thead><tr><th>Quality Key</th><th>Profile</th><th>Usage</th><th class="col-action-head">Action</th></tr></thead>
           <tbody id="policy-quality-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
         </table>
       </div>
@@ -133,7 +133,7 @@
             <col style="width:25%">
             <col style="width:25%">
           </colgroup>
-          <thead><tr><th>Preference Key</th><th>Value</th><th>Scope</th><th>Action</th></tr></thead>
+          <thead><tr><th>Preference Key</th><th>Value</th><th>Scope</th><th class="col-action-head">Action</th></tr></thead>
           <tbody id="policy-pref-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
         </table>
       </div>
@@ -148,7 +148,7 @@
             <col style="width:25%">
             <col style="width:25%">
           </colgroup>
-          <thead><tr><th>Budget Type</th><th>Daily Limit</th><th>Current Usage</th><th>Action</th></tr></thead>
+          <thead><tr><th>Budget Type</th><th>Daily Limit</th><th>Current Usage</th><th class="col-action-head">Action</th></tr></thead>
           <tbody id="policy-budget-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
         </table>
       </div>
@@ -192,13 +192,11 @@
     </select>
     <select id="trace-status"><option value="">Any status</option><option>ok</option><option>error</option></select>
     <select id="trace-date-preset" onchange="applyDatePreset('trace')">
-      <option value="manual">Manual</option>
-      <option value="today">Today</option>
-      <option value="last_24h">Last 24h</option>
+      <option value="last_1h">Last 1h</option>
+      <option value="last_6h">Last 6h</option>
+      <option value="last_24h" selected>Last 24h</option>
       <option value="last_7d">Last 7d</option>
-      <option value="last_30d">Last 30d</option>
     </select>
-    <input id="trace-since" placeholder="since UTC (optional)" style="width:220px">
     <input id="trace-q" placeholder="trace_id / routine" style="width:190px">
     <select id="trace-page-size" onchange="setPageSizeAndReload('traces', this.value, loadTraces)">
       <option value="20">20 / page</option>
@@ -496,15 +494,19 @@
 <div id="panel-system" class="panel">
   <div class="card">
     <h3>Managed Drive Storage</h3>
-    <div class="search-row">
-      <input id="storage-daemon-dir-name" placeholder="daemon directory name (e.g. daemon)" style="width:280px">
-      <button class="action" onclick="loadSystemStorage()" data-zh="加载" data-en="Load">加载</button>
-      <button class="action" style="background:#14532d" onclick="saveSystemStorage()" data-zh="保存" data-en="Save">保存</button>
+    <div style="display:flex;align-items:stretch;gap:8px;margin-bottom:10px">
+      <label style="color:var(--muted);font-size:12px;white-space:nowrap;display:flex;align-items:center">Drive dir name</label>
+      <input id="storage-daemon-dir-name" placeholder="daemon" style="max-width:220px;box-sizing:border-box">
+      <button class="action" onclick="loadSystemStorage()" data-zh="加载" data-en="Load" style="flex-shrink:0">加载</button>
+      <button class="action" style="background:#14532d;flex-shrink:0" onclick="saveSystemStorage()" data-zh="保存" data-en="Save">保存</button>
     </div>
-    <div id="system-storage-note" style="color:var(--muted);font-size:11px;line-height:1.6">
-      托管结构：<code>My Drive/&lt;daemon_dir_name&gt;/{archive,outcomes}</code>。
+    <div id="system-storage-status">
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <tbody id="storage-status-body">
+          <tr><td colspan="2" style="color:var(--muted);padding:6px 0">加载中…</td></tr>
+        </tbody>
+      </table>
     </div>
-    <pre id="system-storage-status">加载中…</pre>
   </div>
   <div class="card">
     <h3>System Reset (Localhost Only)</h3>

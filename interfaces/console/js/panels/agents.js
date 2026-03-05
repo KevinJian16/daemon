@@ -126,7 +126,7 @@ async function loadSkillEvolution() {
         <td style="color:var(--muted);font-size:11px">${esc(p.proposal_id || '')}</td>
         <td>${esc(p.skill || '')}</td>
         <td><span class="badge ${p.status === 'applied' ? 'ok' : p.status === 'rejected' || p.status === 'apply_failed' ? 'error' : 'degraded'}">${esc(p.status || '')}</span></td>
-        <td style="color:var(--muted)">${((p.reviewed_utc||'').replace('T',' ').replace('Z','')) || '—'}</td>
+        <td style="color:var(--muted)">${fmtTime(p.reviewed_utc) || '—'}</td>
         <td>
           <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewSkillProposal('${pid}')">${tx('查看', 'View')}</button>
           <button class="action" style="font-size:11px;padding:3px 8px;background:#14532d" onclick="reviewSkillProposal('${pid}','approve')">${tx('通过', 'Approve')}</button>

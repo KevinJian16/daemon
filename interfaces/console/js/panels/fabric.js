@@ -5,7 +5,7 @@ async function showFabric(type) {
   if (type === 'memory') {
     const units = await api('/console/fabric/memory?limit=50');
     let html = `<div class="card"><h3>${tx('Memory Units（最近 50 条）', 'Memory Units (latest 50)')}</h3><table><thead><tr><th>${tx('操作', 'Action')}</th><th>${tx('标题', 'Title')}</th><th>${tx('领域', 'Domain')}</th><th>${tx('层级', 'Tier')}</th><th>${tx('来源', 'Source')}</th><th>${tx('置信度', 'Confidence')}</th><th>${tx('创建时间', 'Created')}</th></tr></thead><tbody>`;
-    html += units.map(u => `<tr><td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewMemoryUnit('${u.unit_id}')">${tx('查看', 'View')}</button></td><td>${esc(u.title)}</td><td>${u.domain}</td><td>${u.tier}</td><td>${esc(u.source_type || 'synthetic')}</td><td>${(u.confidence*100).toFixed(0)}%</td><td style="color:var(--muted)">${(u.created_utc||'').replace('T',' ').replace('Z','')}</td></tr>`).join('');
+    html += units.map(u => `<tr><td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewMemoryUnit('${u.unit_id}')">${tx('查看', 'View')}</button></td><td>${esc(u.title)}</td><td>${u.domain}</td><td>${u.tier}</td><td>${esc(u.source_type || 'synthetic')}</td><td>${(u.confidence*100).toFixed(0)}%</td><td style="color:var(--muted)">${fmtTime(u.created_utc)}</td></tr>`).join('');
     html += '</tbody></table></div>';
     html += `<div class="card"><h3>${tx('Memory Unit 详情', 'Memory Unit Detail')}</h3><pre id="memory-detail">${tx('选择一条 unit 查看 usage/links/audit 详情。', 'Select a unit to inspect usage/links/audit details.')}</pre></div>`;
     content.innerHTML = html;
@@ -38,7 +38,7 @@ async function showFabric(type) {
     html += '</tbody></table></div>';
     if (signals.length) {
       html += `<div class="card"><h3>${tx('活跃 Attention Signals', 'Active Attention Signals')}</h3><table><thead><tr><th>${tx('领域', 'Domain')}</th><th>${tx('趋势', 'Trend')}</th><th>${tx('级别', 'Severity')}</th><th>${tx('观测时间', 'Observed')}</th></tr></thead><tbody>`;
-      html += signals.map(s => `<tr><td>${s.domain}</td><td>${esc(s.trend)}</td><td><span class="badge ${s.severity==='critical'?'error':s.severity==='high'?'degraded':'ok'}">${s.severity}</span></td><td style="color:var(--muted)">${(s.observed_utc||'').replace('T',' ').replace('Z','')}</td></tr>`).join('');
+      html += signals.map(s => `<tr><td>${s.domain}</td><td>${esc(s.trend)}</td><td><span class="badge ${s.severity==='critical'?'error':s.severity==='high'?'degraded':'ok'}">${s.severity}</span></td><td style="color:var(--muted)">${fmtTime(s.observed_utc)}</td></tr>`).join('');
       html += '</tbody></table></div>';
       const timeline = signals
         .slice()

@@ -29,7 +29,7 @@ async function loadSpine() {
     <tr>
       <td>${r.routine}</td>
       <td><span class="badge ${r.mode}">${r.mode}</span></td>
-      <td style="color:var(--muted)">${r.last_run_utc ? r.last_run_utc.replace('T',' ').replace('Z','') : tx('从未', 'never')}</td>
+      <td style="color:var(--muted)">${r.last_run_utc ? fmtTime(r.last_run_utc) : tx('从未', 'never')}</td>
     </tr>`).join('');
 
   const events = await api('/console/spine/nerve/events?limit=30');

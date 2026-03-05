@@ -36,7 +36,7 @@ async function loadStrategies() {
         <td><span class="badge ${(r.risk_level || '') === 'low' ? 'ok' : (r.risk_level || '') === 'medium' ? 'degraded' : 'error'}">${esc(r.risk_level || 'unknown')}</span></td>
         <td>${r.global_score != null ? Number(r.global_score).toFixed(4) : '—'}</td>
         <td>${Number(r.sample_n || 0)}</td>
-        <td style="color:var(--muted)">${(r.updated_utc || '').replace('T',' ').replace('Z','')}</td>
+        <td style="color:var(--muted)">${fmtTime(r.updated_utc)}</td>
         <td>
           <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewStrategyDetail('${encodeURIComponent(sid)}')">${tx('查看', 'View')}</button>
           <button class="action" style="font-size:11px;padding:3px 8px;background:#0f766e" onclick="sandboxStrategy('${encodeURIComponent(sid)}','${encodeURIComponent(r.cluster_id || '')}','${encodeURIComponent(r.task_type_compat || '')}')">${tx('沙箱', 'Sandbox')}</button>
@@ -56,7 +56,7 @@ async function loadStrategies() {
         <td>${Number(r.shadow_global_score || 0).toFixed(4)}</td>
         <td>${Number(r.champion_global_score || 0).toFixed(4)}</td>
         <td><span class="badge ${Number(r.delta_global_score || 0) >= 0 ? 'ok' : 'error'}">${Number(r.delta_global_score || 0).toFixed(4)}</span></td>
-        <td style="color:var(--muted)">${(r.created_utc || '').replace('T',' ').replace('Z','')}</td>
+        <td style="color:var(--muted)">${fmtTime(r.created_utc)}</td>
       </tr>
     `).join('') || `<tr><td colspan="7" style="color:var(--muted)">${tx('暂无 Shadow 报告', 'No shadow reports')}</td></tr>`;
   } catch (e) {
@@ -195,7 +195,7 @@ async function loadSemantics() {
         <tr>
           <td>${esc(v.target || '')}</td>
           <td>${Number(v.version || 0)}</td>
-          <td style="color:var(--muted)">${esc((v.changed_utc || '').replace('T',' ').replace('Z',''))}</td>
+          <td style="color:var(--muted)">${fmtTime(v.changed_utc)}</td>
           <td>${esc(v.changed_by || '')}</td>
           <td style="color:var(--muted)">${esc(v.reason || '')}</td>
           <td><button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackSemanticVersion('${encodeURIComponent(v.target || '')}', ${Number(v.version || 0)})">${tx('回滚', 'Rollback')}</button></td>

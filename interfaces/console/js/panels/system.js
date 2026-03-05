@@ -62,16 +62,30 @@ async function loadSystemResetReport() {
   }
 }
 
+function renderStorageStatus(data) {
+  const body = document.getElementById('storage-status-body');
+  if (!body) return;
+  const rows = [
+    ['Status', data.ready ? '<span style="color:#4ade80">✓ ready</span>' : `<span style="color:#f87171">✗ ${esc(data.error||'not ready')}</span>`],
+    ['my_drive_root', esc(data.my_drive_root || '—')],
+    ['archive_root', esc(data.archive_root || '—')],
+    ['outcome_root', esc(data.outcome_root || '—')],
+  ];
+  body.innerHTML = rows.map(([k, v]) =>
+    `<tr><td style="color:var(--muted);padding:4px 0;padding-right:16px;white-space:nowrap">${k}</td><td style="word-break:break-all;padding:4px 0">${v}</td></tr>`
+  ).join('');
+}
+
 async function loadSystemStorage() {
-  const status = document.getElementById('system-storage-status');
+  const body = document.getElementById('storage-status-body');
   const input = document.getElementById('storage-daemon-dir-name');
-  if (status) status.textContent = tx('加载存储状态…', 'Loading storage status…');
+  if (body) body.innerHTML = `<tr><td colspan="2" style="color:var(--muted);padding:6px 0">${tx('加载中…','Loading…')}</td></tr>`;
   try {
     const data = await api('/console/system/storage');
     if (input) input.value = String(data.daemon_dir_name || 'daemon');
-    if (status) status.textContent = JSON.stringify(data, null, 2);
+    renderStorageStatus(data);
   } catch (e) {
-    if (status) status.textContent = tx('错误：', 'Error: ') + e.message;
+    if (body) body.innerHTML = `<tr><td colspan="2" style="color:#f87171;padding:6px 0">${tx('错误：','Error: ')}${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -85,8 +99,7 @@ async function saveSystemStorage() {
   try {
     const data = await apiWrite('/console/system/storage', 'PUT', {daemon_dir_name: daemonDirName});
     if (input) input.value = String(data.daemon_dir_name || daemonDirName);
-    const status = document.getElementById('system-storage-status');
-    if (status) status.textContent = JSON.stringify(data, null, 2);
+    renderStorageStatus(data);
   } catch (e) {
     alert(tx('保存存储设置失败：', 'Save storage settings failed: ') + e.message);
   }
