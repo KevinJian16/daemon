@@ -358,9 +358,47 @@ Memory unit 必须携带 `source_type` 与 `source_agent` 两个字段：
 - 超限触发 `memory_pressure` nerve 事件，librarian 收到后优先清理 `collected` 类和最老的 `synthetic`
 - Weave patterns 上限 200（已实现），Memory units 上限 10,000，共用同一 pressure 触发机制
 
-### 13.4 实现位置
+### 13.4 任务产出物清理（outcome GC）
 
-- `spine/routines.py`：`librarian()` 新增 `_cold_export_memory()` 与 `_cleanup_local_jsonl()` helper
+Memory/Weave GC 管知识层，outcome GC 管任务产出物层，两套机制独立运行。
+
+| 阶段 | 时间 | 本地 | Drive | Portal 可见 |
+|---|---|---|---|---|
+| 活跃 | 0–7 天 | 完整 | — | 是，完整输出 |
+| Drive 归档 | 7–30 天 | 本地删除 | 已上传 | 是，按需从 Drive 拉取 |
+| Drive 保留 | 30 天–6 个月 | — | 保留 | 是，按需从 Drive 拉取 |
+| 完全清理 | 6 个月后 | — | 删除 | 否，从 Portal 消失 |
+
+- outcome index（`state/outcomes/index.json`）与任务记录同步清理，6 个月后删除对应条目
+- 学习效果在任务完成时已写入 playbook，清理不影响已学到的内容
+- 6 个月阈值写入 Compass，可配置
+
+### 13.4.1 Drive 目录结构
+
+Drive 内两个顶级目录，职责严格分离：
+
+```
+daemon/
+  outcomes/                              ← 用户产出，结构对人友好，用户可直接浏览
+    YYYY-MM/
+      YYYY-MM-DD HH:MM <任务标题>/        ← 含时间，永不冲突，标题由 render agent 从内容提取
+        <任务标题>（中文）.md
+        <Task Title> (English).md
+
+  archive/                               ← 系统内部，用户无需打开
+    memory/YYYY-MM/                      ← memory units JSONL
+    weave/YYYY-MM/                       ← weave patterns JSONL
+```
+
+规则：
+- **零内部 ID、零系统参数**出现在 outcomes/ 路径和文件名中
+- 目录名含时间（HH:MM），天然唯一，无需去重逻辑；文件名仅含标题，不带时间
+- 评分、元数据等内部数据**不上传 Drive**，仅保留在本地 result.json 和 playbook
+- 系统内部通过 outcome index 的 `task_id → drive_path` 映射定位文件；用户不感知此映射
+
+### 13.5 实现位置
+
+- `spine/routines.py`：`librarian()` 新增 `_cold_export_memory()` 与 `_cleanup_local_jsonl()` helper；新增 `_cleanup_outcomes()` helper（扫描 outcome index，清理 6 个月以上条目）
 - `spine/nerve.py`：新增 `memory_pressure` 事件类型
 - `config/spine_registry.json`：librarian 的 `nerve_triggers` 加入 `memory_pressure`
 - apply agent `TOOLS.md`：新增 `google_drive_upload` skill 说明

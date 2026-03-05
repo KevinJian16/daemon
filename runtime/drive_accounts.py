@@ -73,7 +73,7 @@ class DriveAccountRegistry:
 
         daemon_root = root / daemon_dir
         archive_root = daemon_root / "archive"
-        outcome_root = daemon_root / "outcome"
+        outcome_root = daemon_root / "outcomes"
         archive_root.mkdir(parents=True, exist_ok=True)
         outcome_root.mkdir(parents=True, exist_ok=True)
 

@@ -1100,27 +1100,27 @@ class DaemonActivities:
     ) -> Path:
         task_type = str(plan.get("task_type") or "manual")
         task_id = str(plan.get("task_id") or uuid.uuid4().hex[:8])
-        title = str(plan.get("title") or task_id)[:60].replace("/", "-")
+        raw_title = str(plan.get("title") or task_type)
+        title = raw_title[:60].replace("/", "-").replace(":", "-").strip()
         root = outcome_root or self._resolve_outcome_root()
 
-        # Choose outcome category.
-        if task_type in ("daily_brief", "weekly_brief"):
-            today = time.strftime("%Y-%m-%d")
-            dest = root / "scheduled" / task_type / today
-        else:
-            dest = root / "manual" / title
-
+        # Directory: outcomes/YYYY-MM/YYYY-MM-DD HH.MM <title>/
+        # HH.MM instead of HH:MM — colon is not allowed on macOS/Windows FS.
+        month_dir = time.strftime("%Y-%m")
+        timestamp = time.strftime("%Y-%m-%d %H.%M")
+        dest = root / month_dir / f"{timestamp} {title}"
         dest.mkdir(parents=True, exist_ok=True)
 
-        # Copy render output.
+        # Copy render output — filename is the title, no internal IDs.
         suffix = render_path.suffix or ".html"
-        dest_file = dest / f"report{suffix}"
-        dest_file.write_text(render_path.read_text())
+        safe_title = title[:80]
+        dest_file = dest / f"{safe_title}{suffix}"
+        dest_file.write_bytes(render_path.read_bytes())
 
-        # Write manifest.
+        # manifest.json stays for system reference but is not the user-facing file.
         manifest = {
             "task_id": task_id,
-            "title": title,
+            "title": raw_title,
             "task_type": task_type,
             "run_root": run_root,
             "steps": len(step_results),
@@ -1179,6 +1179,7 @@ class DaemonActivities:
             rel_path = str(outcome_path)
         entry = {
             "path": rel_path,
+            "drive_path": rel_path,  # task_id → drive_path mapping for Portal lookup
             "title": plan.get("title", ""),
             "task_type": plan.get("task_type", "manual"),
             "task_id": plan.get("task_id", ""),

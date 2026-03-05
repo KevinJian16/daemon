@@ -358,6 +358,28 @@ def create_app() -> FastAPI:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _feedback_history(survey: dict | None) -> list[dict]:
+        if not isinstance(survey, dict):
+            return []
+        rows = survey.get("history")
+        if not isinstance(rows, list):
+            return []
+        return [r for r in rows if isinstance(r, dict)]
+
+    def _feedback_state(task_id: str) -> dict:
+        survey = _load_feedback_survey(task_id) or {}
+        history = _feedback_history(survey)
+        response = survey.get("response") if isinstance(survey.get("response"), dict) else {}
+        return {
+            "task_id": task_id,
+            "status": str(survey.get("status") or ""),
+            "submitted_utc": str(survey.get("submitted_utc") or ""),
+            "handled_channel": str(survey.get("handled_channel") or ""),
+            "telegram_reminder_suppressed": bool(survey.get("telegram_reminder_suppressed", False)),
+            "response": response,
+            "history": history[-50:],
+        }
+
     def _pending_feedback_surveys(limit: int = 100) -> list[dict]:
         rows: list[dict] = []
         for p in feedback_surveys_dir.glob("*.json"):
@@ -388,6 +410,11 @@ def create_app() -> FastAPI:
         if not token or not users:
             return {"sent": 0, "skipped": True}
         task_id = str(payload.get("task_id") or "")
+        if task_id:
+            survey = _load_feedback_survey(task_id)
+            if isinstance(survey, dict):
+                if str(survey.get("status") or "") == "submitted" and str(survey.get("handled_channel") or "") == "portal":
+                    return {"sent": 0, "skipped": True, "reason": "handled_by_portal"}
         title = str(payload.get("title") or task_id)
         prompt = str(payload.get("prompt") or "请反馈本次交付质量。")
         task_scale = str(payload.get("task_scale") or "")
@@ -642,9 +669,39 @@ def create_app() -> FastAPI:
         t = str(target or "").strip().lower()
         if t in {"catalog", "capability_catalog"}:
             return "semantics.catalog", semantic_catalog_path
-        if t in {"mapping_rules", "rules"}:
+        if t in {"mapping_rules", "mapping-rules", "rules"}:
             return "semantics.mapping_rules", semantic_rules_path
         raise ValueError(f"unknown_semantic_target:{target}")
+
+    def _sync_compass_provider_budgets_from_policy(policy: dict, *, overwrite: bool) -> dict:
+        """Sync model_policy budget_limits into Compass provider budgets."""
+        limits = policy.get("budget_limits") if isinstance(policy.get("budget_limits"), dict) else {}
+        touched: list[dict] = []
+        for key, raw in limits.items():
+            if not str(key).endswith("_tokens_per_day"):
+                continue
+            provider = str(key).replace("_tokens_per_day", "").strip()
+            if not provider:
+                continue
+            resource_type = f"{provider}_tokens"
+            try:
+                daily_limit = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if daily_limit <= 0:
+                continue
+            current = compass.get_budget(resource_type)
+            if current and not overwrite:
+                try:
+                    if float(current.get("daily_limit") or 0) >= daily_limit:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            compass.set_budget(resource_type, daily_limit, changed_by="model_policy")
+            touched.append({"resource_type": resource_type, "daily_limit": daily_limit})
+        if touched:
+            nerve.emit("fabric_updated", {"fabric": "compass", "key": "budget_limits_from_model_policy", "count": len(touched)})
+        return {"updated": touched}
 
     def _model_target_spec(target: str) -> tuple[str, Path]:
         t = str(target or "").strip().lower()
@@ -1411,6 +1468,10 @@ def create_app() -> FastAPI:
     def list_pending_feedback(limit: int = 100):
         return _pending_feedback_surveys(limit=limit)
 
+    @app.get("/feedback/{task_id}/state")
+    def get_feedback_state(task_id: str):
+        return _feedback_state(task_id)
+
     @app.get("/feedback/{task_id}/questions")
     async def get_feedback_questions(task_id: str):
         """Generate task-specific feedback questions via Cortex (LLM).
@@ -1519,78 +1580,116 @@ def create_app() -> FastAPI:
 
         return _DEFAULT_QUESTIONS
 
-    @app.post("/feedback/{task_id}")
-    async def submit_feedback(task_id: str, request: Request):
-        """Record user rating on a delivered outcome. Feeds back into Playbook evaluation."""
-        body = await request.json()
-        rating = body.get("rating")
-        try:
-            rating = int(rating)
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="rating must be an integer 1-5")
-        if not (1 <= rating <= 5):
-            raise HTTPException(status_code=400, detail="rating must be 1-5")
+    async def _submit_feedback_internal(task_id: str, body: dict, request: Request | None = None) -> dict:
+        source = str(body.get("source") or "portal")
+        fb_type = str(body.get("type") or "quick").strip().lower()
+        if fb_type not in {"quick", "deep", "append"}:
+            fb_type = "quick"
+        comment = str(body.get("comment") or "")[:1000].strip()
+        aspects = body.get("aspects") if isinstance(body.get("aspects"), dict) else {}
+        rating_raw = body.get("rating")
+        rating: int | None = None
+        if rating_raw is not None and str(rating_raw).strip() != "":
+            try:
+                rating = int(rating_raw)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="rating must be an integer 1-5")
+            if not (1 <= rating <= 5):
+                raise HTTPException(status_code=400, detail="rating must be 1-5")
 
-        comment = str(body.get("comment") or "")[:500]
-        aspects = body.get("aspects") or {}
+        is_append = fb_type == "append"
+        if is_append and not comment:
+            raise HTTPException(status_code=400, detail="append_comment_required")
+        if not is_append:
+            if fb_type == "quick" and rating is None:
+                raise HTTPException(status_code=400, detail="quick_feedback_requires_rating")
+            if fb_type == "deep" and rating is None and not comment:
+                raise HTTPException(status_code=400, detail="deep_feedback_requires_comment_or_rating")
 
         # Find task record to get method_id and task_type.
         tasks_path = state / "tasks.json"
-        tasks = []
+        tasks: list[dict] = []
         try:
             tasks = json.loads(tasks_path.read_text()) if tasks_path.exists() else []
         except Exception as exc:
             logger.warning("Failed to read tasks.json for feedback: %s", exc)
         task_record = next((t for t in tasks if t.get("task_id") == task_id), None)
 
-        score = rating / 5.0
         task_type = ""
         task_scale = ""
+        method_id = ""
         if task_record:
-            plan = task_record.get("plan") or {}
+            plan = task_record.get("plan") if isinstance(task_record.get("plan"), dict) else {}
             task_type = str(plan.get("task_type") or "")
             task_scale = str(plan.get("task_scale") or "")
-            method_id = plan.get("method_id")
-            if method_id:
-                outcome = "success" if rating >= 3 else "failure"
-                playbook.evaluate(
-                    method_id=method_id,
-                    task_id=task_id,
-                    outcome=outcome,
-                    score=score,
-                    detail={"rating": rating, "comment": comment, "aspects": aspects, "source": "user_feedback"},
-                )
+            method_id = str(plan.get("method_id") or "")
 
-            if task_scale == "campaign":
-                summary_zh = (
-                    f"Campaign任务用户反馈：rating={rating}/5；comment={comment or '无'}；"
-                    f"aspects={json.dumps(aspects, ensure_ascii=False)}"
+        survey = _load_feedback_survey(task_id) or {"task_id": task_id}
+        prev_response = survey.get("response") if isinstance(survey.get("response"), dict) else {}
+        prev_rating = prev_response.get("rating")
+        first_scored_feedback = bool(rating is not None and prev_rating in (None, ""))
+
+        prev_score: float | None = None
+        try:
+            if prev_response.get("score") is not None and str(prev_response.get("score")).strip() != "":
+                prev_score = float(prev_response.get("score"))
+        except (TypeError, ValueError):
+            prev_score = None
+        score: float | None = float(rating / 5.0) if rating is not None else prev_score
+        main_rating: int | None = rating
+        if main_rating is None and prev_rating is not None and str(prev_rating).strip() != "":
+            try:
+                main_rating = int(prev_rating)
+            except (TypeError, ValueError):
+                main_rating = None
+
+        # Primary score feedback contributes to playbook exactly once per task.
+        if first_scored_feedback and method_id:
+            outcome = "success" if int(rating or 0) >= 3 else "failure"
+            playbook.evaluate(
+                method_id=method_id,
+                task_id=task_id,
+                outcome=outcome,
+                score=score,
+                detail={
+                    "rating": rating,
+                    "comment": comment,
+                    "aspects": aspects,
+                    "source": "user_feedback",
+                    "feedback_type": fb_type,
+                },
+            )
+
+        if first_scored_feedback and task_scale == "campaign":
+            summary_zh = (
+                f"Campaign任务用户反馈：rating={rating}/5；comment={comment or '无'}；"
+                f"aspects={json.dumps(aspects, ensure_ascii=False)}"
+            )
+            summary_en = (
+                f"Campaign final feedback: rating={rating}/5; comment={comment or 'n/a'}; "
+                f"aspects={json.dumps(aspects, ensure_ascii=False)}"
+            )
+            try:
+                memory.intake(
+                    [
+                        {
+                            "title": f"Campaign feedback {task_id}",
+                            "domain": "user_feedback",
+                            "tier": "deep",
+                            "confidence": 1.0,
+                            "summary_zh": summary_zh,
+                            "summary_en": summary_en,
+                            "provider": "user",
+                            "source_type": "human",
+                            "source_agent": "user",
+                        }
+                    ],
+                    actor=f"{source}.feedback",
+                    source_type="human",
+                    source_agent="user",
                 )
-                summary_en = (
-                    f"Campaign final feedback: rating={rating}/5; comment={comment or 'n/a'}; "
-                    f"aspects={json.dumps(aspects, ensure_ascii=False)}"
-                )
-                try:
-                    memory.intake(
-                        [
-                            {
-                                "title": f"Campaign feedback {task_id}",
-                                "domain": "user_feedback",
-                                "tier": "deep",
-                                "confidence": 1.0,
-                                "summary_zh": summary_zh,
-                                "summary_en": summary_en,
-                                "provider": "user",
-                                "source_type": "human",
-                                "source_agent": "user",
-                            }
-                        ],
-                        actor="portal.feedback",
-                        source_type="human",
-                        source_agent="user",
-                    )
-                except Exception as exc:
-                    logger.warning("Failed to store campaign feedback into memory: %s", exc)
+            except Exception as exc:
+                logger.warning("Failed to store campaign feedback into memory: %s", exc)
 
         # Persist feedback aspects as Compass prefs for the learning system.
         if aspects and task_type:
@@ -1599,40 +1698,119 @@ def create_app() -> FastAPI:
                     v = float(aspect_val)
                     if 0.0 <= v <= 1.0:
                         compass.set_pref(
-                            f"feedback.{task_type}.{aspect_key}", str(round(v, 4)),
-                            source="user_feedback", changed_by="user",
+                            f"feedback.{task_type}.{aspect_key}",
+                            str(round(v, 4)),
+                            source="user_feedback",
+                            changed_by="user",
                         )
                 except (TypeError, ValueError):
                     pass
 
+        now = _utc()
+        history = _feedback_history(survey)
+        history.append(
+            {
+                "type": "append" if is_append else fb_type,
+                "source": source,
+                "rating": rating,
+                "comment": comment,
+                "aspects": aspects if isinstance(aspects, dict) else {},
+                "created_utc": now,
+            }
+        )
+        survey["history"] = history[-200:]
+        if not is_append:
+            survey["response"] = {
+                "rating": main_rating,
+                "score": score,
+                "comment": comment,
+                "aspects": aspects if isinstance(aspects, dict) else {},
+                "source": source,
+                "type": fb_type,
+            }
+        survey["status"] = "submitted"
+        survey["submitted_utc"] = now
+        if source == "portal":
+            survey["handled_channel"] = "portal"
+            survey["telegram_reminder_suppressed"] = True
+        _save_feedback_survey(task_id, survey)
+
         # Write to feedback JSONL.
         feedback_path = telemetry_dir / "outcome_feedback.jsonl"
-        _append_jsonl(feedback_path, {
-            "task_id": task_id,
-            "rating": rating,
-            "score": score,
-            "comment": comment,
-            "aspects": aspects,
-            "task_type": task_type,
-            "task_scale": task_scale,
-            "created_utc": _utc(),
-        })
-
-        survey = _load_feedback_survey(task_id)
-        if survey:
-            survey["status"] = "submitted"
-            survey["submitted_utc"] = _utc()
-            survey["response"] = {
+        _append_jsonl(
+            feedback_path,
+            {
+                "task_id": task_id,
+                "type": "append" if is_append else fb_type,
+                "source": source,
                 "rating": rating,
                 "score": score,
                 "comment": comment,
                 "aspects": aspects,
-            }
-            _save_feedback_survey(task_id, survey)
+                "task_type": task_type,
+                "task_scale": task_scale,
+                "created_utc": now,
+            },
+        )
 
-        nerve.emit("user_feedback_received", {"task_id": task_id, "rating": rating, "score": score})
-        _log_portal_event("feedback_submitted", {"task_id": task_id, "rating": rating}, request)
-        return {"ok": True, "task_id": task_id, "score": score}
+        if rating is not None:
+            nerve.emit("user_feedback_received", {"task_id": task_id, "rating": rating, "score": score})
+        if request is not None:
+            _log_portal_event(
+                "feedback_submitted" if not is_append else "feedback_appended",
+                {"task_id": task_id, "rating": rating, "source": source},
+                request,
+            )
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "score": score,
+            "status": str(survey.get("status") or ""),
+            "type": "append" if is_append else fb_type,
+            "history_count": len(survey.get("history") or []),
+        }
+
+    @app.post("/feedback/submit")
+    async def submit_feedback_compat(request: Request):
+        """Compatibility endpoint used by Portal JS payload {task_id, rating, comment, ...}."""
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+        task_id = str(body.get("task_id") or "").strip()
+        if not task_id:
+            raise HTTPException(status_code=400, detail="task_id_required")
+        return await _submit_feedback_internal(task_id, body, request=request)
+
+    @app.post("/feedback/{task_id}")
+    async def submit_feedback(task_id: str, request: Request):
+        """Submit quick/detailed feedback. Quick requires rating; deep can include comment."""
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+        return await _submit_feedback_internal(task_id, body, request=request)
+
+    @app.post("/feedback/{task_id}/append")
+    async def append_feedback(task_id: str, request: Request):
+        """Append comment-only feedback after initial review."""
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+        body["type"] = "append"
+        return await _submit_feedback_internal(task_id, body, request=request)
+
+    @app.post("/tasks/{task_id}/feedback")
+    async def submit_task_feedback_compat(task_id: str, request: Request):
+        """Compatibility endpoint used by Telegram adapter quick rating callbacks."""
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+        if body.get("rating") is None and body.get("quick_rating") is not None:
+            body["rating"] = body.get("quick_rating")
+        if not str(body.get("type") or "").strip():
+            body["type"] = "quick" if body.get("rating") is not None else "append"
+        if not str(body.get("source") or "").strip():
+            body["source"] = "telegram"
+        return await _submit_feedback_internal(task_id, body, request=None)
 
     # ── Console — System overview ──────────────────────────────────────────────
 
@@ -2065,9 +2243,16 @@ def create_app() -> FastAPI:
         body["_version"] = version
         body["_updated"] = _utc()[:10]
         model_policy_path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
+        sync_result = _sync_compass_provider_budgets_from_policy(body, overwrite=True)
         cv_version = compass.record_config_version("model_policy", body, changed_by="console", reason="model_policy_update")
         nerve.emit("fabric_updated", {"fabric": "model_policy", "path": str(model_policy_path)})
-        return {"ok": True, "path": str(model_policy_path), "_version": version, "config_version": cv_version}
+        return {
+            "ok": True,
+            "path": str(model_policy_path),
+            "_version": version,
+            "config_version": cv_version,
+            "budget_sync": sync_result,
+        }
 
     @app.put("/console/model-registry")
     async def set_model_registry(request: Request):
@@ -2132,9 +2317,15 @@ def create_app() -> FastAPI:
             )
         value["_updated"] = _utc()[:10]
         model_policy_path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+        sync_result = _sync_compass_provider_budgets_from_policy(value, overwrite=True)
         cv_version = compass.record_config_version("model_policy", value, changed_by="console", reason=f"rollback_to:{version}")
         nerve.emit("fabric_updated", {"fabric": "model_policy", "path": str(model_policy_path), "rollback_from_version": version})
-        return {"ok": True, "rolled_back_to": version, "config_version": cv_version}
+        return {
+            "ok": True,
+            "rolled_back_to": version,
+            "config_version": cv_version,
+            "budget_sync": sync_result,
+        }
 
     @app.post("/console/model-registry/rollback/{version}")
     def model_registry_rollback(version: int):
@@ -2631,6 +2822,16 @@ def create_app() -> FastAPI:
         compass.set_priority(domain, weight, reason, changed_by="console")
         nerve.emit("fabric_updated", {"fabric": "compass", "key": f"priority.{domain}"})
         return {"ok": True}
+
+    # ── Startup sync (model policy -> Compass provider budgets) ───────────────
+
+    if model_policy_path.exists():
+        try:
+            policy = json.loads(model_policy_path.read_text(encoding="utf-8"))
+            if isinstance(policy, dict):
+                _sync_compass_provider_budgets_from_policy(policy, overwrite=False)
+        except Exception as exc:
+            logger.warning("Failed to sync provider budgets from model policy on startup: %s", exc)
 
     # ── Serve static interfaces ────────────────────────────────────────────────
 

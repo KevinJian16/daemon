@@ -459,6 +459,7 @@ class Dispatch:
             logger.warning("Failed to record production release execution for %s: %s", task_id, exc)
 
         self._nerve.emit("task_submitted", {"task_id": task_id, "run_root": run_root})
+        self._notify_task_started(plan)
         await self._maybe_submit_shadow(plan, parent_task_id=task_id)
         return {"ok": True, "task_id": task_id, "status": "running", "run_root": run_root}
 
@@ -977,6 +978,35 @@ class Dispatch:
             tmp.replace(tasks_path)
         except Exception as exc:
             logger.warning("Failed to update replay state for %s: %s", task_id, exc)
+
+    def _notify_task_started(self, plan: dict) -> None:
+        """Push task_started notification to the Telegram adapter (best-effort)."""
+        import os as _os
+        prefs = {}
+        try:
+            prefs = self._compass.all_prefs() if self._compass else {}
+        except Exception:
+            pass
+        if prefs.get("telegram_enabled") != "true":
+            return
+        adapter_url = _os.environ.get("TELEGRAM_ADAPTER_URL", "http://127.0.0.1:8001")
+        try:
+            import httpx as _httpx
+            _httpx.post(
+                f"{adapter_url}/notify",
+                json={
+                    "event": "task_started",
+                    "payload": {
+                        "task_id": str(plan.get("task_id") or ""),
+                        "title": str(plan.get("title") or plan.get("task_type") or "任务"),
+                        "task_scale": str(plan.get("task_scale") or "thread"),
+                        "task_type": str(plan.get("task_type") or ""),
+                    },
+                },
+                timeout=5,
+            )
+        except Exception as exc:
+            logger.warning("Telegram notify task_started failed: %s", exc)
 
     def _make_run_root(self, task_id: str, is_shadow: bool = False) -> str:
         runs_dir = (self._state / "runs_shadow" / task_id) if is_shadow else (self._state / "runs" / task_id)

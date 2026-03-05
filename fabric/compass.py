@@ -115,13 +115,13 @@ BOOTSTRAP_QUALITY_PROFILES: list[dict] = [
 
 BOOTSTRAP_BUDGETS: list[dict] = [
     # V2 provider budget baseline (per-day token caps).
-    {"resource_type": "minimax_tokens",    "daily_limit": 2_000_000},
-    {"resource_type": "qwen_tokens",       "daily_limit": 1_000_000},
-    {"resource_type": "zhipu_tokens",      "daily_limit": 500_000},
-    {"resource_type": "deepseek_tokens",   "daily_limit": 500_000},
+    {"resource_type": "minimax_tokens",    "daily_limit": 20_000_000},
+    {"resource_type": "qwen_tokens",       "daily_limit": 10_000_000},
+    {"resource_type": "zhipu_tokens",      "daily_limit": 5_000_000},
+    {"resource_type": "deepseek_tokens",   "daily_limit": 5_000_000},
     # Compatibility budgets for optional providers/tools.
-    {"resource_type": "openai_tokens",     "daily_limit": 500_000},
-    {"resource_type": "anthropic_tokens",  "daily_limit": 200_000},
+    {"resource_type": "openai_tokens",     "daily_limit": 5_000_000},
+    {"resource_type": "anthropic_tokens",  "daily_limit": 2_000_000},
     {"resource_type": "concurrent_tasks",  "daily_limit": 10},
 ]
 

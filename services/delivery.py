@@ -80,7 +80,7 @@ class DeliveryService:
 
         # Channel routing (best-effort — failures don't block delivery).
         prefs = self._compass.all_prefs()
-        self._route_telegram(content, plan, prefs)
+        self._route_telegram(content, plan, prefs, quality_score=quality_score)
 
         self._nerve.emit("delivery_completed", {
             "task_id": plan.get("task_id", ""),
@@ -375,22 +375,23 @@ class DeliveryService:
     def _archive(self, run_root: str, plan: dict, render_file: Path) -> Path:
         task_type = str(plan.get("task_type") or "manual")
         task_id = str(plan.get("task_id") or uuid.uuid4().hex[:8])
-        title = str(plan.get("title") or task_id)[:60].replace("/", "-").strip()
+        raw_title = str(plan.get("title") or task_type)
+        title = raw_title[:60].replace("/", "-").replace(":", "-").strip()
         outcome_root = self._resolve_outcome_root()
 
-        if task_type in ("daily_brief", "weekly_brief"):
-            today = time.strftime("%Y-%m-%d")
-            dest = outcome_root / "scheduled" / task_type / today
-        else:
-            dest = outcome_root / "manual" / title
-
+        # Directory: outcomes/YYYY-MM/YYYY-MM-DD HH.MM <title>/
+        month_dir = time.strftime("%Y-%m")
+        timestamp = time.strftime("%Y-%m-%d %H.%M")
+        dest = outcome_root / month_dir / f"{timestamp} {title}"
         dest.mkdir(parents=True, exist_ok=True)
-        out = dest / f"report{render_file.suffix}"
-        out.write_text(render_file.read_text())
+
+        safe_title = title[:80]
+        out = dest / f"{safe_title}{render_file.suffix}"
+        out.write_bytes(render_file.read_bytes())
 
         manifest = {
             "task_id": task_id,
-            "title": title,
+            "title": raw_title,
             "task_type": task_type,
             "run_root": run_root,
             "delivered_utc": _utc(),
@@ -412,6 +413,7 @@ class DeliveryService:
             rel_path = str(outcome_dir)
         index.append({
             "path": rel_path,
+            "drive_path": rel_path,  # task_id → drive_path mapping for Portal lookup
             "title": plan.get("title", ""),
             "task_type": plan.get("task_type", "manual"),
             "task_id": plan.get("task_id", ""),
@@ -427,21 +429,26 @@ class DeliveryService:
         root.mkdir(parents=True, exist_ok=True)
         return root
 
-    def _route_telegram(self, content: str, plan: dict, prefs: dict[str, str]) -> None:
+    def _route_telegram(self, content: str, plan: dict, prefs: dict[str, str], quality_score: float = 0.0) -> None:
+        """Push task_completed notification via the Telegram adapter's /notify endpoint.
+
+        Uses the adapter (localhost) so inline keyboard rating is included automatically.
+        """
         if prefs.get("telegram_enabled") != "true":
             return
-        bot_token = __import__("os").environ.get("TELEGRAM_BOT_TOKEN", "")
-        chat_id = prefs.get("telegram_chat_id") or __import__("os").environ.get("TELEGRAM_CHAT_ID", "")
-        if not bot_token or not chat_id:
-            return
-        title = plan.get("title", "Daemon Delivery")
-        summary = content[:800].strip()
-        msg = f"*{title}*\n\n{summary}"
+        adapter_url = __import__("os").environ.get("TELEGRAM_ADAPTER_URL", "http://127.0.0.1:8001")
+        notify_payload = {
+            "event": "task_completed",
+            "payload": {
+                "task_id": str(plan.get("task_id") or ""),
+                "title": str(plan.get("title") or plan.get("task_type") or "任务"),
+                "summary": content[:1200].strip(),
+                "score": round(quality_score, 4),
+                "task_type": str(plan.get("task_type") or ""),
+                "task_scale": str(plan.get("task_scale") or "thread"),
+            },
+        }
         try:
-            httpx.post(
-                f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"},
-                timeout=15,
-            )
+            httpx.post(f"{adapter_url}/notify", json=notify_payload, timeout=10)
         except Exception as exc:
-            logger.warning("Telegram delivery failed for task %s: %s", plan.get("task_id", ""), exc)
+            logger.warning("Telegram adapter notify failed for task %s: %s", plan.get("task_id", ""), exc)
