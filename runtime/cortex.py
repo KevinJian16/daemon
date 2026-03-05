@@ -141,7 +141,7 @@ class Cortex:
     def is_available(self) -> bool:
         return bool(self._clients)
 
-    def complete(self, prompt: str, model: str | None = None, max_tokens: int = 2048, temperature: float = 0.3) -> str:
+    def complete(self, prompt: str, model: str | None = None, max_tokens: int = 4096, temperature: float = 0.3) -> str:
         """Generate a completion. Tries providers in priority order.
 
         ``model`` may be a registry alias (e.g. "fast", "analysis") or a literal
