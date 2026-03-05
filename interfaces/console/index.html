@@ -5,88 +5,372 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Daemon Console</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+/* ── Variables ─────────────────────────────────────────── */
+:root {
+  --bg:      #faf9f7;
+  --surface: #f0ece3;
+  --hover:   #e8e3da;
+  --border:  #e2ddd5;
+  --text:    #1c1917;
+  --muted:   #78716c;
+  --accent:  #c96940;
+  --green:   #15803d;
+  --amber:   #b45309;
+  --red:     #b91c1c;
+  --blue:    #1d4ed8;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --mono: 'SF Mono', 'Fira Code', monospace;
+}
+@media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
-    --text: #e2e8f0; --muted: #94a3b8; --accent: #6366f1;
-    --green: #10b981; --yellow: #f59e0b; --red: #ef4444;
-    --font: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    --bg:      #1c1917;
+    --surface: #231f1c;
+    --hover:   #2c2723;
+    --border:  #3a3530;
+    --text:    #f5f0e8;
+    --muted:   #a8a29e;
+    --accent:  #e8a07a;
+    --green:   #4ade80;
+    --amber:   #fbbf24;
+    --red:     #f87171;
+    --blue:    #93c5fd;
   }
-  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; }
-  header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--surface); }
-  header h1 { font-size: 16px; font-weight: 600; color: var(--accent); }
-  #gate-badge { padding: 3px 10px; border-radius: 4px; font-weight: 700; font-size: 11px; }
-  .GREEN { background: #064e3b; color: var(--green); }
-  .YELLOW { background: #451a03; color: var(--yellow); }
-  .RED { background: #450a0a; color: var(--red); }
-  nav { display: flex; gap: 2px; padding: 8px 20px; background: var(--surface); border-bottom: 1px solid var(--border); }
-  nav button { background: none; border: none; color: var(--muted); padding: 6px 14px; cursor: pointer; border-radius: 4px; font-family: var(--font); font-size: 12px; }
-  nav button.active, nav button:hover { background: var(--border); color: var(--text); }
-  main { padding: 20px; }
-  .panel { display: none; }
-  .panel.active { display: block; }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 16px; margin-bottom: 12px; }
-  .card h3 { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
-  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 12px; }
-  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 12px; }
-  .stat .val { font-size: 28px; font-weight: 700; color: var(--text); }
-  .stat .lbl { color: var(--muted); font-size: 11px; margin-top: 4px; }
-  table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; color: var(--muted); font-size: 11px; text-transform: uppercase; padding: 8px; border-bottom: 1px solid var(--border); }
-  td { padding: 8px; border-bottom: 1px solid var(--border); color: var(--text); }
-  tr:hover td { background: rgba(255,255,255,0.02); }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 600; }
-  .ok { background: #064e3b; color: var(--green); }
-  .error { background: #450a0a; color: var(--red); }
-  .degraded { background: #451a03; color: var(--yellow); }
-  .hybrid { background: #1e1b4b; color: #a5b4fc; }
-  .deterministic { background: #0c2340; color: #67e8f9; }
-  button.action { background: var(--accent); color: white; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; font-family: var(--font); font-size: 12px; }
-  button.action:hover { opacity: 0.85; }
-  #nerve-feed { max-height: 300px; overflow-y: auto; font-size: 12px; }
-  #nerve-feed div { padding: 5px 8px; border-bottom: 1px solid var(--border); }
-  #nerve-feed .ts { color: var(--muted); font-size: 10px; }
-  pre { background: #0a0c12; padding: 12px; border-radius: 4px; overflow-x: auto; font-size: 11px; color: #a5f3fc; line-height: 1.6; }
-  input, select { background: var(--surface); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 4px; font-family: var(--font); font-size: 12px; }
-  .search-row { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
-  .refresh-note { color: var(--muted); font-size: 11px; margin-top: 8px; }
-  textarea.editor {
-    width: 100%;
-    min-height: 260px;
-    background: #0a0c12;
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 6px;
-    padding: 10px;
-    font-family: var(--font);
-    font-size: 12px;
-    line-height: 1.6;
+}
+*,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; }
+button { font-family: inherit; cursor: pointer; border: none; background: none; }
+header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+header h1 { font-size: 14px; font-weight: 600; letter-spacing: -.2px; }
+#gate-badge { padding: 2px 9px; border-radius: 4px; font-size: 10px; font-weight: 600; letter-spacing: .4px; }
+.GREEN { background: rgba(21,128,61,.12); color: var(--green); }
+.YELLOW { background: rgba(180,83,9,.12); color: var(--amber); }
+.RED { background: rgba(185,28,28,.12); color: var(--red); }
+nav {
+  display: flex; gap: 1px;
+  padding: 6px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto; scrollbar-width: none;
+}
+nav::-webkit-scrollbar { display: none; }
+nav button {
+  color: var(--muted); font-size: 12px;
+  padding: 5px 12px; border-radius: 6px;
+  transition: background .12s, color .12s;
+  white-space: nowrap; flex-shrink: 0;
+}
+nav button.active { background: var(--hover); color: var(--text); font-weight: 500; }
+nav button:hover { background: var(--hover); color: var(--text); }
+main { padding: 20px; max-width: 1400px; }
+.panel { display: none; }
+.panel.active { display: block; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 12px; }
+.card h3 { font-size: 10px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .7px; margin-bottom: 12px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; margin-bottom: 12px; }
+.stat { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.stat .val { font-size: 26px; font-weight: 600; letter-spacing: -.5px; }
+.stat .lbl { color: var(--muted); font-size: 11px; margin-top: 3px; }
+@media (max-width: 680px) { .grid-4 { grid-template-columns: repeat(2,1fr); } }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; padding: 7px 8px; border-bottom: 1px solid var(--border); }
+td { padding: 8px; border-bottom: 1px solid var(--border); font-size: 12px; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: var(--hover); }
+.badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 600; }
+.ok         { background: rgba(21,128,61,.12);  color: var(--green); }
+.error      { background: rgba(185,28,28,.12);  color: var(--red); }
+.degraded   { background: rgba(180,83,9,.12);   color: var(--amber); }
+.hybrid     { background: rgba(29,78,216,.12);  color: var(--blue); }
+.deterministic { background: rgba(120,113,108,.12); color: var(--muted); }
+button.action { background: var(--accent); color: #fff; padding: 5px 12px; border-radius: 6px; font-size: 12px; font-weight: 500; transition: opacity .15s; }
+button.action:hover { opacity: .85; }
+#nerve-feed { max-height: 300px; overflow-y: auto; font-size: 12px; }
+#nerve-feed div { padding: 5px 8px; border-bottom: 1px solid var(--border); font-family: var(--mono); }
+#nerve-feed .ts { color: var(--muted); font-size: 10px; }
+pre { background: var(--hover); border: 1px solid var(--border); padding: 12px; border-radius: 6px; overflow-x: auto; font-family: var(--mono); font-size: 11px; color: var(--text); line-height: 1.6; }
+code { font-family: var(--mono); font-size: 11px; }
+input, select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 5px 10px; border-radius: 6px; font-family: var(--font); font-size: 12px; outline: none; transition: border-color .15s; }
+input:focus, select:focus { border-color: var(--accent); }
+.search-row { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
+.refresh-note { color: var(--muted); font-size: 11px; margin-top: 8px; }
+textarea.editor {
+  width: 100%;
+  min-height: 260px;
+  background: var(--hover);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  outline: none; resize: vertical;
+}
+textarea.editor:focus { border-color: var(--accent); }
+.editor-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.28);
+  z-index: 40;
+  display: none;
+}
+.editor-backdrop.open { display: block; }
+.editor-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: min(760px, 92vw);
+  height: 100vh;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: -10px 0 30px rgba(0, 0, 0, 0.16);
+  z-index: 45;
+  transform: translateX(102%);
+  transition: transform .18s ease;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+}
+.editor-drawer.open { transform: translateX(0); }
+.editor-head {
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.editor-head h3 {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+}
+.editor-head .sub {
+  color: var(--muted);
+  font-size: 11px;
+}
+.editor-head .tag {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.editor-notice {
+  padding: 8px 16px;
+  color: var(--muted);
+  font-size: 11px;
+  border-bottom: 1px solid var(--border);
+}
+.editor-body {
+  padding: 12px 16px;
+  overflow: auto;
+}
+.editor-actions {
+  border-top: 1px solid var(--border);
+  padding: 10px 16px;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.action.secondary {
+  background: #334155;
+}
+.action.warn {
+  background: #7f1d1d;
+}
+.action:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+.list-foot {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+}
+.pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.pager button {
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: var(--bg);
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.pager button:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+.pager button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+.mini-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 8px;
+}
+@media (max-width: 900px) {
+  .mini-stats { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+}
+.mini-stat {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.mini-stat .k {
+  color: var(--muted);
+  font-size: 10px;
+  margin-bottom: 2px;
+}
+.mini-stat .v {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 15px;
+}
+.table-shell {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.table-shell table {
+  margin: 0;
+}
+#panel-policy .policy-toolbar input,
+#panel-policy .policy-toolbar select,
+#panel-policy .policy-toolbar .action {
+  height: 32px;
+}
+#panel-policy .policy-toolbar .action {
+  display: inline-flex;
+  align-items: center;
+}
+#panel-policy .policy-note-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+#panel-policy .policy-catalog-block h3 {
+  margin-bottom: 8px;
+}
+#panel-policy .table-shell table {
+  width: 100%;
+  table-layout: fixed;
+}
+#panel-policy .table-shell th,
+#panel-policy .table-shell td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#panel-policy .table-shell td {
+  vertical-align: middle;
+}
+#panel-policy .table-shell td:last-child {
+  text-align: center;
+}
+#panel-policy .table-shell td .action {
+  width: 88px;
+  height: 30px;
+  justify-content: center;
+}
+#panel-model .model-actions {
+  justify-content: flex-start;
+}
+#panel-model .search-row input,
+#panel-model .search-row select,
+#panel-model .search-row .action {
+  height: 32px;
+}
+#panel-model .search-row .action {
+  display: inline-flex;
+  align-items: center;
+}
+#panel-model .model-filters select,
+#panel-model .model-filters input {
+  flex: 0 0 auto;
+}
+#panel-model .mini-stats {
+  margin-top: 10px;
+}
+#panel-model .mini-stat {
+  min-height: 68px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+#panel-model .mini-stat .v {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.model-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+@media (max-width: 1000px) {
+  .model-summary-grid {
+    grid-template-columns: 1fr;
   }
+}
+.model-table-shell {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.model-table-shell table {
+  margin: 0;
+}
+.model-empty {
+  color: var(--muted);
+  padding: 10px;
+}
 </style>
 </head>
 <body>
 <header>
-  <h1>⬡ Daemon Console</h1>
-  <span id="gate-badge" class="GREEN">GREEN</span>
+  <h1 id="h-title">Daemon Console</h1>
+  <span id="gate-badge" class="GREEN" title="Gate = 系统接单状态。GREEN：正常接单；YELLOW：降级运行；RED：暂停接单">GREEN</span>
+  <span id="gate-label" style="color:var(--muted);font-size:11px" title="Gate = 系统接单状态">接单中</span>
   <span id="running-tasks" style="color:var(--muted);font-size:11px;margin-left:auto"></span>
-  <button onclick="refreshAll()" style="background:none;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:11px;">↻ Refresh</button>
+  <button onclick="toggleConsoleLang()" id="c-lang-btn" style="color:var(--muted);font-size:12px;padding:4px 8px;border-radius:6px;transition:background .12s">EN</button>
+  <a href="/portal/" data-zh="Portal" data-en="Portal" style="color:var(--muted);font-size:12px;padding:4px 8px;border-radius:6px;text-decoration:none;transition:background .12s" onmouseover="this.style.background='var(--hover)'" onmouseout="this.style.background=''">Portal</a>
+  <button onclick="refreshAll()" data-zh="↻ 刷新" data-en="↻ Refresh" style="color:var(--muted);font-size:12px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);transition:background .12s" onmouseover="this.style.background='var(--hover)'" onmouseout="this.style.background=''">↻ 刷新</button>
 </header>
 
 <nav>
-  <button class="active" onclick="show('overview', this)">Overview</button>
-  <button onclick="show('spine', this)">Spine</button>
-  <button onclick="show('fabric', this)">Fabric</button>
-  <button onclick="show('policy', this)">Policy</button>
-  <button onclick="show('traces', this)">Traces</button>
-  <button onclick="show('cortex', this)">Cortex</button>
-  <button onclick="show('strategies', this)">Strategies</button>
-  <button onclick="show('semantics', this)">Semantics</button>
-  <button onclick="show('model', this)">Model</button>
-  <button onclick="show('agents', this)">Agents</button>
-  <button onclick="show('skill-evolution', this)">Skill Evolution</button>
-  <button onclick="show('schedules', this)">Schedules</button>
-  <button onclick="show('campaigns', this)">Campaigns</button>
-  <button onclick="show('system', this)">System</button>
+  <button class="active" onclick="show('overview', this)" data-zh="概览" data-en="Overview">概览</button>
+  <button onclick="show('spine', this)" data-zh="Spine" data-en="Spine">Spine</button>
+  <button onclick="show('fabric', this)" data-zh="Fabric" data-en="Fabric">Fabric</button>
+  <button onclick="show('policy', this)" data-zh="Policy 策略" data-en="Policy">Policy</button>
+  <button onclick="show('traces', this)" data-zh="追踪" data-en="Traces">追踪</button>
+  <button onclick="show('strategies', this)" data-zh="Strategy 发布" data-en="Strategy">Strategy</button>
+  <button onclick="show('model', this)" data-zh="模型与用量" data-en="Model & Usage">模型与用量</button>
+  <button onclick="show('agents', this)" data-zh="Agents" data-en="Agents">Agents</button>
+  <button onclick="show('skill-evolution', this)" data-zh="Skills 进化" data-en="Skill Evolution">Skills 进化</button>
+  <button onclick="show('schedules', this)" data-zh="调度" data-en="Schedules">调度</button>
+  <button onclick="show('campaigns', this)" data-zh="Campaign" data-en="Campaign">Campaign</button>
+  <button onclick="show('system', this)" data-zh="系统" data-en="System">系统</button>
 </nav>
 
 <main>
@@ -108,9 +392,9 @@
 <!-- SPINE -->
 <div id="panel-spine" class="panel">
   <div class="card">
-    <h3>Routine Status</h3>
+    <h3>Spine Runtime</h3>
     <table id="spine-table">
-      <thead><tr><th>Routine</th><th>Mode</th><th>Schedule</th><th>Last Run</th><th>Action</th></tr></thead>
+      <thead><tr><th>Routine</th><th>Mode</th><th>Last Run</th></tr></thead>
       <tbody id="spine-tbody"></tbody>
     </table>
   </div>
@@ -127,9 +411,9 @@
 <!-- FABRIC -->
 <div id="panel-fabric" class="panel">
   <div style="display:flex;gap:8px;margin-bottom:12px;">
-    <button class="action" onclick="showFabric('memory')">Memory</button>
-    <button class="action" onclick="showFabric('playbook')">Playbook</button>
-    <button class="action" onclick="showFabric('compass')">Compass</button>
+    <button class="action" onclick="showFabric('memory')" data-zh="Memory" data-en="Memory">Memory</button>
+    <button class="action" onclick="showFabric('playbook')" data-zh="Playbook" data-en="Playbook">Playbook</button>
+    <button class="action" onclick="showFabric('compass')" data-zh="Compass" data-en="Compass">Compass</button>
   </div>
   <div id="fabric-content"></div>
 </div>
@@ -137,60 +421,102 @@
 <!-- POLICY -->
 <div id="panel-policy" class="panel">
   <div class="card">
-    <h3>Domain Priorities</h3>
+    <h3 id="policy-heading-priorities">领域优先级</h3>
     <table id="priority-table">
       <thead><tr><th>Domain</th><th>Weight</th><th>Source</th><th>Updated</th></tr></thead>
       <tbody id="priority-tbody"></tbody>
     </table>
   </div>
   <div class="card">
-    <h3>Policy Editor</h3>
-    <div class="search-row">
-      <select id="policy-scope" onchange="onPolicyScopeChange()" style="width:160px">
+    <h3 id="policy-heading-editor">Policy 编辑器</h3>
+    <div class="search-row policy-toolbar">
+      <select id="policy-scope" onchange="onPolicyScopeChange(true, false)" style="width:160px">
         <option value="quality">quality</option>
         <option value="preference">preference</option>
         <option value="budget">budget</option>
       </select>
-      <input id="policy-key" placeholder="task_type (e.g. research_report)" style="width:260px">
-      <button class="action" onclick="loadPolicyEditor()">Load</button>
-      <button class="action" style="background:#14532d" onclick="savePolicyEditor()">Save</button>
+      <select id="policy-key-select" onchange="onPolicyKeyPresetChange()" style="width:240px">
+        <option value="default">default</option>
+      </select>
+      <button class="action" onclick="loadPolicyEditor()" data-zh="编辑 Policy" data-en="Edit Policy">Edit Policy</button>
+      <button class="action secondary" onclick="cancelPolicyEditor()" data-zh="关闭 Policy Editor" data-en="Close Editor">关闭 Policy Editor</button>
     </div>
-    <div style="display:flex;align-items:center;justify-content:space-between;margin:8px 0;color:var(--muted);font-size:11px">
-      <span id="policy-editor-meta">No policy loaded</span>
-      <span>Quality quick keys:
-        <button class="action" style="font-size:10px;padding:2px 6px;background:#334155" onclick="editPolicyKey('quality','default')">default</button>
-        <button class="action" style="font-size:10px;padding:2px 6px;background:#334155" onclick="editPolicyKey('quality','research_report')">research_report</button>
-        <button class="action" style="font-size:10px;padding:2px 6px;background:#334155" onclick="editPolicyKey('quality','daily_brief')">daily_brief</button>
-      </span>
+    <div class="policy-note-row">
+      <span id="policy-editor-meta">Editor idle</span>
     </div>
-    <textarea id="policy-editor-text" class="editor" style="min-height:220px"></textarea>
   </div>
   <div class="card">
-    <h3>Policy Catalog</h3>
-    <div class="search-row">
-      <button class="action" onclick="loadPolicyCatalog()">Refresh Catalog</button>
+    <div class="search-row policy-toolbar" style="margin-bottom:8px">
+      <button class="action" onclick="loadPolicyCatalog()" data-zh="刷新目录" data-en="Refresh Catalog">刷新目录</button>
     </div>
-    <table>
-      <thead><tr><th>Preference Key</th><th>Value</th><th>Action</th></tr></thead>
-      <tbody id="policy-pref-tbody"><tr><td colspan="3" style="color:var(--muted)">Loading…</td></tr></tbody>
-    </table>
-    <table style="margin-top:10px">
-      <thead><tr><th>Budget Type</th><th>Daily Limit</th><th>Current Usage</th><th>Action</th></tr></thead>
-      <tbody id="policy-budget-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
-    </table>
+    <div class="policy-catalog-block" style="margin-bottom:10px">
+      <h3 id="policy-heading-quality">Policy 质量键</h3>
+      <div class="table-shell">
+        <table>
+          <colgroup>
+            <col style="width:25%">
+            <col style="width:25%">
+            <col style="width:25%">
+            <col style="width:25%">
+          </colgroup>
+          <thead><tr><th>Quality Key</th><th>Profile</th><th>Usage</th><th>Action</th></tr></thead>
+          <tbody id="policy-quality-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="policy-catalog-block" style="margin-bottom:10px">
+      <h3 id="policy-heading-preferences">Policy 偏好</h3>
+      <div class="table-shell">
+        <table>
+          <colgroup>
+            <col style="width:25%">
+            <col style="width:25%">
+            <col style="width:25%">
+            <col style="width:25%">
+          </colgroup>
+          <thead><tr><th>Preference Key</th><th>Value</th><th>Scope</th><th>Action</th></tr></thead>
+          <tbody id="policy-pref-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="policy-catalog-block">
+      <h3 id="policy-heading-budgets">Policy 预算</h3>
+      <div class="table-shell">
+        <table>
+          <colgroup>
+            <col style="width:25%">
+            <col style="width:25%">
+            <col style="width:25%">
+            <col style="width:25%">
+          </colgroup>
+          <thead><tr><th>Budget Type</th><th>Daily Limit</th><th>Current Usage</th><th>Action</th></tr></thead>
+          <tbody id="policy-budget-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
   </div>
   <div class="card">
-    <h3>Policy Versions</h3>
-    <div class="search-row">
-      <button class="action" onclick="loadPolicyVersions()">Load Versions</button>
-      <select id="policy-diff-a" onchange="renderPolicyDiff()"><option value="">Version A</option></select>
-      <select id="policy-diff-b" onchange="renderPolicyDiff()"><option value="">Version B</option></select>
+    <h3 id="policy-heading-versions">Policy 版本</h3>
+    <div class="search-row policy-toolbar">
+      <button class="action" onclick="loadPolicyVersions()" data-zh="加载版本" data-en="Load Versions">加载版本</button>
+      <select id="policy-version-select"><option value="">Select version</option></select>
+      <button class="action" style="background:#334155" onclick="viewSelectedPolicyVersion()" data-zh="查看版本" data-en="View Version">查看版本</button>
+      <button class="action" style="background:#7f1d1d" onclick="rollbackSelectedPolicyVersion()" data-zh="回滚版本" data-en="Rollback Version">回滚版本</button>
     </div>
-    <table>
-      <thead><tr><th>Version</th><th>Changed</th><th>By</th><th>Reason</th><th>Action</th></tr></thead>
-      <tbody id="policy-versions-tbody"><tr><td colspan="5" style="color:var(--muted)">Load a policy key to view versions</td></tr></tbody>
-    </table>
-    <pre id="policy-diff-content" style="margin-top:10px">Select two versions to view diff.</pre>
+    <div class="table-shell">
+      <table>
+        <colgroup>
+          <col style="width:20%">
+          <col style="width:20%">
+          <col style="width:20%">
+          <col style="width:20%">
+          <col style="width:20%">
+        </colgroup>
+        <thead><tr><th>Version</th><th>Changed</th><th>By</th><th>Reason</th><th>Action</th></tr></thead>
+        <tbody id="policy-versions-tbody"><tr><td colspan="5" style="color:var(--muted)">Load a policy key first to view versions</td></tr></tbody>
+      </table>
+    </div>
+    <pre id="policy-version-preview" style="margin-top:10px">Select one version to preview.</pre>
   </div>
 </div>
 
@@ -206,34 +532,30 @@
       <option>spine.relay</option><option>spine.tend</option>
     </select>
     <select id="trace-status"><option value="">Any status</option><option>ok</option><option>error</option></select>
-    <button class="action" onclick="loadTraces()">Search</button>
+    <select id="trace-date-preset" onchange="applyDatePreset('trace')">
+      <option value="manual">Manual</option>
+      <option value="today">Today</option>
+      <option value="last_24h">Last 24h</option>
+      <option value="last_7d">Last 7d</option>
+      <option value="last_30d">Last 30d</option>
+    </select>
+    <input id="trace-since" placeholder="since UTC (optional)" style="width:220px">
+    <input id="trace-q" placeholder="trace_id / routine" style="width:190px">
+    <select id="trace-page-size" onchange="setPageSizeAndReload('traces', this.value, loadTraces)">
+      <option value="20">20 / page</option>
+      <option value="50" selected>50 / page</option>
+      <option value="100">100 / page</option>
+    </select>
+    <button class="action" onclick="loadTraces()" data-zh="搜索" data-en="Search">搜索</button>
   </div>
   <table>
     <thead><tr><th>Trace ID</th><th>Routine</th><th>Status</th><th>Degraded</th><th>Started</th><th>Elapsed</th></tr></thead>
     <tbody id="traces-tbody"></tbody>
   </table>
+  <div class="list-foot"><div id="traces-pager" class="pager"></div></div>
   <div class="card" style="margin-top:12px">
     <h3>Trace Detail</h3>
     <pre id="trace-detail">Select a trace row to inspect details.</pre>
-  </div>
-</div>
-
-<!-- CORTEX -->
-<div id="panel-cortex" class="panel">
-  <div class="card">
-    <div class="search-row">
-      <input id="cortex-since" placeholder="since UTC (e.g. 2026-03-04T00:00:00Z)" style="width:280px">
-      <input id="cortex-until" placeholder="until UTC (optional)" style="width:240px">
-      <button class="action" onclick="loadCortexUsage()">Search</button>
-    </div>
-    <table>
-      <thead><tr><th>Time</th><th>Trace</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Elapsed</th><th>Status</th></tr></thead>
-      <tbody id="cortex-usage-tbody"><tr><td colspan="8" style="color:var(--muted)">No records loaded</td></tr></tbody>
-    </table>
-  </div>
-  <div class="card">
-    <h3>Cortex Provider Summary</h3>
-    <pre id="cortex-usage-summary">Load data to inspect provider usage summary.</pre>
   </div>
 </div>
 
@@ -250,45 +572,59 @@
         <option value="candidate">candidate</option>
         <option value="retired">retired</option>
       </select>
-      <button class="action" onclick="loadStrategies()">Refresh</button>
+      <input id="strategy-q" placeholder="strategy / cluster / stage" style="width:220px">
+      <select id="strategy-page-size" onchange="setPageSizeAndReload('strategies', this.value, loadStrategies)">
+        <option value="20" selected>20 / page</option>
+        <option value="50">50 / page</option>
+        <option value="100">100 / page</option>
+      </select>
+      <button class="action" onclick="loadStrategies()" data-zh="刷新" data-en="Refresh">刷新</button>
     </div>
     <table>
       <thead><tr><th>Strategy ID</th><th>Cluster</th><th>Stage</th><th>Risk</th><th>Global</th><th>Samples</th><th>Updated</th><th>Action</th></tr></thead>
-      <tbody id="strategies-tbody"><tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr></tbody>
+      <tbody id="strategies-tbody"><tr><td colspan="8" style="color:var(--muted)">Loading…</td></tr></tbody>
     </table>
+    <div class="list-foot"><div id="strategies-pager" class="pager"></div></div>
   </div>
   <div class="card">
-    <h3>Shadow Comparison Report</h3>
+    <h3 id="strategy-heading-shadow-report">Shadow 对比报告</h3>
+    <div class="search-row">
+      <input id="shadow-q" placeholder="task / cluster / strategy" style="width:220px">
+      <select id="shadow-page-size" onchange="setPageSizeAndReload('shadow', this.value, loadStrategies)">
+        <option value="20" selected>20 / page</option>
+        <option value="50">50 / page</option>
+        <option value="100">100 / page</option>
+      </select>
+    </div>
     <table>
       <thead><tr><th>Task</th><th>Shadow Of</th><th>Cluster</th><th>Shadow</th><th>Champion</th><th>Delta</th><th>UTC</th></tr></thead>
       <tbody id="shadow-report-tbody"><tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr></tbody>
     </table>
+    <div class="list-foot"><div id="shadow-pager" class="pager"></div></div>
   </div>
   <div class="card">
-    <h3>Strategy Detail</h3>
+    <h3 id="strategy-heading-detail">Strategy 详情</h3>
     <pre id="strategy-detail">Select a strategy row to inspect experiments/promotions.</pre>
   </div>
-</div>
-
-<!-- SEMANTIC CONTROL -->
-<div id="panel-semantics" class="panel">
   <div class="card">
     <h3>Semantic Registry</h3>
     <pre id="semantics-detail">Loading…</pre>
   </div>
   <div class="card">
+    <h3>Semantic Editors</h3>
     <div class="search-row">
-      <button class="action" onclick="loadSemantics()">Refresh</button>
-      <button class="action" style="background:#14532d" onclick="saveSemanticCatalog()">Save Catalog</button>
-      <button class="action" style="background:#14532d" onclick="saveSemanticRules()">Save Rules</button>
+      <button class="action" onclick="loadSemantics()" data-zh="刷新" data-en="Refresh">刷新</button>
+      <button class="action" style="background:#14532d" onclick="openSemanticCatalogEditor()" data-zh="编辑目录" data-en="Edit Catalog">编辑目录</button>
+      <button class="action" style="background:#14532d" onclick="openSemanticRulesEditor()" data-zh="编辑规则" data-en="Edit Rules">编辑规则</button>
     </div>
-    <h3>Capability Catalog</h3>
-    <textarea id="semantic-catalog-editor" class="editor" style="min-height:220px"></textarea>
-    <h3 style="margin-top:12px">Mapping Rules</h3>
-    <textarea id="semantic-rules-editor" class="editor" style="min-height:220px"></textarea>
   </div>
   <div class="card">
-    <h3>Semantic Config Versions</h3>
+    <h3>Semantic 配置版本</h3>
+    <div class="search-row">
+      <select id="semantic-version-select"><option value="">Select version</option></select>
+      <button class="action" style="background:#334155" onclick="viewSelectedSemanticVersion()" data-zh="查看版本" data-en="View Version">查看版本</button>
+      <button class="action" style="background:#7f1d1d" onclick="rollbackSelectedSemanticVersion()" data-zh="回滚版本" data-en="Rollback Version">回滚版本</button>
+    </div>
     <table>
       <thead><tr><th>Target</th><th>Version</th><th>Changed UTC</th><th>By</th><th>Reason</th><th>Action</th></tr></thead>
       <tbody id="semantic-versions-tbody"><tr><td colspan="6" style="color:var(--muted)">Loading…</td></tr></tbody>
@@ -299,22 +635,56 @@
 <!-- MODEL CONTROL -->
 <div id="panel-model" class="panel">
   <div class="card">
-    <div class="search-row">
-      <button class="action" onclick="loadModelControl()">Refresh</button>
-      <button class="action" style="background:#14532d" onclick="saveModelPolicy()">Save Policy</button>
-      <button class="action" style="background:#14532d" onclick="saveModelRegistry()">Save Registry</button>
+    <div class="search-row model-actions">
+      <button class="action" onclick="loadModelControl()" data-zh="刷新" data-en="Refresh">刷新</button>
+      <button class="action" style="background:#14532d" onclick="openModelPolicyEditor()" data-zh="编辑 Model Policy" data-en="Edit Policy">Edit Policy</button>
+      <button class="action" style="background:#14532d" onclick="openModelRegistryEditor()" data-zh="编辑注册表" data-en="Edit Registry">编辑注册表</button>
     </div>
-    <h3>Model Policy</h3>
-    <textarea id="model-policy-editor" class="editor" style="min-height:240px"></textarea>
-    <h3 style="margin-top:12px">Model Registry</h3>
-    <textarea id="model-registry-editor" class="editor" style="min-height:240px"></textarea>
+    <div id="model-config-status" class="mini-stats">
+      <div class="mini-stat"><div class="k">Policy Keys</div><div class="v" id="model-policy-count">—</div></div>
+      <div class="mini-stat"><div class="k">Registry Models</div><div class="v" id="model-registry-count">—</div></div>
+      <div class="mini-stat"><div class="k">Default Provider</div><div class="v" id="model-default-provider">—</div></div>
+      <div class="mini-stat"><div class="k">Default Model</div><div class="v" id="model-default-model">—</div></div>
+    </div>
   </div>
   <div class="card">
-    <h3>Model Usage (Aggregated)</h3>
-    <pre id="model-usage-summary">Loading…</pre>
+    <h3 data-zh="模型调用明细（Cortex）" data-en="Model Usage Detail (Cortex)">模型调用明细（Cortex）</h3>
+    <div class="search-row model-filters">
+      <select id="cortex-date-preset" onchange="applyDatePreset('cortex')">
+        <option value="last_1h">Last 1h</option>
+        <option value="last_6h">Last 6h</option>
+        <option value="last_24h" selected>Last 24h</option>
+        <option value="last_7d">Last 7d</option>
+      </select>
+      <input id="cortex-q" placeholder="provider / model / trace" style="width:200px">
+      <select id="cortex-page-size" onchange="setPageSizeAndReload('cortex', this.value, loadCortexUsage)">
+        <option value="20" selected>20 / page</option>
+        <option value="50">50 / page</option>
+        <option value="100">100 / page</option>
+      </select>
+      <button class="action" onclick="loadCortexUsage()" data-zh="搜索" data-en="Search">搜索</button>
+    </div>
+    <table>
+      <thead><tr><th>Time</th><th>Trace</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Elapsed</th><th>Status</th></tr></thead>
+      <tbody id="cortex-usage-tbody"><tr><td colspan="8" style="color:var(--muted)">尚未加载记录</td></tr></tbody>
+    </table>
+    <div class="list-foot"><div id="cortex-pager" class="pager"></div></div>
   </div>
   <div class="card">
-    <h3>Model Config Versions</h3>
+    <h3 data-zh="模型调用汇总（Cortex）" data-en="Model Usage Summary (Cortex)">模型调用汇总（Cortex）</h3>
+    <div id="cortex-usage-summary" class="model-summary-grid">加载数据后查看 provider 用量汇总。</div>
+  </div>
+  <div class="card">
+    <h3 data-zh="模型用量（聚合）" data-en="Model Usage (Aggregated)">模型用量（聚合）</h3>
+    <div id="model-usage-summary" class="model-summary-grid">Loading…</div>
+  </div>
+  <div class="card">
+    <h3 data-zh="模型配置版本" data-en="Model Config Versions">模型配置版本</h3>
+    <div class="search-row model-filters">
+      <select id="model-version-select"><option value="">Select version</option></select>
+      <button class="action" style="background:#334155" onclick="viewSelectedModelVersion()" data-zh="查看版本" data-en="View Version">查看版本</button>
+      <button class="action" style="background:#7f1d1d" onclick="rollbackSelectedModelVersion()" data-zh="回滚版本" data-en="Rollback Version">回滚版本</button>
+    </div>
     <table>
       <thead><tr><th>Target</th><th>Version</th><th>Changed UTC</th><th>Changed By</th><th>Reason</th><th>Action</th></tr></thead>
       <tbody id="model-policy-versions-tbody"><tr><td colspan="6" style="color:var(--muted)">Loading…</td></tr></tbody>
@@ -326,32 +696,38 @@
 <div id="panel-agents" class="panel">
   <div class="card">
     <h3>OpenClaw Agents</h3>
+    <div class="search-row">
+      <input id="agents-q" placeholder="agent / workspace status" style="width:220px">
+      <select id="agents-page-size" onchange="setPageSizeAndReload('agents', this.value, loadAgents)">
+        <option value="20" selected>20 / page</option>
+        <option value="50">50 / page</option>
+      </select>
+      <button class="action" onclick="loadAgents()" data-zh="刷新" data-en="Refresh">刷新</button>
+    </div>
     <table>
       <thead><tr><th>Agent</th><th>Skills</th><th>Workspace</th><th>Action</th></tr></thead>
       <tbody id="agents-tbody"></tbody>
     </table>
+    <div class="list-foot"><div id="agents-pager" class="pager"></div></div>
   </div>
   <div class="card">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
       <h3 style="margin:0">Agent Skills</h3>
       <span style="color:var(--muted);font-size:11px" id="skills-agent-tag">No agent selected</span>
-      <button class="action" style="margin-left:auto;font-size:11px;padding:4px 8px" onclick="reloadActiveAgentSkills()">↻ Refresh</button>
+      <button class="action" style="margin-left:auto;font-size:11px;padding:4px 8px" onclick="reloadActiveAgentSkills()" data-zh="↻ 刷新" data-en="↻ Refresh">↻ 刷新</button>
+    </div>
+    <div class="search-row">
+      <input id="agent-skills-q" placeholder="skill / path / status" style="width:220px">
+      <select id="agent-skills-page-size" onchange="setPageSizeAndReload('agent_skills', this.value, reloadActiveAgentSkills)">
+        <option value="20" selected>20 / page</option>
+        <option value="50">50 / page</option>
+      </select>
     </div>
     <table>
       <thead><tr><th>Skill</th><th>Enabled</th><th>Path</th><th>Action</th></tr></thead>
       <tbody id="agent-skills-tbody"><tr><td colspan="4" style="color:var(--muted)">Select an agent to manage skills</td></tr></tbody>
     </table>
-  </div>
-  <div class="card" id="skill-editor-card" style="display:none">
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-      <h3 style="margin:0">Skill Editor</h3>
-      <span style="color:var(--muted);font-size:11px" id="skill-editor-meta"></span>
-    </div>
-    <textarea id="skill-editor-text" class="editor"></textarea>
-    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
-      <button class="action" style="background:#334155" onclick="cancelSkillEdit()">Cancel</button>
-      <button class="action" onclick="saveSkillEdit()">Save Skill</button>
-    </div>
+    <div class="list-foot"><div id="agent-skills-pager" class="pager"></div></div>
   </div>
 </div>
 
@@ -368,12 +744,19 @@
         <option value="applied">applied</option>
         <option value="apply_failed">apply_failed</option>
       </select>
-      <button class="action" onclick="loadSkillEvolution()">Load</button>
+      <input id="sev-q" placeholder="proposal / skill / status" style="width:220px">
+      <select id="sev-page-size" onchange="setPageSizeAndReload('skill_evolution', this.value, loadSkillEvolution)">
+        <option value="20" selected>20 / page</option>
+        <option value="50">50 / page</option>
+        <option value="100">100 / page</option>
+      </select>
+      <button class="action" onclick="loadSkillEvolution()" data-zh="加载" data-en="Load">加载</button>
     </div>
     <table>
       <thead><tr><th>ID</th><th>Skill</th><th>Status</th><th>Reviewed</th><th>Action</th></tr></thead>
       <tbody id="sev-tbody"><tr><td colspan="5" style="color:var(--muted)">No proposals loaded</td></tr></tbody>
     </table>
+    <div class="list-foot"><div id="sev-pager" class="pager"></div></div>
   </div>
   <div class="card">
     <h3>Proposal Detail</h3>
@@ -385,21 +768,43 @@
 <div id="panel-schedules" class="panel">
   <div class="card">
     <h3>Spine Schedules</h3>
+    <div class="search-row">
+      <input id="schedules-q" placeholder="routine / mode / schedule" style="width:220px">
+      <select id="schedules-page-size" onchange="setPageSizeAndReload('schedules', this.value, loadSchedules)">
+        <option value="20" selected>20 / page</option>
+        <option value="50">50 / page</option>
+      </select>
+      <button class="action" onclick="loadSchedules()" data-zh="刷新" data-en="Refresh">刷新</button>
+    </div>
     <table>
       <thead><tr><th>Routine</th><th>Mode</th><th>Schedule</th><th>Last Run</th><th>Next Run</th><th>Action</th></tr></thead>
       <tbody id="schedules-tbody"></tbody>
     </table>
+    <div class="list-foot"><div id="schedules-pager" class="pager"></div></div>
   </div>
   <div class="card">
     <div class="search-row">
       <h3 style="margin:0">Schedule History</h3>
       <select id="schedule-history-routine" onchange="loadScheduleHistory()"><option value="">All routines</option></select>
-      <button class="action" onclick="loadScheduleHistory()">Load History</button>
+      <select id="schedule-history-date-preset" onchange="loadScheduleHistory()">
+        <option value="all">All time</option>
+        <option value="today">Today</option>
+        <option value="last_24h">Last 24h</option>
+        <option value="last_7d">Last 7d</option>
+      </select>
+      <input id="schedule-history-q" placeholder="routine / status / detail" style="width:220px">
+      <select id="schedule-history-page-size" onchange="setPageSizeAndReload('schedule_history', this.value, loadScheduleHistory)">
+        <option value="20" selected>20 / page</option>
+        <option value="50">50 / page</option>
+        <option value="100">100 / page</option>
+      </select>
+      <button class="action" onclick="loadScheduleHistory()" data-zh="加载历史" data-en="Load History">加载历史</button>
     </div>
     <table>
       <thead><tr><th>Run UTC</th><th>Routine</th><th>Trigger</th><th>Status</th><th>Detail</th></tr></thead>
       <tbody id="schedule-history-tbody"><tr><td colspan="5" style="color:var(--muted)">No history loaded</td></tr></tbody>
     </table>
+    <div class="list-foot"><div id="schedule-history-pager" class="pager"></div></div>
   </div>
 </div>
 
@@ -408,12 +813,19 @@
   <div class="card">
     <h3>Campaign List</h3>
     <div class="search-row">
-      <button class="action" onclick="loadCampaigns()">Refresh</button>
+      <input id="campaign-q" placeholder="campaign / task / status / phase" style="width:240px">
+      <select id="campaign-page-size" onchange="setPageSizeAndReload('campaigns', this.value, loadCampaigns)">
+        <option value="20" selected>20 / page</option>
+        <option value="50">50 / page</option>
+        <option value="100">100 / page</option>
+      </select>
+      <button class="action" onclick="loadCampaigns()" data-zh="刷新" data-en="Refresh">刷新</button>
     </div>
     <table>
       <thead><tr><th>Campaign</th><th>Task</th><th>Status</th><th>Phase</th><th>Milestone</th><th>Updated</th><th>Action</th></tr></thead>
       <tbody id="campaigns-tbody"><tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr></tbody>
     </table>
+    <div class="list-foot"><div id="campaigns-pager" class="pager"></div></div>
   </div>
   <div class="card">
     <h3>Campaign Detail</h3>
@@ -427,11 +839,11 @@
     <h3>Managed Drive Storage</h3>
     <div class="search-row">
       <input id="storage-daemon-dir-name" placeholder="daemon directory name (e.g. daemon)" style="width:280px">
-      <button class="action" onclick="loadSystemStorage()">Load</button>
-      <button class="action" style="background:#14532d" onclick="saveSystemStorage()">Save</button>
+      <button class="action" onclick="loadSystemStorage()" data-zh="加载" data-en="Load">加载</button>
+      <button class="action" style="background:#14532d" onclick="saveSystemStorage()" data-zh="保存" data-en="Save">保存</button>
     </div>
     <div style="color:var(--muted);font-size:11px;line-height:1.6">
-      Managed structure: <code>My Drive/&lt;daemon_dir_name&gt;/{archive,outcome}</code>.
+      Managed structure: <code>My Drive/&lt;daemon_dir_name&gt;/{archive,outcomes}</code>.
     </div>
     <pre id="system-storage-status">Loading…</pre>
   </div>
@@ -445,8 +857,8 @@
       <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px">
         <input type="checkbox" id="reset-restart"> restart after reset
       </label>
-      <button class="action" style="background:#7f1d1d" onclick="issueResetChallenge()">Issue Challenge</button>
-      <button class="action" style="background:#14532d" onclick="confirmSystemReset()">Confirm Reset</button>
+      <button class="action" style="background:#7f1d1d" onclick="issueResetChallenge()" data-zh="生成挑战码" data-en="Issue Challenge">生成挑战码</button>
+      <button class="action" style="background:#14532d" onclick="confirmSystemReset()" data-zh="确认重置" data-en="Confirm Reset">确认重置</button>
     </div>
     <div style="color:var(--muted);font-size:11px;line-height:1.5">
       Reset requires challenge + confirm. Confirm action is one-time and expires automatically.
@@ -456,7 +868,7 @@
   <div class="card">
     <h3>Last Reset Report</h3>
     <div class="search-row">
-      <button class="action" onclick="loadSystemResetReport()">Refresh Report</button>
+      <button class="action" onclick="loadSystemResetReport()" data-zh="刷新报告" data-en="Refresh Report">刷新报告</button>
     </div>
     <pre id="system-reset-report">No report.</pre>
   </div>
@@ -464,37 +876,473 @@
 
 </main>
 
+<div id="editor-backdrop" class="editor-backdrop" onclick="closeUnifiedEditor()"></div>
+<aside id="editor-drawer" class="editor-drawer" aria-hidden="true">
+  <div class="editor-head">
+    <div>
+      <h3 id="unified-editor-title">Editor</h3>
+      <div class="sub" id="unified-editor-subtitle">—</div>
+    </div>
+    <span class="tag" id="unified-editor-mode">idle</span>
+    <button class="action secondary" onclick="closeUnifiedEditor()" data-zh="关闭" data-en="Close">关闭</button>
+  </div>
+  <div class="editor-notice" id="unified-editor-notice">Cmd/Ctrl+S 保存 · Esc 取消</div>
+  <div class="editor-body">
+    <textarea id="unified-editor-text" class="editor" style="min-height:58vh"></textarea>
+  </div>
+  <div class="editor-actions">
+    <button class="action secondary" onclick="resetUnifiedEditor()" data-zh="重置" data-en="Reset">重置</button>
+    <button class="action warn" onclick="closeUnifiedEditor()" data-zh="取消" data-en="Cancel">取消</button>
+    <button id="unified-editor-save" class="action" onclick="saveUnifiedEditor()" data-zh="保存" data-en="Save">保存</button>
+  </div>
+</aside>
+
 <script>
 const API = '';
 let activeAgentId = '';
 let activeAgentSkills = [];
-let editingSkillName = '';
 let activePlaybookMethod = null;
 let currentPolicyScope = 'quality';
 let currentPolicyType = 'default';
 let currentPolicyVersions = [];
+let currentPolicyKeys = [];
+let currentSemanticVersions = [];
+let currentModelVersions = [];
 let currentModelPolicy = {};
 let resetChallenge = null;
+let runningTasksCount = 0;
+let unifiedEditorState = {
+  open: false,
+  dirty: false,
+  key: '',
+  title: '',
+  subtitle: '',
+  baseText: '',
+  saveText: null,
+  onSaved: null,
+  mode: 'edit',
+};
+const listUiState = {};
+const CONSOLE_VIEW_STATE_KEY = 'd_console_view_state';
+
+function _readConsolePanelState() {
+  try {
+    const raw = localStorage.getItem(CONSOLE_VIEW_STATE_KEY);
+    if (!raw) return 'overview';
+    const parsed = JSON.parse(raw);
+    const panel = String(parsed?.panel || '').trim();
+    const allow = new Set(['overview', 'spine', 'fabric', 'policy', 'traces', 'strategies', 'model', 'agents', 'skill-evolution', 'schedules', 'campaigns', 'system']);
+    return allow.has(panel) ? panel : 'overview';
+  } catch (_) {
+    return 'overview';
+  }
+}
+
+function _writeConsolePanelState(panel) {
+  try {
+    localStorage.setItem(CONSOLE_VIEW_STATE_KEY, JSON.stringify({panel: String(panel || 'overview')}));
+  } catch (_) {}
+}
+
+function _navButtonForPanel(panel) {
+  return Array.from(document.querySelectorAll('nav button')).find((b) =>
+    String(b.getAttribute('onclick') || '').includes(`show('${panel}'`)
+  ) || null;
+}
+
+// ── Console i18n ──────────────────────────────────────────
+const SHARED_LANG_KEY = 'd_lang';
+const LEGACY_CONSOLE_LANG_KEY = 'c_lang';
+function _normLang(v) { return String(v || '').toLowerCase() === 'en' ? 'en' : 'zh'; }
+function _readLang() {
+  return _normLang(localStorage.getItem(SHARED_LANG_KEY) || localStorage.getItem(LEGACY_CONSOLE_LANG_KEY) || 'zh');
+}
+function _writeLang(v) {
+  const n = _normLang(v);
+  localStorage.setItem(SHARED_LANG_KEY, n);
+  localStorage.setItem(LEGACY_CONSOLE_LANG_KEY, n);
+  return n;
+}
+let cLang = _readLang();
+_writeLang(cLang);
+function tx(zh, en) { return cLang === 'zh' ? zh : en; }
+let currentFabricView = 'memory';
+const CONSOLE_STATIC_TEXT = [
+  {sel:'#panel-overview .stat:nth-child(1) .lbl', zh:'Memory 单元', en:'Memory Units'},
+  {sel:'#panel-overview .stat:nth-child(2) .lbl', zh:'活跃 Methods', en:'Active Methods'},
+  {sel:'#panel-overview .stat:nth-child(3) .lbl', zh:'Attention 信号', en:'Attention Signals'},
+  {sel:'#panel-overview .stat:nth-child(4) .lbl', zh:'运行中任务', en:'Running Tasks'},
+  {sel:'#panel-overview .card h3', zh:'今日 Cortex 用量', en:'Cortex Usage Today'},
+  {sel:'#panel-spine .card:nth-of-type(1) h3', zh:'Spine 运行态', en:'Spine Runtime'},
+  {sel:'#panel-spine .card:nth-of-type(2) h3', zh:'Nerve 事件流', en:'Nerve Event Feed'},
+  {sel:'#panel-spine .card:nth-of-type(3) h3', zh:'依赖图', en:'Dependency Graph'},
+  {sel:'#policy-heading-priorities', zh:'领域优先级', en:'Domain Priorities'},
+  {sel:'#policy-heading-editor', zh:'Policy 编辑器', en:'Policy Editor'},
+  {sel:'#policy-heading-quality', zh:'Policy 质量键', en:'Policy Quality Keys'},
+  {sel:'#policy-heading-preferences', zh:'Policy 偏好', en:'Policy Preferences'},
+  {sel:'#policy-heading-budgets', zh:'Policy 预算', en:'Policy Budgets'},
+  {sel:'#policy-heading-versions', zh:'Policy 版本', en:'Policy Versions'},
+  {sel:'#panel-traces .card h3', zh:'Trace 详情', en:'Trace Detail'},
+  {sel:'#strategy-heading-shadow-report', zh:'Shadow 对比报告', en:'Shadow Comparison Report'},
+  {sel:'#strategy-heading-detail', zh:'Strategy 详情', en:'Strategy Detail'},
+  {sel:'#panel-strategies .card:nth-of-type(4) h3', zh:'语义注册表', en:'Semantic Registry'},
+  {sel:'#panel-strategies .card:nth-of-type(5) h3', zh:'语义编辑入口', en:'Semantic Editors'},
+  {sel:'#panel-strategies .card:nth-of-type(6) h3', zh:'Semantic 配置版本', en:'Semantic Config Versions'},
+  {sel:'#panel-model .card:nth-of-type(2) h3', zh:'模型调用明细（Cortex）', en:'Model Usage Detail (Cortex)'},
+  {sel:'#panel-model .card:nth-of-type(3) h3', zh:'模型调用汇总（Cortex）', en:'Model Usage Summary (Cortex)'},
+  {sel:'#panel-model .card:nth-of-type(4) h3', zh:'模型用量（聚合）', en:'Model Usage (Aggregated)'},
+  {sel:'#panel-model .card:nth-of-type(5) h3', zh:'模型配置版本', en:'Model Config Versions'},
+  {sel:'#panel-agents .card:nth-of-type(1) h3', zh:'OpenClaw 代理', en:'OpenClaw Agents'},
+  {sel:'#panel-agents .card:nth-of-type(2) h3', zh:'Agent 技能', en:'Agent Skills'},
+  {sel:'#panel-skill-evolution .card:nth-of-type(1) h3', zh:'Skill 进化提案', en:'Skill Evolution Proposals'},
+  {sel:'#panel-skill-evolution .card:nth-of-type(2) h3', zh:'提案详情', en:'Proposal Detail'},
+  {sel:'#panel-schedules .card:nth-of-type(1) h3', zh:'Spine 调度', en:'Spine Schedules'},
+  {sel:'#panel-schedules .card:nth-of-type(2) h3', zh:'调度历史', en:'Schedule History'},
+  {sel:'#panel-campaigns .card:nth-of-type(1) h3', zh:'Campaign 列表', en:'Campaign List'},
+  {sel:'#panel-campaigns .card:nth-of-type(2) h3', zh:'Campaign 详情', en:'Campaign Detail'},
+  {sel:'#panel-system .card:nth-of-type(1) h3', zh:'托管 Drive 存储', en:'Managed Drive Storage'},
+  {sel:'#panel-system .card:nth-of-type(2) h3', zh:'系统重置（仅本机）', en:'System Reset (Localhost Only)'},
+  {sel:'#panel-system .card:nth-of-type(3) h3', zh:'最近重置报告', en:'Last Reset Report'},
+];
+const CONSOLE_INPUT_PLACEHOLDERS = [
+  {sel:'#trace-since', zh:'起始 UTC（可选）', en:'since UTC (optional)'},
+  {sel:'#trace-q', zh:'trace_id / routine', en:'trace_id / routine'},
+  {sel:'#cortex-q', zh:'provider / model / trace', en:'provider / model / trace'},
+  {sel:'#strategy-cluster-filter', zh:'cluster_id（可选）', en:'cluster_id (optional)'},
+  {sel:'#strategy-q', zh:'strategy / cluster / stage', en:'strategy / cluster / stage'},
+  {sel:'#shadow-q', zh:'task / cluster / strategy', en:'task / cluster / strategy'},
+  {sel:'#sev-q', zh:'proposal / skill / status', en:'proposal / skill / status'},
+  {sel:'#schedules-q', zh:'routine / mode / schedule', en:'routine / mode / schedule'},
+  {sel:'#schedule-history-q', zh:'routine / status / detail', en:'routine / status / detail'},
+  {sel:'#campaign-q', zh:'campaign / task / status / phase', en:'campaign / task / status / phase'},
+  {sel:'#agents-q', zh:'agent / workspace status', en:'agent / workspace status'},
+  {sel:'#agent-skills-q', zh:'skill / path / status', en:'skill / path / status'},
+  {sel:'#storage-daemon-dir-name', zh:'daemon 目录名（例：daemon）', en:'daemon directory name (e.g. daemon)'},
+];
+function applyConsoleLang() {
+  const zh = cLang === 'zh';
+  document.documentElement.lang = zh ? 'zh' : 'en';
+  document.title = zh ? 'Daemon 控制台' : 'Daemon Console';
+  document.getElementById('c-lang-btn').textContent = zh ? 'EN' : '中';
+  document.getElementById('h-title').textContent = zh ? 'Daemon 控制台' : 'Daemon Console';
+  document.getElementById('gate-label').textContent = zh ? '接单中' : 'Accepting';
+  document.querySelectorAll('[data-zh][data-en]').forEach(b => {
+    b.textContent = zh ? b.dataset.zh : b.dataset.en;
+  });
+  CONSOLE_STATIC_TEXT.forEach(row => {
+    const el = document.querySelector(row.sel);
+    if (el) el.textContent = zh ? row.zh : row.en;
+  });
+  CONSOLE_INPUT_PLACEHOLDERS.forEach(row => {
+    const el = document.querySelector(row.sel);
+    if (el) el.placeholder = zh ? row.zh : row.en;
+  });
+  document.getElementById('running-tasks').textContent = tx(`${runningTasksCount} 运行中`, `${runningTasksCount} running`);
+  const policyScope = document.getElementById('policy-scope');
+  if (policyScope && policyScope.options.length >= 3) {
+    policyScope.options[0].text = 'quality';
+    policyScope.options[1].text = 'preference';
+    policyScope.options[2].text = 'budget';
+  }
+  const traceRoutine = document.getElementById('trace-routine');
+  if (traceRoutine && traceRoutine.options.length > 0) {
+    traceRoutine.options[0].text = zh ? '全部 routines' : 'All routines';
+  }
+  const traceStatus = document.getElementById('trace-status');
+  if (traceStatus && traceStatus.options.length > 0) {
+    traceStatus.options[0].text = zh ? '任意状态' : 'Any status';
+  }
+  const strategyStage = document.getElementById('strategy-stage-filter');
+  if (strategyStage && strategyStage.options.length > 0) {
+    strategyStage.options[0].text = zh ? '全部阶段' : 'All stages';
+  }
+  const sev = document.getElementById('sev-status');
+  if (sev && sev.options.length > 0) {
+    sev.options[0].text = zh ? '全部状态' : 'All status';
+  }
+  const policyVersionSel = document.getElementById('policy-version-select');
+  if (policyVersionSel && policyVersionSel.options.length > 0 && policyVersionSel.options[0].value === '') {
+    policyVersionSel.options[0].text = zh ? '选择版本' : 'Select version';
+  }
+  const semanticVersionSel = document.getElementById('semantic-version-select');
+  if (semanticVersionSel && semanticVersionSel.options.length > 0 && semanticVersionSel.options[0].value === '') {
+    semanticVersionSel.options[0].text = zh ? '选择版本' : 'Select version';
+  }
+  const modelVersionSel = document.getElementById('model-version-select');
+  if (modelVersionSel && modelVersionSel.options.length > 0 && modelVersionSel.options[0].value === '') {
+    modelVersionSel.options[0].text = zh ? '选择版本' : 'Select version';
+  }
+  const playbookVersionSel = document.getElementById('playbook-version-select');
+  if (playbookVersionSel && playbookVersionSel.options.length > 0 && playbookVersionSel.options[0].value === '') {
+    playbookVersionSel.options[0].text = zh ? '选择版本' : 'Select version';
+  }
+  const hrt = document.getElementById('schedule-history-routine');
+  if (hrt && hrt.options.length > 0) {
+    hrt.options[0].text = zh ? '全部 routines' : 'All routines';
+  }
+  const tracePreset = document.getElementById('trace-date-preset');
+  if (tracePreset && tracePreset.options.length >= 5) {
+    tracePreset.options[0].text = zh ? '手动' : 'Manual';
+    tracePreset.options[1].text = zh ? '今天' : 'Today';
+    tracePreset.options[2].text = zh ? '近24小时' : 'Last 24h';
+    tracePreset.options[3].text = zh ? '近7天' : 'Last 7d';
+    tracePreset.options[4].text = zh ? '近30天' : 'Last 30d';
+  }
+  const cortexPreset = document.getElementById('cortex-date-preset');
+  if (cortexPreset && cortexPreset.options.length >= 4) {
+    cortexPreset.options[0].text = zh ? '近1小时' : 'Last 1h';
+    cortexPreset.options[1].text = zh ? '近6小时' : 'Last 6h';
+    cortexPreset.options[2].text = zh ? '近24小时' : 'Last 24h';
+    cortexPreset.options[3].text = zh ? '近7天' : 'Last 7d';
+  }
+  const schedulePreset = document.getElementById('schedule-history-date-preset');
+  if (schedulePreset && schedulePreset.options.length >= 4) {
+    schedulePreset.options[0].text = zh ? '全部时间' : 'All time';
+    schedulePreset.options[1].text = zh ? '今天' : 'Today';
+    schedulePreset.options[2].text = zh ? '近24小时' : 'Last 24h';
+    schedulePreset.options[3].text = zh ? '近7天' : 'Last 7d';
+  }
+}
+function toggleConsoleLang() {
+  cLang = _writeLang(cLang === 'zh' ? 'en' : 'zh');
+  applyConsoleLang();
+  refreshAll();
+}
+window.addEventListener('storage', (event) => {
+  if (event.key !== SHARED_LANG_KEY && event.key !== LEGACY_CONSOLE_LANG_KEY) return;
+  const next = _readLang();
+  if (next === cLang) return;
+  cLang = next;
+  applyConsoleLang();
+  refreshAll();
+});
+// Gate label reflects status.
+function updateGateLabel(status) {
+  const labels = {zh:{GREEN:'接单中',YELLOW:'降级运行',RED:'暂停接单'}, en:{GREEN:'Accepting',YELLOW:'Degraded',RED:'Blocked'}};
+  const lbl = (labels[cLang]||labels.zh)[status] || status;
+  document.getElementById('gate-label').textContent = lbl;
+}
+
+function _setUnifiedEditorStatus(text) {
+  const node = document.getElementById('unified-editor-notice');
+  if (node) node.textContent = text || '';
+}
+
+function _syncUnifiedEditorDirty() {
+  const editor = document.getElementById('unified-editor-text');
+  const tag = document.getElementById('unified-editor-mode');
+  if (!editor || !tag) return;
+  unifiedEditorState.dirty = editor.value !== (unifiedEditorState.baseText || '');
+  tag.textContent = unifiedEditorState.mode + (unifiedEditorState.dirty ? ' • dirty' : ' • clean');
+}
+
+function closeUnifiedEditor(force = false) {
+  const drawer = document.getElementById('editor-drawer');
+  const backdrop = document.getElementById('editor-backdrop');
+  const editor = document.getElementById('unified-editor-text');
+  if (!force && unifiedEditorState.open && unifiedEditorState.dirty) {
+    const ok = confirm(tx('当前编辑尚未保存，确认丢弃修改？', 'Discard unsaved changes?'));
+    if (!ok) return false;
+  }
+  unifiedEditorState.open = false;
+  unifiedEditorState.dirty = false;
+  unifiedEditorState.key = '';
+  unifiedEditorState.title = '';
+  unifiedEditorState.subtitle = '';
+  unifiedEditorState.baseText = '';
+  unifiedEditorState.saveText = null;
+  unifiedEditorState.onSaved = null;
+  unifiedEditorState.mode = 'idle';
+  if (editor) editor.value = '';
+  if (drawer) {
+    drawer.classList.remove('open');
+    drawer.setAttribute('aria-hidden', 'true');
+  }
+  if (backdrop) backdrop.classList.remove('open');
+  _setUnifiedEditorStatus(tx('Cmd/Ctrl+S 保存 · Esc 取消', 'Cmd/Ctrl+S save · Esc cancel'));
+  return true;
+}
+
+function resetUnifiedEditor() {
+  const editor = document.getElementById('unified-editor-text');
+  if (!editor) return;
+  editor.value = unifiedEditorState.baseText || '';
+  _syncUnifiedEditorDirty();
+}
+
+async function saveUnifiedEditor() {
+  const saver = unifiedEditorState.saveText;
+  const editor = document.getElementById('unified-editor-text');
+  if (!editor || typeof saver !== 'function') return;
+  const btn = document.getElementById('unified-editor-save');
+  try {
+    if (btn) btn.disabled = true;
+    _setUnifiedEditorStatus(tx('保存中…', 'Saving...'));
+    await saver(editor.value || '');
+    if (typeof unifiedEditorState.onSaved === 'function') {
+      await unifiedEditorState.onSaved();
+    }
+    closeUnifiedEditor(true);
+  } catch (e) {
+    _setUnifiedEditorStatus(tx('保存失败：', 'Save failed: ') + e.message);
+    alert(tx('保存失败：', 'Save failed: ') + e.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function openUnifiedEditor(opts) {
+  const drawer = document.getElementById('editor-drawer');
+  const backdrop = document.getElementById('editor-backdrop');
+  const title = document.getElementById('unified-editor-title');
+  const subtitle = document.getElementById('unified-editor-subtitle');
+  const modeTag = document.getElementById('unified-editor-mode');
+  const editor = document.getElementById('unified-editor-text');
+  const saveBtn = document.getElementById('unified-editor-save');
+  if (!drawer || !backdrop || !title || !subtitle || !modeTag || !editor || !saveBtn) return false;
+  if (unifiedEditorState.open && unifiedEditorState.dirty) {
+    const ok = confirm(tx('当前编辑尚未保存，确认切换到新的编辑对象？', 'Switch editor target and discard unsaved changes?'));
+    if (!ok) return false;
+  }
+  unifiedEditorState.open = true;
+  unifiedEditorState.dirty = false;
+  unifiedEditorState.key = String(opts?.key || '');
+  unifiedEditorState.title = String(opts?.title || 'Editor');
+  unifiedEditorState.subtitle = String(opts?.subtitle || '—');
+  unifiedEditorState.saveText = typeof opts?.saveText === 'function' ? opts.saveText : null;
+  unifiedEditorState.onSaved = typeof opts?.onSaved === 'function' ? opts.onSaved : null;
+  unifiedEditorState.mode = opts?.readOnly ? 'read-only' : 'edit';
+  title.textContent = unifiedEditorState.title;
+  subtitle.textContent = unifiedEditorState.subtitle;
+  modeTag.textContent = unifiedEditorState.mode;
+  saveBtn.disabled = !!opts?.readOnly;
+  drawer.classList.add('open');
+  drawer.setAttribute('aria-hidden', 'false');
+  backdrop.classList.add('open');
+  editor.value = '';
+  _setUnifiedEditorStatus(opts?.hint || tx('加载中…', 'Loading...'));
+  try {
+    const text = typeof opts?.loadText === 'function' ? await opts.loadText() : '';
+    unifiedEditorState.baseText = String(text ?? '');
+    editor.value = unifiedEditorState.baseText;
+    _syncUnifiedEditorDirty();
+    _setUnifiedEditorStatus(opts?.hint || tx('已进入编辑态。', 'Editing mode enabled.'));
+    editor.focus();
+    return true;
+  } catch (e) {
+    _setUnifiedEditorStatus(tx('加载失败：', 'Load failed: ') + e.message);
+    alert(tx('加载失败：', 'Load failed: ') + e.message);
+    return false;
+  }
+}
+
+function clearTransientUi(_nextPanel) {
+  if (unifiedEditorState.open && !closeUnifiedEditor(false)) return false;
+  return true;
+}
 
 function show(panel, el) {
+  if (!clearTransientUi(panel)) return;
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
   document.getElementById('panel-' + panel).classList.add('active');
-  if (el) el.classList.add('active');
+  const navBtn = el || _navButtonForPanel(panel);
+  if (navBtn) navBtn.classList.add('active');
+  _writeConsolePanelState(panel);
   if (panel === 'overview') loadOverview();
   else if (panel === 'spine') loadSpine();
-  else if (panel === 'fabric') showFabric('memory');
+  else if (panel === 'fabric') showFabric(currentFabricView || 'memory');
   else if (panel === 'policy') loadPolicy();
   else if (panel === 'traces') loadTraces();
-  else if (panel === 'cortex') loadCortexUsage();
-  else if (panel === 'strategies') loadStrategies();
-  else if (panel === 'semantics') loadSemantics();
+  else if (panel === 'strategies') { loadStrategies(); loadSemantics(); }
   else if (panel === 'model') loadModelControl();
   else if (panel === 'agents') loadAgents();
   else if (panel === 'skill-evolution') loadSkillEvolution();
   else if (panel === 'schedules') loadSchedules();
   else if (panel === 'campaigns') loadCampaigns();
   else if (panel === 'system') loadSystemResetPanel();
+}
+
+function _listState(key, defaults = {page: 1, size: 20}) {
+  if (!listUiState[key]) {
+    listUiState[key] = {page: defaults.page || 1, size: defaults.size || 20};
+  }
+  return listUiState[key];
+}
+
+function setPageSizeAndReload(key, sizeValue, reloadFn) {
+  const st = _listState(key);
+  st.size = Math.max(1, Number(sizeValue || st.size || 20));
+  st.page = 1;
+  if (typeof reloadFn === 'function') reloadFn();
+}
+
+function _applyListQuery(rows, query, fields = []) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return rows;
+  return rows.filter((row) => {
+    const text = fields.map((f) => String(row?.[f] ?? '')).join(' ').toLowerCase();
+    return text.includes(q);
+  });
+}
+
+function _paginate(rows, key, pagerId, reloadFn) {
+  const st = _listState(key);
+  const total = rows.length;
+  const size = Math.max(1, Number(st.size || 20));
+  const totalPages = Math.max(1, Math.ceil(total / size));
+  st.page = Math.min(Math.max(1, Number(st.page || 1)), totalPages);
+  const start = (st.page - 1) * size;
+  const pageRows = rows.slice(start, start + size);
+  const pager = document.getElementById(pagerId);
+  if (pager) {
+    pager.innerHTML = `
+      <button ${st.page <= 1 ? 'disabled' : ''} onclick="setListPage('${key}', ${st.page - 1}, '${reloadFn}')">◀</button>
+      <span>${st.page} / ${totalPages} · ${total}</span>
+      <button ${st.page >= totalPages ? 'disabled' : ''} onclick="setListPage('${key}', ${st.page + 1}, '${reloadFn}')">▶</button>
+    `;
+  }
+  return pageRows;
+}
+
+function setListPage(key, page, reloadFnName) {
+  const st = _listState(key);
+  st.page = Math.max(1, Number(page || 1));
+  const fn = typeof reloadFnName === 'function' ? reloadFnName : window[String(reloadFnName || '')];
+  if (typeof fn === 'function') fn();
+}
+
+function applyDatePreset(target) {
+  const now = new Date();
+  const toIso = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const selectId = target === 'trace' ? 'trace-date-preset' : target === 'cortex' ? 'cortex-date-preset' : '';
+  if (!selectId) return;
+  const preset = document.getElementById(selectId)?.value || 'manual';
+  if (target === 'cortex') {
+    loadCortexUsage();
+    return;
+  }
+  let since = '';
+  let until = '';
+  if (preset === 'today') {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
+    since = toIso(d);
+    until = toIso(now);
+  } else if (preset === 'last_24h') {
+    since = toIso(new Date(now.getTime() - 24 * 3600 * 1000));
+    until = toIso(now);
+  } else if (preset === 'last_7d') {
+    since = toIso(new Date(now.getTime() - 7 * 24 * 3600 * 1000));
+    until = toIso(now);
+  } else if (preset === 'last_30d') {
+    since = toIso(new Date(now.getTime() - 30 * 24 * 3600 * 1000));
+    until = toIso(now);
+  }
+  if (target === 'trace') {
+    const s = document.getElementById('trace-since');
+    if (s) s.value = since;
+    loadTraces();
+  }
 }
 
 async function api(path) {
@@ -522,18 +1370,20 @@ async function loadOverview() {
   const badge = document.getElementById('gate-badge');
   badge.textContent = gate;
   badge.className = gate;
+  updateGateLabel(gate);
   document.getElementById('stat-memory').textContent = d.memory?.total_active ?? '—';
   document.getElementById('stat-methods').textContent = d.playbook?.by_status?.active ?? '—';
   document.getElementById('stat-signals').textContent = d.compass?.active_signals ?? '—';
   document.getElementById('stat-tasks').textContent = d.running_tasks ?? '—';
-  document.getElementById('running-tasks').textContent = `${d.running_tasks ?? 0} running`;
+  runningTasksCount = Number(d.running_tasks ?? 0);
+  document.getElementById('running-tasks').textContent = tx(`${runningTasksCount} 运行中`, `${runningTasksCount} running`);
 
   const usage = d.cortex_usage?.by_provider || {};
-  let html = '<table><thead><tr><th>Provider</th><th>Calls</th><th>In Tokens</th><th>Out Tokens</th><th>Errors</th></tr></thead><tbody>';
+  let html = `<table><thead><tr><th>${tx('提供方', 'Provider')}</th><th>${tx('调用', 'Calls')}</th><th>${tx('输入 Tokens', 'In Tokens')}</th><th>${tx('输出 Tokens', 'Out Tokens')}</th><th>${tx('错误', 'Errors')}</th></tr></thead><tbody>`;
   for (const [p, u] of Object.entries(usage)) {
     html += `<tr><td>${p}</td><td>${u.calls}</td><td>${(u.in_tokens||0).toLocaleString()}</td><td>${(u.out_tokens||0).toLocaleString()}</td><td>${u.errors||0}</td></tr>`;
   }
-  if (!Object.keys(usage).length) html += '<tr><td colspan="5" style="color:var(--muted)">No calls today</td></tr>';
+  if (!Object.keys(usage).length) html += `<tr><td colspan="5" style="color:var(--muted)">${tx('今天暂无调用', 'No calls today')}</td></tr>`;
   html += '</tbody></table>';
   document.getElementById('cortex-table').innerHTML = html;
 }
@@ -545,15 +1395,13 @@ async function loadSpine() {
     <tr>
       <td>${r.routine}</td>
       <td><span class="badge ${r.mode}">${r.mode}</span></td>
-      <td style="color:var(--muted)">${r.schedule || '—'}</td>
-      <td style="color:var(--muted)">${r.last_run_utc ? r.last_run_utc.replace('T',' ').replace('Z','') : 'never'}</td>
-      <td><button class="action" onclick="triggerRoutine('${r.routine.replace('spine.','')}')" style="font-size:11px;padding:3px 8px">▶ Run</button></td>
+      <td style="color:var(--muted)">${r.last_run_utc ? r.last_run_utc.replace('T',' ').replace('Z','') : tx('从未', 'never')}</td>
     </tr>`).join('');
 
   const events = await api('/console/spine/nerve/events?limit=30');
   const feed = document.getElementById('nerve-feed');
   if (!events.length) {
-    feed.innerHTML = '<div style="color:var(--muted)">No events yet</div>';
+    feed.innerHTML = `<div style="color:var(--muted)">${tx('暂无事件', 'No events yet')}</div>`;
   } else {
     feed.innerHTML = events.reverse().map(e =>
       `<div><span class="ts">${e.timestamp}</span> <strong>${e.event}</strong> ${JSON.stringify(e.payload).slice(0,80)}</div>`
@@ -565,19 +1413,19 @@ async function loadSpine() {
   try {
     const deps = await api('/console/spine/dependencies');
     if (!deps.length) {
-      depNode.textContent = 'No routine definitions found.';
+      depNode.textContent = tx('未找到 routine 定义。', 'No routine definitions found.');
       return;
     }
     const sorted = deps.slice().sort((a, b) => String(a.routine||'').localeCompare(String(b.routine||'')));
-    const lines = ['# Spine Dependency View', ''];
+    const lines = [tx('# Spine 依赖视图', '# Spine Dependency View'), ''];
     for (const row of sorted) {
       const depsText = (row.depends_on || []).length ? row.depends_on.join(', ') : '[root]';
       lines.push(`${row.routine} (${row.mode || 'deterministic'}) <- ${depsText}`);
-      lines.push(`  reads: ${(row.reads || []).join(', ') || '—'}`);
-      lines.push(`  writes: ${(row.writes || []).join(', ') || '—'}`);
+      lines.push(`  ${tx('读取', 'reads')}: ${(row.reads || []).join(', ') || '—'}`);
+      lines.push(`  ${tx('写入', 'writes')}: ${(row.writes || []).join(', ') || '—'}`);
     }
     lines.push('');
-    lines.push('# Edges');
+    lines.push(tx('# 边', '# Edges'));
     let edgeCount = 0;
     for (const row of sorted) {
       for (const d of (row.depends_on || [])) {
@@ -585,10 +1433,10 @@ async function loadSpine() {
         edgeCount += 1;
       }
     }
-    if (!edgeCount) lines.push('No dependency edges.');
+    if (!edgeCount) lines.push(tx('无依赖边。', 'No dependency edges.'));
     depNode.textContent = lines.join('\n');
   } catch (e) {
-    depNode.textContent = 'Error loading dependencies: ' + e.message;
+    depNode.textContent = tx('加载依赖失败：', 'Error loading dependencies: ') + e.message;
   }
 }
 
@@ -596,34 +1444,35 @@ async function triggerRoutine(name) {
   try {
     const r = await fetch(`${API}/console/spine/${name}/trigger`, {method:'POST'});
     const d = await r.json();
-    alert(d.ok ? `✓ ${name} triggered` : `✗ ${d.error || d.detail}`);
+    alert(d.ok ? tx(`✓ ${name} 已触发`, `✓ ${name} triggered`) : `✗ ${d.error || d.detail}`);
     loadSpine();
-  } catch(e) { alert('Error: ' + e.message); }
+  } catch(e) { alert(tx('错误：', 'Error: ') + e.message); }
 }
 
 async function showFabric(type) {
+  currentFabricView = String(type || 'memory');
   const content = document.getElementById('fabric-content');
-  content.innerHTML = 'Loading…';
+  content.innerHTML = tx('加载中…', 'Loading…');
   if (type === 'memory') {
     const units = await api('/console/fabric/memory?limit=50');
-    let html = '<div class="card"><h3>Memory Units (latest 50)</h3><table><thead><tr><th>Action</th><th>Title</th><th>Domain</th><th>Tier</th><th>Source</th><th>Confidence</th><th>Created</th></tr></thead><tbody>';
-    html += units.map(u => `<tr><td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewMemoryUnit('${u.unit_id}')">View</button></td><td>${esc(u.title)}</td><td>${u.domain}</td><td>${u.tier}</td><td>${esc(u.source_type || 'synthetic')}</td><td>${(u.confidence*100).toFixed(0)}%</td><td style="color:var(--muted)">${(u.created_utc||'').replace('T',' ').replace('Z','')}</td></tr>`).join('');
+    let html = `<div class="card"><h3>${tx('Memory Units（最近 50 条）', 'Memory Units (latest 50)')}</h3><table><thead><tr><th>${tx('操作', 'Action')}</th><th>${tx('标题', 'Title')}</th><th>${tx('领域', 'Domain')}</th><th>${tx('层级', 'Tier')}</th><th>${tx('来源', 'Source')}</th><th>${tx('置信度', 'Confidence')}</th><th>${tx('创建时间', 'Created')}</th></tr></thead><tbody>`;
+    html += units.map(u => `<tr><td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewMemoryUnit('${u.unit_id}')">${tx('查看', 'View')}</button></td><td>${esc(u.title)}</td><td>${u.domain}</td><td>${u.tier}</td><td>${esc(u.source_type || 'synthetic')}</td><td>${(u.confidence*100).toFixed(0)}%</td><td style="color:var(--muted)">${(u.created_utc||'').replace('T',' ').replace('Z','')}</td></tr>`).join('');
     html += '</tbody></table></div>';
-    html += '<div class="card"><h3>Memory Unit Detail</h3><pre id="memory-detail">Select a unit to inspect usage/links/audit details.</pre></div>';
+    html += `<div class="card"><h3>${tx('Memory Unit 详情', 'Memory Unit Detail')}</h3><pre id="memory-detail">${tx('选择一条 unit 查看 usage/links/audit 详情。', 'Select a unit to inspect usage/links/audit details.')}</pre></div>`;
     content.innerHTML = html;
   } else if (type === 'playbook') {
     const methods = await api('/console/fabric/playbook');
-    let html = '<div class="card"><h3>Active Playbook Methods</h3><table><thead><tr><th>Action</th><th>Name</th><th>Category</th><th>Success Rate</th><th>Runs</th><th>Version</th></tr></thead><tbody>';
-    html += methods.map(m => `<tr><td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewPlaybookMethod('${m.method_id}')">View</button></td><td>${esc(m.name)}</td><td>${m.category}</td><td>${m.success_rate != null ? (m.success_rate*100).toFixed(1)+'%' : '—'}</td><td>${m.total_runs}</td><td>v${m.version}</td></tr>`).join('');
+    let html = `<div class="card"><h3>${tx('活跃 Playbook Methods', 'Active Playbook Methods')}</h3><table><thead><tr><th>${tx('操作', 'Action')}</th><th>${tx('名称', 'Name')}</th><th>${tx('类别', 'Category')}</th><th>${tx('成功率', 'Success Rate')}</th><th>${tx('运行次数', 'Runs')}</th><th>${tx('版本', 'Version')}</th></tr></thead><tbody>`;
+    html += methods.map(m => `<tr><td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewPlaybookMethod('${m.method_id}')">${tx('查看', 'View')}</button></td><td>${esc(m.name)}</td><td>${m.category}</td><td>${m.success_rate != null ? (m.success_rate*100).toFixed(1)+'%' : '—'}</td><td>${m.total_runs}</td><td>v${m.version}</td></tr>`).join('');
     html += '</tbody></table></div>';
     html += `<div class="card">
-      <h3>Playbook Method Detail</h3>
+      <h3>${tx('Playbook Method 详情', 'Playbook Method Detail')}</h3>
       <div class="search-row">
-        <select id="playbook-ver-a" onchange="renderPlaybookVersionDiff()"><option value="">Version A</option></select>
-        <select id="playbook-ver-b" onchange="renderPlaybookVersionDiff()"><option value="">Version B</option></select>
+        <select id="playbook-version-select"><option value="">Select version</option></select>
+        <button class="action" style="background:#334155" onclick="previewSelectedPlaybookVersion()">${tx('查看版本', 'View Version')}</button>
       </div>
-      <pre id="playbook-version-diff">Select two versions to compare specs.</pre>
-      <pre id="playbook-detail">Select a method to inspect evaluations and versions.</pre>
+      <pre id="playbook-version-preview">${tx('选择一个版本预览 spec。', 'Select one version to preview spec.')}</pre>
+      <pre id="playbook-detail">${tx('选择一个 method 查看评估与版本。', 'Select a method to inspect evaluations and versions.')}</pre>
     </div>`;
     content.innerHTML = html;
   } else if (type === 'compass') {
@@ -632,21 +1481,21 @@ async function showFabric(type) {
       api('/console/fabric/compass/budgets'),
       api('/console/fabric/compass/signals'),
     ]);
-    let html = '<div class="card"><h3>Priorities</h3><table><thead><tr><th>Domain</th><th>Weight</th></tr></thead><tbody>';
+    let html = `<div class="card"><h3>${tx('优先级', 'Priorities')}</h3><table><thead><tr><th>${tx('领域', 'Domain')}</th><th>${tx('权重', 'Weight')}</th></tr></thead><tbody>`;
     html += prios.map(p => `<tr><td>${p.domain}</td><td>${p.weight}</td></tr>`).join('');
     html += '</tbody></table></div>';
-    html += '<div class="card"><h3>Resource Budgets</h3><table><thead><tr><th>Resource</th><th>Daily Limit</th><th>Current Usage</th></tr></thead><tbody>';
+    html += `<div class="card"><h3>${tx('资源预算', 'Resource Budgets')}</h3><table><thead><tr><th>${tx('资源', 'Resource')}</th><th>${tx('日限额', 'Daily Limit')}</th><th>${tx('当前用量', 'Current Usage')}</th></tr></thead><tbody>`;
     html += budgets.map(b => `<tr><td>${b.resource_type}</td><td>${(b.daily_limit||0).toLocaleString()}</td><td>${(b.current_usage||0).toLocaleString()}</td></tr>`).join('');
     html += '</tbody></table></div>';
     if (signals.length) {
-      html += '<div class="card"><h3>Active Attention Signals</h3><table><thead><tr><th>Domain</th><th>Trend</th><th>Severity</th><th>Observed</th></tr></thead><tbody>';
+      html += `<div class="card"><h3>${tx('活跃 Attention Signals', 'Active Attention Signals')}</h3><table><thead><tr><th>${tx('领域', 'Domain')}</th><th>${tx('趋势', 'Trend')}</th><th>${tx('级别', 'Severity')}</th><th>${tx('观测时间', 'Observed')}</th></tr></thead><tbody>`;
       html += signals.map(s => `<tr><td>${s.domain}</td><td>${esc(s.trend)}</td><td><span class="badge ${s.severity==='critical'?'error':s.severity==='high'?'degraded':'ok'}">${s.severity}</span></td><td style="color:var(--muted)">${(s.observed_utc||'').replace('T',' ').replace('Z','')}</td></tr>`).join('');
       html += '</tbody></table></div>';
       const timeline = signals
         .slice()
         .sort((a, b) => String(a.observed_utc || '').localeCompare(String(b.observed_utc || '')))
         .map(s => `[${String(s.observed_utc || '').replace('T', ' ').replace('Z', '')}] ${s.domain} (${s.severity}) ${s.trend}`);
-      html += `<div class="card"><h3>Signal Timeline</h3><pre>${esc(timeline.join('\n') || 'No signals')}</pre></div>`;
+      html += `<div class="card"><h3>${tx('Signal 时间线', 'Signal Timeline')}</h3><pre>${esc(timeline.join('\n') || tx('暂无 signals', 'No signals'))}</pre></div>`;
     }
     content.innerHTML = html;
   }
@@ -655,7 +1504,7 @@ async function showFabric(type) {
 async function viewMemoryUnit(unitId) {
   const target = document.getElementById('memory-detail');
   if (!target) return;
-  target.textContent = 'Loading memory unit detail…';
+  target.textContent = tx('加载 memory unit 详情…', 'Loading memory unit detail…');
   try {
     const u = await api('/console/fabric/memory/' + encodeURIComponent(unitId));
     const summary = {
@@ -676,14 +1525,14 @@ async function viewMemoryUnit(unitId) {
     };
     target.textContent = JSON.stringify(summary, null, 2);
   } catch (e) {
-    target.textContent = 'Error: ' + e.message;
+    target.textContent = tx('错误：', 'Error: ') + e.message;
   }
 }
 
 async function viewPlaybookMethod(methodId) {
   const target = document.getElementById('playbook-detail');
   if (!target) return;
-  target.textContent = 'Loading playbook method detail…';
+  target.textContent = tx('加载 playbook method 详情…', 'Loading playbook method detail…');
   try {
     const m = await api('/console/fabric/playbook/' + encodeURIComponent(methodId));
     const detail = {
@@ -703,7 +1552,7 @@ async function viewPlaybookMethod(methodId) {
     populatePlaybookVersionSelects(detail.versions || []);
     target.textContent = JSON.stringify(detail, null, 2);
   } catch (e) {
-    target.textContent = 'Error: ' + e.message;
+    target.textContent = tx('错误：', 'Error: ') + e.message;
   }
 }
 
@@ -719,39 +1568,31 @@ function _playbookVersionSpec(version) {
 }
 
 function populatePlaybookVersionSelects(versions) {
-  const a = document.getElementById('playbook-ver-a');
-  const b = document.getElementById('playbook-ver-b');
-  const diff = document.getElementById('playbook-version-diff');
-  if (!a || !b || !diff) return;
-  const opts = ['<option value="">Version A</option>']
+  const sel = document.getElementById('playbook-version-select');
+  const preview = document.getElementById('playbook-version-preview');
+  if (!sel || !preview) return;
+  const opts = [`<option value="">${tx('选择版本', 'Select version')}</option>`]
     .concat((versions || []).map(v => `<option value="${v.version}">v${v.version}</option>`))
     .join('');
-  const optsB = ['<option value="">Version B</option>']
-    .concat((versions || []).map(v => `<option value="${v.version}">v${v.version}</option>`))
-    .join('');
-  a.innerHTML = opts;
-  b.innerHTML = optsB;
-  diff.textContent = 'Select two versions to compare specs.';
+  sel.innerHTML = opts;
+  preview.textContent = tx('选择一个版本预览 spec。', 'Select one version to preview spec.');
 }
 
-function renderPlaybookVersionDiff() {
-  const a = document.getElementById('playbook-ver-a');
-  const b = document.getElementById('playbook-ver-b');
-  const diff = document.getElementById('playbook-version-diff');
-  if (!a || !b || !diff) return;
-  const va = a.value;
-  const vb = b.value;
-  if (!va || !vb) {
-    diff.textContent = 'Select two versions to compare specs.';
+function previewSelectedPlaybookVersion() {
+  const sel = document.getElementById('playbook-version-select');
+  const preview = document.getElementById('playbook-version-preview');
+  if (!sel || !preview) return;
+  const v = sel.value;
+  if (!v) {
+    preview.textContent = tx('选择一个版本预览 spec。', 'Select one version to preview spec.');
     return;
   }
-  const sa = _playbookVersionSpec(va);
-  const sb = _playbookVersionSpec(vb);
-  if (!sa || !sb) {
-    diff.textContent = 'Unable to parse selected version payload.';
+  const spec = _playbookVersionSpec(v);
+  if (!spec) {
+    preview.textContent = tx('无法解析所选版本载荷。', 'Unable to parse selected version payload.');
     return;
   }
-  diff.textContent = jsonDiff(sa, sb, `v${va}`, `v${vb}`);
+  preview.textContent = JSON.stringify(spec, null, 2);
 }
 
 async function loadPolicy() {
@@ -759,50 +1600,102 @@ async function loadPolicy() {
   document.getElementById('priority-tbody').innerHTML = prios.map(p =>
     `<tr><td>${p.domain}</td><td>${p.weight}</td><td style="color:var(--muted)">${p.source||'system'}</td><td style="color:var(--muted)">${(p.updated_utc||'').replace('T',' ').replace('Z','')}</td></tr>`
   ).join('');
-  onPolicyScopeChange();
-  await Promise.all([loadPolicyEditor(), loadPolicyCatalog()]);
+  await onPolicyScopeChange();
+  const tbody = document.getElementById('policy-versions-tbody');
+  if (tbody) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted)">${tx('先加载一个 Policy key 查看版本', 'Load a policy key first to view versions')}</td></tr>`;
+  }
+  populatePolicyVersionSelect([]);
+  const preview = document.getElementById('policy-version-preview');
+  if (preview) preview.textContent = tx('选择一个版本预览。', 'Select one version to preview.');
+  cancelPolicyEditor(tx('请选择一项后加载 Policy Editor。', 'Pick a policy key, then load Policy Editor.'));
+  await loadPolicyCatalog();
 }
 
-function onPolicyScopeChange(forceDefault = false) {
-  const scopeEl = document.getElementById('policy-scope');
-  const keyEl = document.getElementById('policy-key');
-  const prevScope = currentPolicyScope || 'quality';
-  const scope = (scopeEl?.value || 'quality').trim();
+function _policyDefaults(scope) {
   const defaults = {
     quality: 'default',
     preference: 'output_language',
     budget: 'openai_tokens',
   };
-  const placeholders = {
-    quality: 'task_type (e.g. research_report)',
-    preference: 'pref_key (e.g. output_language)',
-    budget: 'resource_type (e.g. openai_tokens)',
-  };
-  const nextDefault = defaults[scope] || 'default';
+  return defaults[scope] || 'default';
+}
+
+async function _loadPolicyScopeKeys(scope) {
+  if (scope === 'preference') {
+    const prefs = await api('/console/policy/preferences');
+    return (prefs || []).map(p => String(p.pref_key || '').trim()).filter(Boolean);
+  }
+  if (scope === 'budget') {
+    const budgets = await api('/console/policy/budgets');
+    return (budgets || []).map(b => String(b.resource_type || '').trim()).filter(Boolean);
+  }
+  return ['default', 'research_report', 'daily_brief'];
+}
+
+function onPolicyKeyPresetChange() {
+  const selectEl = document.getElementById('policy-key-select');
+  if (!selectEl) return;
+  currentPolicyType = selectEl.value || _policyDefaults(currentPolicyScope || 'quality');
+}
+
+async function refreshPolicyKeyOptions(forceDefault = false) {
+  const scopeEl = document.getElementById('policy-scope');
+  const selectEl = document.getElementById('policy-key-select');
+  const scope = (scopeEl?.value || currentPolicyScope || 'quality').trim();
+  const fallback = _policyDefaults(scope);
+  const existing = currentPolicyType || '';
+  let keys = [];
+  try {
+    keys = await _loadPolicyScopeKeys(scope);
+  } catch (_) {
+    keys = [];
+  }
+  keys = Array.from(new Set([fallback].concat(keys.map(k => String(k || '').trim()).filter(Boolean))));
+  currentPolicyKeys = keys;
+  const nextValue = forceDefault
+    ? fallback
+    : (keys.includes(existing) ? existing : fallback);
+  if (selectEl) {
+    const options = keys.map(k => `<option value="${esc(k)}">${esc(k)}</option>`).join('');
+    selectEl.innerHTML = options;
+    selectEl.value = keys.includes(nextValue) ? nextValue : fallback;
+    currentPolicyType = selectEl.value || fallback;
+  }
+}
+
+async function onPolicyScopeChange(forceDefault = false, autoLoad = false) {
+  const scopeEl = document.getElementById('policy-scope');
+  const prevScope = currentPolicyScope || 'quality';
+  const scope = (scopeEl?.value || 'quality').trim();
   if (scopeEl) scopeEl.value = scope;
-  if (keyEl) {
-    keyEl.placeholder = placeholders[scope] || placeholders.quality;
-    if (!keyEl.value.trim() || forceDefault || scope !== prevScope) {
-      keyEl.value = nextDefault;
-    }
+  await refreshPolicyKeyOptions(forceDefault || scope !== prevScope);
+  if (scope !== prevScope) {
+    cancelPolicyEditor(tx('Policy 范围已切换，请重新加载后编辑。', 'Policy scope changed. Reload to edit.'));
   }
   currentPolicyScope = scope;
-  currentPolicyType = keyEl?.value.trim() || nextDefault;
+  currentPolicyType = document.getElementById('policy-key-select')?.value || _policyDefaults(scope);
+  if (autoLoad) await loadPolicyEditor();
+}
+
+function cancelPolicyEditor(metaText = '') {
+  const meta = document.getElementById('policy-editor-meta');
+  if (meta) {
+    meta.textContent = metaText || tx('编辑器空闲', 'Editor idle');
+  }
+  if (unifiedEditorState.open && unifiedEditorState.key.startsWith('policy:')) {
+    closeUnifiedEditor(true);
+  }
 }
 
 function _policyDescriptor() {
   const scopeEl = document.getElementById('policy-scope');
-  const keyEl = document.getElementById('policy-key');
+  const keySel = document.getElementById('policy-key-select');
   const scope = (scopeEl?.value || currentPolicyScope || 'quality').trim();
-  const defaults = {
-    quality: 'default',
-    preference: 'output_language',
-    budget: 'openai_tokens',
-  };
-  const key = keyEl?.value.trim() || defaults[scope] || 'default';
+  const key = (keySel?.value || currentPolicyType || _policyDefaults(scope)).trim();
   currentPolicyScope = scope;
   currentPolicyType = key;
-  if (keyEl && !keyEl.value.trim()) keyEl.value = key;
+  if (keySel) keySel.value = key;
   if (scope === 'preference') {
     return {
       scope,
@@ -860,7 +1753,7 @@ function _policyWriteBody(scope, rawText) {
   }
   if (scope === 'budget') {
     const text = String(rawText ?? '').trim();
-    if (!text) throw new Error('Budget value cannot be empty');
+    if (!text) throw new Error(tx('预算值不能为空', 'Budget value cannot be empty'));
     let dailyLimit = NaN;
     if (/^-?\d+(\.\d+)?$/.test(text)) {
       dailyLimit = Number(text);
@@ -880,98 +1773,110 @@ function _policyWriteBody(scope, rawText) {
 
 async function loadPolicyEditor() {
   const desc = _policyDescriptor();
-  const editor = document.getElementById('policy-editor-text');
   const meta = document.getElementById('policy-editor-meta');
-  if (editor) editor.value = '';
-  if (meta) meta.textContent = `Loading ${desc.label}…`;
-  try {
-    const d = await api(desc.getPath);
-    if (editor) editor.value = _policyEditorContent(desc.scope, d);
-    if (meta) meta.textContent = `Editing ${desc.label}`;
-    await loadPolicyVersions();
-  } catch (e) {
-    if (meta) meta.textContent = `Failed to load ${desc.label}: ${e.message}`;
-    const tbody = document.getElementById('policy-versions-tbody');
-    if (tbody) {
-      tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
-    }
-    populatePolicyDiffSelects([]);
+  if (meta) meta.textContent = tx(`Loading ${desc.label}…`, `Loading ${desc.label}…`);
+  const ok = await openUnifiedEditor({
+    key: `policy:${desc.scope}:${desc.key}`,
+    title: tx('Policy 编辑器', 'Policy Editor'),
+    subtitle: desc.label,
+    hint: tx('支持 JSON/文本；保存后会刷新目录与版本。', 'Supports JSON/text; save refreshes catalog and versions.'),
+    loadText: async () => {
+      const d = await api(desc.getPath);
+      return _policyEditorContent(desc.scope, d);
+    },
+    saveText: async (text) => {
+      const body = _policyWriteBody(desc.scope, text);
+      await apiWrite(desc.putPath, 'PUT', body);
+    },
+    onSaved: async () => {
+      await Promise.all([loadPolicyCatalog(), loadPolicyVersions()]);
+    },
+  });
+  if (ok) {
+    if (meta) meta.textContent = tx(`Editing ${desc.label}`, `Editing ${desc.label}`);
+  } else {
+    if (meta) meta.textContent = tx(`Failed to load ${desc.label}`, `Failed to load ${desc.label}`);
   }
 }
 
 async function savePolicyEditor() {
-  const desc = _policyDescriptor();
-  const text = document.getElementById('policy-editor-text')?.value || '';
-  let body;
-  try {
-    body = _policyWriteBody(desc.scope, text);
-  } catch (e) {
-    alert('Invalid policy payload: ' + e.message);
-    return;
-  }
-  try {
-    await apiWrite(desc.putPath, 'PUT', body);
-    await loadPolicy();
-  } catch (e) {
-    alert('Failed to save policy: ' + e.message);
-  }
+  await saveUnifiedEditor();
 }
 
 async function loadPolicyCatalog() {
+  const qualityTbody = document.getElementById('policy-quality-tbody');
   const prefTbody = document.getElementById('policy-pref-tbody');
   const budgetTbody = document.getElementById('policy-budget-tbody');
-  if (prefTbody) prefTbody.innerHTML = '<tr><td colspan="3" style="color:var(--muted)">Loading…</td></tr>';
-  if (budgetTbody) budgetTbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr>';
+  if (qualityTbody) qualityTbody.innerHTML = `<tr><td colspan="4" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
+  if (prefTbody) prefTbody.innerHTML = `<tr><td colspan="4" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
+  if (budgetTbody) budgetTbody.innerHTML = `<tr><td colspan="4" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
   try {
-    const [prefs, budgets] = await Promise.all([
+    const [qualityKeys, prefs, budgets] = await Promise.all([
+      _loadPolicyScopeKeys('quality'),
       api('/console/policy/preferences'),
       api('/console/policy/budgets'),
     ]);
+    if (qualityTbody) {
+      qualityTbody.innerHTML = (qualityKeys || []).map(k => `
+        <tr>
+          <td title="${esc(k)}">${esc(k)}</td>
+          <td style="color:var(--muted)">—</td>
+          <td style="color:var(--muted)">—</td>
+          <td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="editPolicyKey('quality','${encodeURIComponent(k)}')">${tx('编辑', 'Edit')}</button></td>
+        </tr>
+      `).join('') || `<tr><td colspan="4" style="color:var(--muted)">${tx('暂无质量键', 'No quality keys')}</td></tr>`;
+    }
     if (prefTbody) {
       prefTbody.innerHTML = (prefs || []).map(p => `
         <tr>
-          <td>${esc(p.pref_key || '')}</td>
-          <td style="color:var(--muted)">${esc((p.value || '').slice(0, 120))}</td>
-          <td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="editPolicyKey('preference','${encodeURIComponent(p.pref_key || '')}')">Edit</button></td>
+          <td title="${esc(p.pref_key || '')}">${esc(p.pref_key || '')}</td>
+          <td style="color:var(--muted)" title="${esc(p.value || '')}">${esc((p.value || '').slice(0, 120))}</td>
+          <td style="color:var(--muted)">preference</td>
+          <td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="editPolicyKey('preference','${encodeURIComponent(p.pref_key || '')}')">${tx('编辑', 'Edit')}</button></td>
         </tr>
-      `).join('') || '<tr><td colspan="3" style="color:var(--muted)">No preferences</td></tr>';
+      `).join('') || `<tr><td colspan="4" style="color:var(--muted)">${tx('暂无偏好配置', 'No preferences')}</td></tr>`;
     }
     if (budgetTbody) {
       budgetTbody.innerHTML = (budgets || []).map(b => `
         <tr>
-          <td>${esc(b.resource_type || '')}</td>
+          <td title="${esc(b.resource_type || '')}">${esc(b.resource_type || '')}</td>
           <td>${Number(b.daily_limit || 0).toLocaleString()}</td>
           <td>${Number(b.current_usage || 0).toLocaleString()}</td>
-          <td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="editPolicyKey('budget','${encodeURIComponent(b.resource_type || '')}')">Edit</button></td>
+          <td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="editPolicyKey('budget','${encodeURIComponent(b.resource_type || '')}')">${tx('编辑', 'Edit')}</button></td>
         </tr>
-      `).join('') || '<tr><td colspan="4" style="color:var(--muted)">No budgets</td></tr>';
+      `).join('') || `<tr><td colspan="4" style="color:var(--muted)">${tx('暂无预算配置', 'No budgets')}</td></tr>`;
     }
+    await refreshPolicyKeyOptions(false);
   } catch (e) {
-    if (prefTbody) prefTbody.innerHTML = `<tr><td colspan="3" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
-    if (budgetTbody) budgetTbody.innerHTML = `<tr><td colspan="4" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+    if (qualityTbody) qualityTbody.innerHTML = `<tr><td colspan="4" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
+    if (prefTbody) prefTbody.innerHTML = `<tr><td colspan="4" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
+    if (budgetTbody) budgetTbody.innerHTML = `<tr><td colspan="4" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
   }
 }
 
-function editPolicyKey(scope, keyEncoded) {
+async function editPolicyKey(scope, keyEncoded) {
   const key = decodeURIComponent(keyEncoded || '');
   const scopeEl = document.getElementById('policy-scope');
-  const keyEl = document.getElementById('policy-key');
+  const keySel = document.getElementById('policy-key-select');
   if (scopeEl) scopeEl.value = scope;
-  onPolicyScopeChange();
-  if (keyEl) keyEl.value = key;
-  loadPolicyEditor();
+  await onPolicyScopeChange(false, false);
+  if (keySel && Array.from(keySel.options).some(opt => opt.value === key)) {
+    keySel.value = key;
+    currentPolicyType = key;
+  }
+  await loadPolicyEditor();
 }
 
 async function loadPolicyVersions() {
   const desc = _policyDescriptor();
   const tbody = document.getElementById('policy-versions-tbody');
-  tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">Loading…</td></tr>';
+  tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
   try {
     const versions = await api(desc.versionsPath);
     currentPolicyVersions = Array.isArray(versions) ? versions : [];
     if (!currentPolicyVersions.length) {
-      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">No versions found</td></tr>';
-      populatePolicyDiffSelects([]);
+      tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted)">${tx('未找到版本', 'No versions found')}</td></tr>`;
+      populatePolicyVersionSelect([]);
       return;
     }
     tbody.innerHTML = currentPolicyVersions.map(v => `
@@ -981,29 +1886,31 @@ async function loadPolicyVersions() {
         <td style="color:var(--muted)">${esc(v.changed_by||'')}</td>
         <td style="color:var(--muted)">${esc(v.reason||'')}</td>
         <td>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewPolicyVersion(${v.version})">View</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackPolicyVersion(${v.version})">Rollback</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewPolicyVersion(${v.version})">${tx('查看', 'View')}</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackPolicyVersion(${v.version})">${tx('回滚', 'Rollback')}</button>
         </td>
       </tr>
     `).join('');
-    populatePolicyDiffSelects(currentPolicyVersions);
+    populatePolicyVersionSelect(currentPolicyVersions);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
   }
 }
 
-function populatePolicyDiffSelects(versions) {
-  const selA = document.getElementById('policy-diff-a');
-  const selB = document.getElementById('policy-diff-b');
-  const opts = ['<option value="">Version A</option>'].concat(
-    versions.map(v => `<option value="${v.version}">v${v.version}</option>`)
+function populatePolicyVersionSelect(versions) {
+  const sel = document.getElementById('policy-version-select');
+  if (!sel) return;
+  const opts = [`<option value="">${tx('选择版本', 'Select version')}</option>`].concat(
+    (versions || []).map(v => `<option value="${v.version}">v${v.version}</option>`)
   ).join('');
-  const optsB = ['<option value="">Version B</option>'].concat(
-    versions.map(v => `<option value="${v.version}">v${v.version}</option>`)
-  ).join('');
-  selA.innerHTML = opts;
-  selB.innerHTML = optsB;
-  document.getElementById('policy-diff-content').textContent = 'Select two versions to view diff.';
+  sel.innerHTML = opts;
+}
+
+function selectedPolicyVersion() {
+  const sel = document.getElementById('policy-version-select');
+  const v = Number(sel?.value || 0);
+  if (!v) return null;
+  return v;
 }
 
 function _policyVersionValue(version) {
@@ -1016,51 +1923,41 @@ function _policyVersionValue(version) {
   }
 }
 
-function viewPolicyVersion(version) {
+async function viewPolicyVersion(version) {
   const desc = _policyDescriptor();
   const value = _policyVersionValue(version);
   if (!value) return;
-  document.getElementById('policy-editor-text').value = _policyEditorContent(desc.scope, value);
+  const meta = document.getElementById('policy-editor-meta');
+  if (meta) meta.textContent = tx(`Viewing v${version} of ${desc.label}`, `Viewing v${version} of ${desc.label}`);
+  await openUnifiedEditor({
+    key: `policy-version:${desc.scope}:${desc.key}:v${version}`,
+    title: tx('Policy 版本预览', 'Policy Version Preview'),
+    subtitle: `${desc.label} / v${version}`,
+    hint: tx('只读预览；如需修改请使用 Edit Policy。', 'Read-only preview. Use Edit Policy for modifications.'),
+    readOnly: true,
+    loadText: async () => _policyEditorContent(desc.scope, value),
+  });
 }
 
-function renderPolicyDiff() {
-  const va = document.getElementById('policy-diff-a').value;
-  const vb = document.getElementById('policy-diff-b').value;
-  const diff = document.getElementById('policy-diff-content');
-  if (!va || !vb) {
-    diff.textContent = 'Select two versions to view diff.';
+async function viewSelectedPolicyVersion() {
+  const v = selectedPolicyVersion();
+  const preview = document.getElementById('policy-version-preview');
+  if (!v) {
+    if (preview) preview.textContent = tx('请选择一个版本。', 'Please select one version.');
     return;
   }
-  const a = _policyVersionValue(va);
-  const b = _policyVersionValue(vb);
-  if (!a || !b) {
-    diff.textContent = 'Unable to parse selected versions.';
+  const value = _policyVersionValue(v);
+  if (!value) {
+    if (preview) preview.textContent = tx('无法解析所选版本。', 'Unable to parse selected version.');
     return;
   }
-  diff.textContent = jsonDiff(a, b, `v${va}`, `v${vb}`);
-}
-
-function jsonDiff(a, b, labelA, labelB) {
-  const aLines = JSON.stringify(a, null, 2).split('\n');
-  const bLines = JSON.stringify(b, null, 2).split('\n');
-  const maxLen = Math.max(aLines.length, bLines.length);
-  const out = [`# ${labelA} vs ${labelB}`, ''];
-  for (let i = 0; i < maxLen; i++) {
-    const la = aLines[i] ?? '';
-    const lb = bLines[i] ?? '';
-    if (la === lb) {
-      out.push(`  ${la}`);
-    } else {
-      if (la) out.push(`- ${la}`);
-      if (lb) out.push(`+ ${lb}`);
-    }
-  }
-  return out.join('\n');
+  if (preview) preview.textContent = JSON.stringify(value, null, 2);
+  await viewPolicyVersion(v);
 }
 
 async function rollbackPolicyVersion(version) {
   const desc = _policyDescriptor();
-  if (!confirm(`Rollback ${desc.label} to v${version}?`)) return;
+  if (!confirm(tx(`确认回滚 ${desc.label} 到 v${version} 吗？`, `Rollback ${desc.label} to v${version}?`))) return;
   try {
     await apiWrite(
       desc.rollbackPath + version,
@@ -1069,32 +1966,54 @@ async function rollbackPolicyVersion(version) {
     );
     await loadPolicy();
   } catch (e) {
-    alert('Rollback failed: ' + e.message);
+    alert(tx('回滚失败：', 'Rollback failed: ') + e.message);
   }
+}
+
+async function rollbackSelectedPolicyVersion() {
+  const v = selectedPolicyVersion();
+  if (!v) {
+    alert(tx('请选择一个版本。', 'Please select one version.'));
+    return;
+  }
+  await rollbackPolicyVersion(v);
 }
 
 async function loadTraces() {
   const routine = document.getElementById('trace-routine').value;
   const status = document.getElementById('trace-status').value;
-  let url = '/console/traces?limit=50';
+  const since = document.getElementById('trace-since')?.value?.trim() || '';
+  const q = document.getElementById('trace-q')?.value?.trim() || '';
+  const sizeSel = Number(document.getElementById('trace-page-size')?.value || 50);
+  _listState('traces', {size: sizeSel}).size = sizeSel;
+  let url = '/console/traces?limit=1000';
   if (routine) url += '&routine=' + encodeURIComponent(routine);
   if (status) url += '&status=' + status;
-  const traces = await api(url);
-  document.getElementById('traces-tbody').innerHTML = traces.map(t =>
-    `<tr>
-      <td style="color:var(--muted);font-size:11px"><button class="action" style="font-size:10px;padding:2px 6px;background:#334155" onclick="loadTraceDetail('${t.trace_id}')">${t.trace_id}</button></td>
-      <td>${t.routine}</td>
-      <td><span class="badge ${t.status}">${t.status}</span></td>
-      <td>${t.degraded ? '<span class="badge degraded">yes</span>' : '—'}</td>
-      <td style="color:var(--muted)">${(t.started_utc||'').replace('T',' ').replace('Z','')}</td>
-      <td>${t.elapsed_s}s</td>
-    </tr>`
-  ).join('') || '<tr><td colspan="6" style="color:var(--muted)">No traces found</td></tr>';
+  if (since) url += '&since=' + encodeURIComponent(since);
+  try {
+    const rows = await api(url);
+    const filtered = _applyListQuery(rows || [], q, ['trace_id', 'routine', 'status', 'started_utc', 'error']);
+    const traces = _paginate(filtered, 'traces', 'traces-pager', 'loadTraces');
+    document.getElementById('traces-tbody').innerHTML = traces.map(t =>
+      `<tr>
+        <td style="color:var(--muted);font-size:11px"><button class="action" style="font-size:10px;padding:2px 6px;background:#334155" onclick="loadTraceDetail('${t.trace_id}')">${t.trace_id}</button></td>
+        <td>${t.routine}</td>
+        <td><span class="badge ${t.status}">${t.status}</span></td>
+        <td>${t.degraded ? '<span class="badge degraded">yes</span>' : '—'}</td>
+        <td style="color:var(--muted)">${(t.started_utc||'').replace('T',' ').replace('Z','')}</td>
+        <td>${t.elapsed_s}s</td>
+      </tr>`
+    ).join('') || `<tr><td colspan="6" style="color:var(--muted)">${tx('未找到 traces', 'No traces found')}</td></tr>`;
+  } catch (e) {
+    document.getElementById('traces-tbody').innerHTML = `<tr><td colspan="6" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
+    const pager = document.getElementById('traces-pager');
+    if (pager) pager.innerHTML = '';
+  }
 }
 
 async function loadTraceDetail(traceId) {
   const target = document.getElementById('trace-detail');
-  target.textContent = 'Loading trace detail…';
+  target.textContent = tx('加载 trace 详情…', 'Loading trace detail…');
   try {
     const t = await api('/console/traces/' + encodeURIComponent(traceId));
     const lines = [];
@@ -1105,10 +2024,10 @@ async function loadTraceDetail(traceId) {
     lines.push(`elapsed_s: ${t.elapsed_s || 0}`);
     if (t.error) lines.push(`error: ${t.error}`);
     lines.push('');
-    lines.push('## Steps');
+    lines.push(tx('## 步骤', '## Steps'));
     const steps = Array.isArray(t.steps) ? t.steps : [];
     if (!steps.length) {
-      lines.push('- no steps recorded');
+      lines.push(tx('- 未记录步骤', '- no steps recorded'));
     } else {
       for (const s of steps) {
         lines.push(`- [${s.t ?? 0}s] ${s.name || 'step'}`);
@@ -1118,10 +2037,10 @@ async function loadTraceDetail(traceId) {
       }
     }
     lines.push('');
-    lines.push('## Result');
+    lines.push(tx('## 结果', '## Result'));
     lines.push(JSON.stringify(t.result || {}, null, 2));
     lines.push('');
-    lines.push('## Cortex Summary');
+    lines.push(tx('## Cortex 汇总', '## Cortex Summary'));
     const cs = t.cortex_summary || {};
     lines.push(`total_calls: ${cs.total_calls || 0}`);
     lines.push(`total_in_tokens: ${cs.total_in_tokens || 0}`);
@@ -1129,9 +2048,9 @@ async function loadTraceDetail(traceId) {
     const bp = cs.by_provider || {};
     const providers = Object.keys(bp);
     if (!providers.length) {
-      lines.push('- no cortex calls attributed');
+      lines.push(tx('- 无关联 cortex 调用', '- no cortex calls attributed'));
     } else {
-      lines.push('- by_provider:');
+      lines.push(tx('- 按 provider：', '- by_provider:'));
       for (const p of providers) {
         const row = bp[p] || {};
         lines.push(`  - ${p}: calls=${row.calls||0}, in=${row.in_tokens||0}, out=${row.out_tokens||0}, errors=${row.errors||0}, avg_elapsed_s=${row.avg_elapsed_s||0}`);
@@ -1139,7 +2058,7 @@ async function loadTraceDetail(traceId) {
     }
     const latest = Array.isArray(cs.latest_calls) ? cs.latest_calls : [];
     if (latest.length) {
-      lines.push('- latest_calls:');
+      lines.push(tx('- 最近调用：', '- latest_calls:'));
       for (const c of latest) {
         lines.push(`  - [${c.timestamp||''}] ${c.provider||'unknown'} ${c.model||''} in=${c.in_tokens||0} out=${c.out_tokens||0} elapsed=${c.elapsed_s||0}s success=${c.success ? 'yes' : 'no'}`);
         if (c.prompt_preview) lines.push(`    prompt: ${String(c.prompt_preview).slice(0, 180)}`);
@@ -1149,14 +2068,14 @@ async function loadTraceDetail(traceId) {
     }
     target.textContent = lines.join('\n');
   } catch (e) {
-    target.textContent = 'Error loading trace detail: ' + e.message;
-  }
+    target.textContent = tx('加载 trace 详情失败：', 'Error loading trace detail: ') + e.message;
+}
 }
 
 function jumpToTrace(traceId) {
   const resolved = decodeURIComponent(traceId || '');
   if (!resolved) return;
-  const btn = Array.from(document.querySelectorAll('nav button')).find(b => (b.textContent || '').trim() === 'Traces');
+  const btn = Array.from(document.querySelectorAll('nav button')).find(b => (b.getAttribute('onclick') || '').includes("show('traces'"));
   show('traces', btn || null);
   loadTraceDetail(resolved);
 }
@@ -1164,17 +2083,29 @@ function jumpToTrace(traceId) {
 async function loadCortexUsage() {
   const tbody = document.getElementById('cortex-usage-tbody');
   const summary = document.getElementById('cortex-usage-summary');
-  const since = document.getElementById('cortex-since')?.value?.trim() || '';
-  const until = document.getElementById('cortex-until')?.value?.trim() || '';
-  let url = '/console/cortex/usage?limit=500';
+  const preset = document.getElementById('cortex-date-preset')?.value || 'last_24h';
+  const now = new Date();
+  const toIso = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  let since = '';
+  if (preset === 'last_1h') since = toIso(new Date(now.getTime() - 1 * 3600 * 1000));
+  else if (preset === 'last_6h') since = toIso(new Date(now.getTime() - 6 * 3600 * 1000));
+  else if (preset === 'last_24h') since = toIso(new Date(now.getTime() - 24 * 3600 * 1000));
+  else if (preset === 'last_7d') since = toIso(new Date(now.getTime() - 7 * 24 * 3600 * 1000));
+  const until = toIso(now);
+  const q = document.getElementById('cortex-q')?.value?.trim() || '';
+  const sizeSel = Number(document.getElementById('cortex-page-size')?.value || 20);
+  _listState('cortex', {size: sizeSel}).size = sizeSel;
+  let url = '/console/cortex/usage?limit=2000';
   if (since) url += '&since=' + encodeURIComponent(since);
   if (until) url += '&until=' + encodeURIComponent(until);
-  tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted)">Loading…</td></tr>';
-  summary.textContent = 'Loading usage summary…';
+  tbody.innerHTML = `<tr><td colspan="8" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
+  if (summary) summary.innerHTML = `<div class="model-empty">${tx('加载用量汇总…', 'Loading usage summary…')}</div>`;
   try {
     const res = await api(url);
     const rows = Array.isArray(res.records) ? res.records : [];
-    tbody.innerHTML = rows.map(r => {
+    const filtered = _applyListQuery(rows, q, ['timestamp', 'trace_id', 'provider', 'model', 'routine']);
+    const pageRows = _paginate(filtered, 'cortex', 'cortex-pager', 'loadCortexUsage');
+    tbody.innerHTML = pageRows.map(r => {
       const rawTrace = String(r.trace_id || '');
       const traceLabel = esc(rawTrace);
       const traceAction = rawTrace
@@ -1188,12 +2119,12 @@ async function loadCortexUsage() {
         <td>${Number(r.in_tokens||0).toLocaleString()}</td>
         <td>${Number(r.out_tokens||0).toLocaleString()}</td>
         <td>${Number(r.elapsed_s||0).toFixed(2)}s</td>
-        <td><span class="badge ${r.success ? 'ok' : 'error'}">${r.success ? 'ok' : 'error'}</span></td>
+        <td><span class="badge ${r.success ? 'ok' : 'error'}">${r.success ? tx('正常', 'ok') : tx('错误', 'error')}</span></td>
       </tr>`;
-    }).join('') || '<tr><td colspan="8" style="color:var(--muted)">No usage records</td></tr>';
+    }).join('') || `<tr><td colspan="8" style="color:var(--muted)">${tx('暂无用量记录', 'No usage records')}</td></tr>`;
 
     const byProvider = {};
-    for (const r of rows) {
+    for (const r of filtered) {
       const p = String(r.provider || 'unknown');
       if (!byProvider[p]) byProvider[p] = {calls: 0, in_tokens: 0, out_tokens: 0, errors: 0, avg_elapsed_s: 0};
       byProvider[p].calls += 1;
@@ -1206,18 +2137,31 @@ async function loadCortexUsage() {
       const x = byProvider[p];
       x.avg_elapsed_s = x.calls ? Number((x.avg_elapsed_s / x.calls).toFixed(3)) : 0;
     }
-    summary.textContent = JSON.stringify(
-      {
-        query: {since: since || null, until: until || null, count: rows.length},
-        by_provider: byProvider,
-        today: res.today || {},
-      },
-      null,
-      2
-    );
+    if (summary) {
+      const providerRows = Object.entries(byProvider).sort((a, b) => b[1].calls - a[1].calls);
+      summary.innerHTML = `
+        <div class="model-table-shell">
+          <table>
+            <thead><tr><th>Provider</th><th>Calls</th><th>In</th><th>Out</th><th>Errors</th><th>Avg Elapsed</th></tr></thead>
+            <tbody>
+              ${providerRows.map(([provider, v]) => `
+                <tr>
+                  <td>${esc(provider)}</td>
+                  <td>${Number(v.calls || 0).toLocaleString()}</td>
+                  <td>${Number(v.in_tokens || 0).toLocaleString()}</td>
+                  <td>${Number(v.out_tokens || 0).toLocaleString()}</td>
+                  <td>${Number(v.errors || 0).toLocaleString()}</td>
+                  <td>${Number(v.avg_elapsed_s || 0).toFixed(3)}s</td>
+                </tr>
+              `).join('') || `<tr><td colspan="6" style="color:var(--muted)">${tx('暂无汇总数据', 'No summary data')}</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
-    summary.textContent = 'Error loading usage summary: ' + e.message;
+    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
+    if (summary) summary.innerHTML = `<div class="model-empty">${tx('加载用量汇总失败：', 'Error loading usage summary: ')}${esc(e.message)}</div>`;
   }
 }
 
@@ -1226,24 +2170,32 @@ async function loadStrategies() {
   const shadowBody = document.getElementById('shadow-report-tbody');
   const cluster = document.getElementById('strategy-cluster-filter')?.value?.trim() || '';
   const stage = document.getElementById('strategy-stage-filter')?.value || '';
+  const q = document.getElementById('strategy-q')?.value?.trim() || '';
+  const shadowQ = document.getElementById('shadow-q')?.value?.trim() || '';
+  const strategySize = Number(document.getElementById('strategy-page-size')?.value || 20);
+  const shadowSize = Number(document.getElementById('shadow-page-size')?.value || 20);
+  _listState('strategies', {size: strategySize}).size = strategySize;
+  _listState('shadow', {size: shadowSize}).size = shadowSize;
   let url = '/console/strategies';
   const qs = [];
   if (cluster) qs.push('cluster_id=' + encodeURIComponent(cluster));
   if (stage) qs.push('stage=' + encodeURIComponent(stage));
   if (qs.length) url += '?' + qs.join('&');
-  tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted)">Loading…</td></tr>';
-  shadowBody.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr>';
+  tbody.innerHTML = `<tr><td colspan="8" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
+  shadowBody.innerHTML = `<tr><td colspan="7" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
   try {
     const [rows, shadowRows] = await Promise.all([
       api(url),
-      api('/console/strategies/shadow-report?limit=200'),
+      api('/console/strategies/shadow-report?limit=1000'),
     ]);
-    tbody.innerHTML = (rows || []).map(r => {
+    const strategyFiltered = _applyListQuery(rows || [], q, ['strategy_id', 'cluster_id', 'cluster_display_name', 'stage', 'risk_level']);
+    const strategyPageRows = _paginate(strategyFiltered, 'strategies', 'strategies-pager', 'loadStrategies');
+    tbody.innerHTML = strategyPageRows.map(r => {
       const sid = String(r.strategy_id || '');
       const stageBadge = esc(r.stage || '');
       const rollbackBtn = r.stage === 'champion'
-        ? `<button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackStrategy('${encodeURIComponent(sid)}')">Rollback</button>`
-        : `<span style="color:var(--muted);font-size:10px">Rollback仅冠军</span>`;
+        ? `<button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackStrategy('${encodeURIComponent(sid)}')">${tx('回滚', 'Rollback')}</button>`
+        : `<span style="color:var(--muted);font-size:10px">${tx('仅冠军可回滚', 'Rollback only for champion')}</span>`;
       return `<tr>
         <td style="color:var(--muted);font-size:11px">${esc(sid)}</td>
         <td>${esc(r.cluster_display_name || r.cluster_id || '')}<br><span style="color:var(--muted);font-size:10px">${esc(r.cluster_id || '')}</span></td>
@@ -1253,15 +2205,17 @@ async function loadStrategies() {
         <td>${Number(r.sample_n || 0)}</td>
         <td style="color:var(--muted)">${(r.updated_utc || '').replace('T',' ').replace('Z','')}</td>
         <td>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewStrategyDetail('${encodeURIComponent(sid)}')">View</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#0f766e" onclick="sandboxStrategy('${encodeURIComponent(sid)}','${encodeURIComponent(r.cluster_id || '')}','${encodeURIComponent(r.task_type_compat || '')}')">Sandbox</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#14532d" onclick="promoteStrategy('${encodeURIComponent(sid)}')">Promote</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewStrategyDetail('${encodeURIComponent(sid)}')">${tx('查看', 'View')}</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#0f766e" onclick="sandboxStrategy('${encodeURIComponent(sid)}','${encodeURIComponent(r.cluster_id || '')}','${encodeURIComponent(r.task_type_compat || '')}')">${tx('沙箱', 'Sandbox')}</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#14532d" onclick="promoteStrategy('${encodeURIComponent(sid)}')">${tx('晋升', 'Promote')}</button>
           ${rollbackBtn}
         </td>
       </tr>`;
-    }).join('') || '<tr><td colspan="8" style="color:var(--muted)">No strategies</td></tr>';
+    }).join('') || `<tr><td colspan="8" style="color:var(--muted)">${tx('暂无 Strategy 记录', 'No Strategy records')}</td></tr>`;
 
-    shadowBody.innerHTML = (shadowRows || []).map(r => `
+    const shadowFiltered = _applyListQuery(shadowRows || [], shadowQ, ['task_id', 'shadow_of', 'cluster_id', 'created_utc']);
+    const shadowPageRows = _paginate(shadowFiltered, 'shadow', 'shadow-pager', 'loadStrategies');
+    shadowBody.innerHTML = shadowPageRows.map(r => `
       <tr>
         <td style="color:var(--muted);font-size:11px">${esc(r.task_id || '')}</td>
         <td style="color:var(--muted);font-size:11px">${esc(r.shadow_of || '')}</td>
@@ -1271,10 +2225,10 @@ async function loadStrategies() {
         <td><span class="badge ${Number(r.delta_global_score || 0) >= 0 ? 'ok' : 'error'}">${Number(r.delta_global_score || 0).toFixed(4)}</span></td>
         <td style="color:var(--muted)">${(r.created_utc || '').replace('T',' ').replace('Z','')}</td>
       </tr>
-    `).join('') || '<tr><td colspan="7" style="color:var(--muted)">No shadow reports</td></tr>';
+    `).join('') || `<tr><td colspan="7" style="color:var(--muted)">${tx('暂无 Shadow 报告', 'No shadow reports')}</td></tr>`;
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
-    shadowBody.innerHTML = `<tr><td colspan="7" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
+    shadowBody.innerHTML = `<tr><td colspan="7" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -1282,7 +2236,7 @@ async function viewStrategyDetail(sidKey) {
   const strategyId = decodeURIComponent(sidKey || '');
   const target = document.getElementById('strategy-detail');
   if (!strategyId || !target) return;
-  target.textContent = 'Loading strategy detail…';
+    target.textContent = tx('加载 strategy 详情…', 'Loading strategy detail…');
   try {
     const [experiments, promotions, audit, releaseEvents] = await Promise.all([
       api('/console/strategies/' + encodeURIComponent(strategyId) + '/experiments?limit=200'),
@@ -1310,15 +2264,15 @@ async function viewStrategyDetail(sidKey) {
       2
     );
   } catch (e) {
-    target.textContent = 'Error: ' + e.message;
+    target.textContent = tx('错误：', 'Error: ') + e.message;
   }
 }
 
 async function promoteStrategy(sidKey) {
   const strategyId = decodeURIComponent(sidKey || '');
   if (!strategyId) return;
-  const nextStage = prompt(`Promote ${strategyId} to stage (default champion):`, 'champion') || 'champion';
-  const reason = prompt('Promotion reason:', 'manual_promotion') || 'manual_promotion';
+  const nextStage = prompt(tx(`将 ${strategyId} 晋升到哪个 stage（默认 champion）：`, `Promote ${strategyId} to stage (default champion):`), 'champion') || 'champion';
+  const reason = prompt(tx('晋升原因：', 'Promotion reason:'), 'manual_promotion') || 'manual_promotion';
   try {
     await apiWrite('/console/strategies/' + encodeURIComponent(strategyId) + '/promote', 'POST', {
       next_stage: nextStage,
@@ -1327,14 +2281,14 @@ async function promoteStrategy(sidKey) {
     });
     await loadStrategies();
   } catch (e) {
-    alert('Promote failed: ' + e.message);
+    alert(tx('晋升失败：', 'Promote failed: ') + e.message);
   }
 }
 
 async function rollbackStrategy(sidKey) {
   const strategyId = decodeURIComponent(sidKey || '');
   if (!strategyId) return;
-  const reason = prompt('Rollback reason (将回退到上一冠军):', 'manual_rollback') || 'manual_rollback';
+  const reason = prompt(tx('回滚原因（将回退到上一冠军）：', 'Rollback reason (will rollback to previous champion):'), 'manual_rollback') || 'manual_rollback';
   try {
     await apiWrite('/console/strategies/' + encodeURIComponent(strategyId) + '/rollback', 'POST', {
       reason,
@@ -1342,7 +2296,7 @@ async function rollbackStrategy(sidKey) {
     });
     await loadStrategies();
   } catch (e) {
-    alert('Rollback failed: ' + e.message);
+    alert(tx('回滚失败：', 'Rollback failed: ') + e.message);
   }
 }
 
@@ -1351,7 +2305,7 @@ async function sandboxStrategy(sidKey, clusterKey, taskTypeKey) {
   const clusterId = decodeURIComponent(clusterKey || '');
   const taskTypeCompat = decodeURIComponent(taskTypeKey || '');
   if (!strategyId) return;
-  const title = prompt('Sandbox task title:', 'Sandbox validation run');
+  const title = prompt(tx('Sandbox 任务标题：', 'Sandbox task title:'), tx('Sandbox 验证运行', 'Sandbox validation run'));
   if (!title) return;
   const taskType = taskTypeCompat || 'research_report';
   const plan = {
@@ -1372,44 +2326,38 @@ async function sandboxStrategy(sidKey, clusterKey, taskTypeKey) {
   };
   try {
     const result = await apiWrite('/console/strategies/' + encodeURIComponent(strategyId) + '/sandbox-submit', 'POST', plan);
-    alert('Sandbox submitted: ' + (result.task_id || ''));
+    alert(tx('Sandbox 已提交：', 'Sandbox submitted: ') + (result.task_id || ''));
     await loadStrategies();
   } catch (e) {
-    alert('Sandbox submit failed: ' + e.message);
+    alert(tx('Sandbox 提交失败：', 'Sandbox submit failed: ') + e.message);
   }
 }
 
 async function loadSemantics() {
   const target = document.getElementById('semantics-detail');
-  const catalogEditor = document.getElementById('semantic-catalog-editor');
-  const rulesEditor = document.getElementById('semantic-rules-editor');
   const versionsBody = document.getElementById('semantic-versions-tbody');
-  target.textContent = 'Loading semantic data…';
-  if (catalogEditor) catalogEditor.value = '';
-  if (rulesEditor) rulesEditor.value = '';
-  if (versionsBody) versionsBody.innerHTML = '<tr><td colspan="6" style="color:var(--muted)">Loading…</td></tr>';
+  const versionSelect = document.getElementById('semantic-version-select');
+  target.textContent = tx('加载语义数据…', 'Loading semantic data…');
+  if (versionsBody) versionsBody.innerHTML = `<tr><td colspan="6" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
+  if (versionSelect) versionSelect.innerHTML = `<option value="">${tx('选择版本', 'Select version')}</option>`;
   try {
     const [res, catalogVersions, ruleVersions] = await Promise.all([
       api('/console/semantics'),
       api('/console/semantics/catalog/versions?limit=30'),
-      api('/console/semantics/mapping-rules/versions?limit=30'),
+      api('/console/semantics/mapping_rules/versions?limit=30'),
     ]);
     target.textContent = JSON.stringify(res, null, 2);
-    if (catalogEditor) {
-      catalogEditor.value = JSON.stringify(res?.catalog || {}, null, 2);
-    }
-    if (rulesEditor) {
-      rulesEditor.value = JSON.stringify(res?.mapping_rules || {}, null, 2);
-    }
     if (versionsBody) {
       const rows = [];
       for (const v of (catalogVersions || [])) {
         rows.push({target: 'catalog', ...v});
       }
       for (const v of (ruleVersions || [])) {
-        rows.push({target: 'mapping-rules', ...v});
+        rows.push({target: 'mapping_rules', ...v});
       }
       rows.sort((a, b) => String(b.changed_utc || '').localeCompare(String(a.changed_utc || '')));
+      currentSemanticVersions = rows;
+      populateSemanticVersionSelect(rows);
       versionsBody.innerHTML = rows.map(v => `
         <tr>
           <td>${esc(v.target || '')}</td>
@@ -1417,76 +2365,163 @@ async function loadSemantics() {
           <td style="color:var(--muted)">${esc((v.changed_utc || '').replace('T',' ').replace('Z',''))}</td>
           <td>${esc(v.changed_by || '')}</td>
           <td style="color:var(--muted)">${esc(v.reason || '')}</td>
-          <td><button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackSemanticVersion('${encodeURIComponent(v.target || '')}', ${Number(v.version || 0)})">Rollback</button></td>
+          <td><button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackSemanticVersion('${encodeURIComponent(v.target || '')}', ${Number(v.version || 0)})">${tx('回滚', 'Rollback')}</button></td>
         </tr>
-      `).join('') || '<tr><td colspan="6" style="color:var(--muted)">No versions</td></tr>';
+      `).join('') || `<tr><td colspan="6" style="color:var(--muted)">${tx('暂无版本', 'No versions')}</td></tr>`;
     }
   } catch (e) {
-    target.textContent = 'Error: ' + e.message;
+    currentSemanticVersions = [];
+    target.textContent = tx('错误：', 'Error: ') + e.message;
     if (versionsBody) {
-      versionsBody.innerHTML = `<tr><td colspan="6" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+      versionsBody.innerHTML = `<tr><td colspan="6" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
     }
   }
 }
 
-async function saveSemanticCatalog() {
-  const editor = document.getElementById('semantic-catalog-editor');
-  const raw = editor?.value || '{}';
+function populateSemanticVersionSelect(rows) {
+  const sel = document.getElementById('semantic-version-select');
+  if (!sel) return;
+  const opts = [`<option value="">${tx('选择版本', 'Select version')}</option>`]
+    .concat((rows || []).map((r, idx) => `<option value="${idx}">${esc(r.target || '')} / v${Number(r.version || 0)}</option>`))
+    .join('');
+  sel.innerHTML = opts;
+}
+
+function selectedSemanticVersion() {
+  const sel = document.getElementById('semantic-version-select');
+  const raw = sel?.value ?? '';
+  if (raw === '') return null;
+  const idx = Number(raw);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= currentSemanticVersions.length) return null;
+  return currentSemanticVersions[idx];
+}
+
+async function viewSelectedSemanticVersion() {
+  const row = selectedSemanticVersion();
+  if (!row) {
+    alert(tx('请选择一个版本。', 'Please select one version.'));
+    return;
+  }
+  let parsed = {};
+  try {
+    parsed = row.value_json ? JSON.parse(row.value_json) : row;
+  } catch (_) {
+    parsed = row;
+  }
+  await openUnifiedEditor({
+    key: `semantic-version:${row.target}:${row.version}`,
+    title: tx('Semantic 版本预览', 'Semantic Version Preview'),
+    subtitle: `${row.target} / v${Number(row.version || 0)}`,
+    hint: tx('只读预览。', 'Read-only preview.'),
+    readOnly: true,
+    loadText: async () => JSON.stringify(parsed, null, 2),
+  });
+}
+
+async function rollbackSelectedSemanticVersion() {
+  const row = selectedSemanticVersion();
+  if (!row) {
+    alert(tx('请选择一个版本。', 'Please select one version.'));
+    return;
+  }
+  await rollbackSemanticVersion(encodeURIComponent(row.target || ''), Number(row.version || 0));
+}
+
+async function saveSemanticCatalog(rawText = '{}') {
+  const raw = String(rawText ?? '{}');
   let parsed = {};
   try {
     parsed = JSON.parse(raw);
   } catch (e) {
-    alert('Catalog JSON invalid: ' + e.message);
+    alert(tx('目录 JSON 无效：', 'Catalog JSON invalid: ') + e.message);
     return;
   }
   try {
     await apiWrite('/console/semantics/catalog', 'PUT', parsed);
-    await loadSemantics();
   } catch (e) {
-    alert('Save semantic catalog failed: ' + e.message);
+    alert(tx('保存语义目录失败：', 'Save semantic catalog failed: ') + e.message);
   }
 }
 
-async function saveSemanticRules() {
-  const editor = document.getElementById('semantic-rules-editor');
-  const raw = editor?.value || '{}';
+async function saveSemanticRules(rawText = '{}') {
+  const raw = String(rawText ?? '{}');
   let parsed = {};
   try {
     parsed = JSON.parse(raw);
   } catch (e) {
-    alert('Rules JSON invalid: ' + e.message);
+    alert(tx('规则 JSON 无效：', 'Rules JSON invalid: ') + e.message);
     return;
   }
   try {
     await apiWrite('/console/semantics/mapping-rules', 'PUT', parsed);
-    await loadSemantics();
   } catch (e) {
-    alert('Save semantic rules failed: ' + e.message);
+    alert(tx('保存语义规则失败：', 'Save semantic rules failed: ') + e.message);
   }
+}
+
+async function openSemanticCatalogEditor() {
+  await openUnifiedEditor({
+    key: 'semantics:catalog',
+    title: tx('语义能力目录', 'Semantic Capability Catalog'),
+    subtitle: 'config/semantics/capability_catalog.json',
+    hint: tx('编辑完成后保存，会写入版本并刷新语义视图。', 'Saving writes a new version and refreshes semantic views.'),
+    loadText: async () => {
+      const res = await api('/console/semantics');
+      return JSON.stringify(res?.catalog || {}, null, 2);
+    },
+    saveText: async (text) => {
+      await saveSemanticCatalog(text);
+    },
+    onSaved: async () => {
+      await loadSemantics();
+    },
+  });
+}
+
+async function openSemanticRulesEditor() {
+  await openUnifiedEditor({
+    key: 'semantics:rules',
+    title: tx('语义映射规则', 'Semantic Mapping Rules'),
+    subtitle: 'config/semantics/mapping_rules.json',
+    hint: tx('编辑完成后保存，会写入版本并刷新语义视图。', 'Saving writes a new version and refreshes semantic views.'),
+    loadText: async () => {
+      const res = await api('/console/semantics');
+      return JSON.stringify(res?.mapping_rules || {}, null, 2);
+    },
+    saveText: async (text) => {
+      await saveSemanticRules(text);
+    },
+    onSaved: async () => {
+      await loadSemantics();
+    },
+  });
 }
 
 async function rollbackSemanticVersion(targetKey, version) {
   const target = decodeURIComponent(targetKey || '');
   const v = Number(version || 0);
   if (!target || !v) return;
-  if (!confirm(`Rollback ${target} to version ${v}?`)) return;
+  if (!confirm(tx(`确认将 ${target} 回滚到版本 ${v} 吗？`, `Rollback ${target} to version ${v}?`))) return;
   try {
     await apiWrite('/console/semantics/' + encodeURIComponent(target) + '/rollback/' + v, 'POST', {});
     await loadSemantics();
   } catch (e) {
-    alert('Semantic rollback failed: ' + e.message);
+    alert(tx('语义配置回滚失败：', 'Semantic rollback failed: ') + e.message);
   }
 }
 
 async function loadModelControl() {
-  const policyEditor = document.getElementById('model-policy-editor');
-  const registryEditor = document.getElementById('model-registry-editor');
+  const configStatus = document.getElementById('model-config-status');
   const summary = document.getElementById('model-usage-summary');
+  const cortexSummary = document.getElementById('cortex-usage-summary');
+  const cortexBody = document.getElementById('cortex-usage-tbody');
   const versionsBody = document.getElementById('model-policy-versions-tbody');
-  if (policyEditor) policyEditor.value = '';
-  if (registryEditor) registryEditor.value = '';
-  summary.textContent = 'Loading model usage…';
-  if (versionsBody) versionsBody.innerHTML = '<tr><td colspan="6" style="color:var(--muted)">Loading…</td></tr>';
+  const versionSelect = document.getElementById('model-version-select');
+  if (summary) summary.innerHTML = `<div class="model-empty">${tx('加载模型用量…', 'Loading model usage…')}</div>`;
+  if (cortexSummary) cortexSummary.innerHTML = `<div class="model-empty">${tx('加载 Cortex 汇总…', 'Loading Cortex summary…')}</div>`;
+  if (cortexBody) cortexBody.innerHTML = `<tr><td colspan="8" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
+  if (versionsBody) versionsBody.innerHTML = `<tr><td colspan="6" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
+  if (versionSelect) versionSelect.innerHTML = `<option value="">${tx('选择版本', 'Select version')}</option>`;
   try {
     const [policy, registry, usage, policyVersions, registryVersions] = await Promise.all([
       api('/console/model-policy'),
@@ -1496,14 +2531,77 @@ async function loadModelControl() {
       api('/console/model-registry/versions?limit=50'),
     ]);
     currentModelPolicy = policy || {};
-    if (policyEditor) policyEditor.value = JSON.stringify(currentModelPolicy, null, 2);
-    if (registryEditor) registryEditor.value = JSON.stringify(registry || {}, null, 2);
-    summary.textContent = JSON.stringify(usage?.summary || usage || {}, null, 2);
+    const policyCount = Object.keys(policy || {}).length;
+    const registryModels = Array.isArray(registry?.models)
+      ? registry.models.length
+      : (registry?.models && typeof registry.models === 'object')
+        ? Object.keys(registry.models).length
+        : Object.keys(registry || {}).length;
+    const defaultProvider =
+      String(policy?.routing?.default_provider || policy?.default_provider || '').trim()
+      || '—';
+    const defaultModel =
+      String(policy?.routing?.default_model || policy?.default_model || '').trim()
+      || '—';
+    const policyCountEl = document.getElementById('model-policy-count');
+    const registryCountEl = document.getElementById('model-registry-count');
+    const providerEl = document.getElementById('model-default-provider');
+    const modelEl = document.getElementById('model-default-model');
+    if (policyCountEl) policyCountEl.textContent = Number(policyCount).toLocaleString();
+    if (registryCountEl) registryCountEl.textContent = Number(registryModels).toLocaleString();
+    if (providerEl) providerEl.textContent = defaultProvider;
+    if (modelEl) modelEl.textContent = defaultModel;
+    if (configStatus && !policyCountEl) {
+      configStatus.innerHTML = tx('模型配置卡片未加载。', 'Model config cards not mounted.');
+    }
+    const usageSummary = usage?.summary || {};
+    const byProvider = usageSummary.by_provider || {};
+    const byModel = usageSummary.by_model || {};
+    const providerRows = Object.entries(byProvider).sort((a, b) => (b[1]?.calls || 0) - (a[1]?.calls || 0)).slice(0, 10);
+    const modelRows = Object.entries(byModel).sort((a, b) => (b[1]?.calls || 0) - (a[1]?.calls || 0)).slice(0, 10);
+    if (summary) {
+      summary.innerHTML = `
+        <div class="model-table-shell">
+          <table>
+            <thead><tr><th>Provider</th><th>Calls</th><th>In</th><th>Out</th><th>Errors</th></tr></thead>
+            <tbody>
+              ${providerRows.map(([k, v]) => `
+                <tr>
+                  <td>${esc(k)}</td>
+                  <td>${Number(v.calls || 0).toLocaleString()}</td>
+                  <td>${Number(v.in_tokens || 0).toLocaleString()}</td>
+                  <td>${Number(v.out_tokens || 0).toLocaleString()}</td>
+                  <td>${Number(v.errors || 0).toLocaleString()}</td>
+                </tr>
+              `).join('') || `<tr><td colspan="5" style="color:var(--muted)">${tx('暂无 provider 汇总', 'No provider summary')}</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+        <div class="model-table-shell">
+          <table>
+            <thead><tr><th>Model</th><th>Calls</th><th>In</th><th>Out</th><th>Errors</th></tr></thead>
+            <tbody>
+              ${modelRows.map(([k, v]) => `
+                <tr>
+                  <td>${esc(k)}</td>
+                  <td>${Number(v.calls || 0).toLocaleString()}</td>
+                  <td>${Number(v.in_tokens || 0).toLocaleString()}</td>
+                  <td>${Number(v.out_tokens || 0).toLocaleString()}</td>
+                  <td>${Number(v.errors || 0).toLocaleString()}</td>
+                </tr>
+              `).join('') || `<tr><td colspan="5" style="color:var(--muted)">${tx('暂无 model 汇总', 'No model summary')}</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
     if (versionsBody) {
       const rows = [];
       for (const v of (policyVersions || [])) rows.push({target: 'policy', ...v});
       for (const v of (registryVersions || [])) rows.push({target: 'registry', ...v});
       rows.sort((a, b) => String(b.changed_utc || '').localeCompare(String(a.changed_utc || '')));
+      currentModelVersions = rows;
+      populateModelVersionSelect(rows);
       versionsBody.innerHTML = rows.map(v => `
         <tr>
           <td>${esc(v.target || '')}</td>
@@ -1511,59 +2609,152 @@ async function loadModelControl() {
           <td style="color:var(--muted)">${esc((v.changed_utc || '').replace('T',' ').replace('Z',''))}</td>
           <td>${esc(v.changed_by || '')}</td>
           <td style="color:var(--muted)">${esc(v.reason || '')}</td>
-          <td><button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackModelConfigVersion('${encodeURIComponent(v.target || '')}', ${Number(v.version || 0)})">Rollback</button></td>
+          <td><button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackModelConfigVersion('${encodeURIComponent(v.target || '')}', ${Number(v.version || 0)})">${tx('回滚', 'Rollback')}</button></td>
         </tr>
-      `).join('') || '<tr><td colspan="6" style="color:var(--muted)">No versions</td></tr>';
+      `).join('') || `<tr><td colspan="6" style="color:var(--muted)">${tx('暂无版本', 'No versions')}</td></tr>`;
     }
+    await loadCortexUsage();
   } catch (e) {
-    summary.textContent = 'Error: ' + e.message;
+    currentModelVersions = [];
+    if (summary) summary.innerHTML = `<div class="model-empty">${tx('错误：', 'Error: ')}${esc(e.message)}</div>`;
+    const policyCountEl = document.getElementById('model-policy-count');
+    const registryCountEl = document.getElementById('model-registry-count');
+    const providerEl = document.getElementById('model-default-provider');
+    const modelEl = document.getElementById('model-default-model');
+    if (policyCountEl) policyCountEl.textContent = '—';
+    if (registryCountEl) registryCountEl.textContent = '—';
+    if (providerEl) providerEl.textContent = '—';
+    if (modelEl) modelEl.textContent = '—';
     if (versionsBody) {
-      versionsBody.innerHTML = `<tr><td colspan="6" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+      versionsBody.innerHTML = `<tr><td colspan="6" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
     }
   }
 }
 
-async function saveModelPolicy() {
-  const editor = document.getElementById('model-policy-editor');
-  const raw = editor?.value || '{}';
+function populateModelVersionSelect(rows) {
+  const sel = document.getElementById('model-version-select');
+  if (!sel) return;
+  const opts = [`<option value="">${tx('选择版本', 'Select version')}</option>`]
+    .concat((rows || []).map((r, idx) => `<option value="${idx}">${esc(r.target || '')} / v${Number(r.version || 0)}</option>`))
+    .join('');
+  sel.innerHTML = opts;
+}
+
+function selectedModelVersion() {
+  const sel = document.getElementById('model-version-select');
+  const raw = sel?.value ?? '';
+  if (raw === '') return null;
+  const idx = Number(raw);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= currentModelVersions.length) return null;
+  return currentModelVersions[idx];
+}
+
+async function viewSelectedModelVersion() {
+  const row = selectedModelVersion();
+  if (!row) {
+    alert(tx('请选择一个版本。', 'Please select one version.'));
+    return;
+  }
+  let parsed = {};
+  try {
+    parsed = row.value_json ? JSON.parse(row.value_json) : row;
+  } catch (_) {
+    parsed = row;
+  }
+  await openUnifiedEditor({
+    key: `model-version:${row.target}:${row.version}`,
+    title: tx('Model 版本预览', 'Model Version Preview'),
+    subtitle: `${row.target} / v${Number(row.version || 0)}`,
+    hint: tx('只读预览。', 'Read-only preview.'),
+    readOnly: true,
+    loadText: async () => JSON.stringify(parsed, null, 2),
+  });
+}
+
+async function rollbackSelectedModelVersion() {
+  const row = selectedModelVersion();
+  if (!row) {
+    alert(tx('请选择一个版本。', 'Please select one version.'));
+    return;
+  }
+  await rollbackModelConfigVersion(encodeURIComponent(row.target || ''), Number(row.version || 0));
+}
+
+async function saveModelPolicy(rawText = '{}') {
+  const raw = String(rawText ?? '{}');
   let parsed = {};
   try {
     parsed = JSON.parse(raw);
   } catch (e) {
-    alert('Policy JSON invalid: ' + e.message);
+    alert(tx('Model Policy JSON 无效：', 'Model Policy JSON invalid: ') + e.message);
     return;
   }
   try {
     await apiWrite('/console/model-policy', 'PUT', parsed);
-    await loadModelControl();
   } catch (e) {
-    alert('Save model policy failed: ' + e.message);
+    alert(tx('保存 Model Policy 失败：', 'Save Model Policy failed: ') + e.message);
   }
 }
 
-async function saveModelRegistry() {
-  const editor = document.getElementById('model-registry-editor');
-  const raw = editor?.value || '{}';
+async function saveModelRegistry(rawText = '{}') {
+  const raw = String(rawText ?? '{}');
   let parsed = {};
   try {
     parsed = JSON.parse(raw);
   } catch (e) {
-    alert('Registry JSON invalid: ' + e.message);
+    alert(tx('模型注册表 JSON 无效：', 'Registry JSON invalid: ') + e.message);
     return;
   }
   try {
     await apiWrite('/console/model-registry', 'PUT', parsed);
-    await loadModelControl();
   } catch (e) {
-    alert('Save model registry failed: ' + e.message);
+    alert(tx('保存模型注册表失败：', 'Save model registry failed: ') + e.message);
   }
+}
+
+async function openModelPolicyEditor() {
+  await openUnifiedEditor({
+    key: 'model:policy',
+    title: tx('Model Policy 配置', 'Model Policy'),
+    subtitle: 'config/model_policy.json',
+    hint: tx('保存后自动刷新模型用量与版本列表。', 'Save refreshes model usage and version list.'),
+    loadText: async () => {
+      const data = await api('/console/model-policy');
+      return JSON.stringify(data || {}, null, 2);
+    },
+    saveText: async (text) => {
+      await saveModelPolicy(text);
+    },
+    onSaved: async () => {
+      await loadModelControl();
+    },
+  });
+}
+
+async function openModelRegistryEditor() {
+  await openUnifiedEditor({
+    key: 'model:registry',
+    title: tx('模型注册表', 'Model Registry'),
+    subtitle: 'config/model_registry.json',
+    hint: tx('保存后自动刷新模型用量与版本列表。', 'Save refreshes model usage and version list.'),
+    loadText: async () => {
+      const data = await api('/console/model-registry');
+      return JSON.stringify(data || {}, null, 2);
+    },
+    saveText: async (text) => {
+      await saveModelRegistry(text);
+    },
+    onSaved: async () => {
+      await loadModelControl();
+    },
+  });
 }
 
 async function rollbackModelConfigVersion(targetKey, version) {
   const target = decodeURIComponent(targetKey || '');
   const v = Number(version || 0);
   if (!target || !v) return;
-  if (!confirm(`Rollback model ${target} to version ${v}?`)) return;
+  if (!confirm(tx(`确认将模型 ${target} 回滚到版本 ${v} 吗？`, `Rollback model ${target} to version ${v}?`))) return;
   const endpoint = target === 'registry'
     ? '/console/model-registry/rollback/' + v
     : '/console/model-policy/rollback/' + v;
@@ -1571,20 +2762,25 @@ async function rollbackModelConfigVersion(targetKey, version) {
     await apiWrite(endpoint, 'POST', {});
     await loadModelControl();
   } catch (e) {
-    alert('Model rollback failed: ' + e.message);
+    alert(tx('模型回滚失败：', 'Model rollback failed: ') + e.message);
   }
 }
 
 async function loadAgents() {
+  const q = document.getElementById('agents-q')?.value?.trim() || '';
+  const sizeSel = Number(document.getElementById('agents-page-size')?.value || 20);
+  _listState('agents', {size: sizeSel}).size = sizeSel;
   const agents = await api('/console/agents');
-  document.getElementById('agents-tbody').innerHTML = agents.map(a =>
+  const filtered = _applyListQuery(agents || [], q, ['id', 'skills_count', 'workspace_exists']);
+  const pageRows = _paginate(filtered, 'agents', 'agents-pager', 'loadAgents');
+  document.getElementById('agents-tbody').innerHTML = pageRows.map(a =>
     `<tr>
       <td>${esc(a.id)}</td>
       <td>${a.skills_count}</td>
-      <td><span class="badge ${a.workspace_exists ? 'ok' : 'error'}">${a.workspace_exists ? 'ready' : 'missing'}</span></td>
-      <td><button class="action" style="font-size:11px;padding:3px 8px" onclick="manageAgent('${encodeURIComponent(a.id)}')">Manage</button></td>
+      <td><span class="badge ${a.workspace_exists ? 'ok' : 'error'}">${a.workspace_exists ? tx('就绪', 'ready') : tx('缺失', 'missing')}</span></td>
+      <td><button class="action" style="font-size:11px;padding:3px 8px" onclick="manageAgent('${encodeURIComponent(a.id)}')">${tx('管理', 'Manage')}</button></td>
     </tr>`
-  ).join('') || '<tr><td colspan="4" style="color:var(--muted)">No agents found</td></tr>';
+  ).join('') || `<tr><td colspan="4" style="color:var(--muted)">${tx('未找到 agents', 'No agents found')}</td></tr>`;
   if (activeAgentId) {
     await reloadActiveAgentSkills();
   }
@@ -1597,19 +2793,24 @@ async function manageAgent(agentKey) {
 
 async function reloadActiveAgentSkills() {
   const tbody = document.getElementById('agent-skills-tbody');
-  document.getElementById('skills-agent-tag').textContent = activeAgentId || 'No agent selected';
+  document.getElementById('skills-agent-tag').textContent = activeAgentId || tx('未选择 agent', 'No agent selected');
   if (!activeAgentId) {
-    tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">Select an agent to manage skills</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--muted)">${tx('请选择一个 agent 管理 skills', 'Select an agent to manage skills')}</td></tr>`;
     return;
   }
   try {
+    const q = document.getElementById('agent-skills-q')?.value?.trim() || '';
+    const sizeSel = Number(document.getElementById('agent-skills-page-size')?.value || 20);
+    _listState('agent_skills', {size: sizeSel}).size = sizeSel;
     const skills = await api('/console/agents/' + encodeURIComponent(activeAgentId) + '/skills');
     activeAgentSkills = Array.isArray(skills) ? skills : [];
     if (!activeAgentSkills.length) {
-      tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">No skills found</td></tr>';
+      tbody.innerHTML = `<tr><td colspan="4" style="color:var(--muted)">${tx('未找到 skills', 'No skills found')}</td></tr>`;
       return;
     }
-    tbody.innerHTML = activeAgentSkills.map(s => {
+    const filtered = _applyListQuery(activeAgentSkills, q, ['skill', 'enabled', 'path']);
+    const pageRows = _paginate(filtered, 'agent_skills', 'agent-skills-pager', 'reloadActiveAgentSkills');
+    tbody.innerHTML = pageRows.map(s => {
       const skillKey = encodeURIComponent(s.skill || '');
       const enabled = !!s.enabled;
       return `<tr>
@@ -1617,13 +2818,13 @@ async function reloadActiveAgentSkills() {
         <td><span class="badge ${enabled ? 'ok' : 'error'}">${enabled ? 'enabled' : 'disabled'}</span></td>
         <td style="color:var(--muted)">${esc((s.path||'').replace(/^.*openclaw\//, 'openclaw/'))}</td>
         <td>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:${enabled ? '#7f1d1d' : '#14532d'}" onclick="toggleSkillEnabled('${skillKey}', ${enabled ? 'true' : 'false'})">${enabled ? 'Disable' : 'Enable'}</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="openSkillEditor('${skillKey}')">Edit</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:${enabled ? '#7f1d1d' : '#14532d'}" onclick="toggleSkillEnabled('${skillKey}', ${enabled ? 'true' : 'false'})">${enabled ? tx('禁用', 'Disable') : tx('启用', 'Enable')}</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="openSkillEditor('${skillKey}')">${tx('编辑', 'Edit')}</button>
         </td>
       </tr>`;
     }).join('');
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -1639,61 +2840,55 @@ async function toggleSkillEnabled(skillKey, currentlyEnabled) {
     await reloadActiveAgentSkills();
     await loadAgents();
   } catch (e) {
-    alert('Failed to update skill state: ' + e.message);
+    alert(tx('更新 Skill 状态失败：', 'Failed to update skill state: ') + e.message);
   }
 }
 
-function openSkillEditor(skillKey) {
+async function openSkillEditor(skillKey) {
   const skill = decodeURIComponent(skillKey);
   const row = activeAgentSkills.find(s => s.skill === skill);
   if (!row) return;
-  editingSkillName = skill;
-  document.getElementById('skill-editor-card').style.display = 'block';
-  document.getElementById('skill-editor-meta').textContent = `${activeAgentId} / ${skill}`;
-  document.getElementById('skill-editor-text').value = row.content || '';
-}
-
-function cancelSkillEdit() {
-  editingSkillName = '';
-  document.getElementById('skill-editor-card').style.display = 'none';
-  document.getElementById('skill-editor-meta').textContent = '';
-  document.getElementById('skill-editor-text').value = '';
-}
-
-async function saveSkillEdit() {
-  if (!activeAgentId || !editingSkillName) return;
-  const content = document.getElementById('skill-editor-text').value || '';
-  if (!content.trim()) {
-    alert('Skill content cannot be empty');
-    return;
-  }
-  try {
-    await apiWrite(
-      '/console/agents/' + encodeURIComponent(activeAgentId) + '/skills/' + encodeURIComponent(editingSkillName),
-      'PUT',
-      {content}
-    );
-    cancelSkillEdit();
-    await reloadActiveAgentSkills();
-    await loadAgents();
-  } catch (e) {
-    alert('Failed to save skill: ' + e.message);
-  }
+  await openUnifiedEditor({
+    key: `skill:${activeAgentId}:${skill}`,
+    title: tx('Skill 编辑器', 'Skill Editor'),
+    subtitle: `${activeAgentId} / ${skill}`,
+    hint: tx('保存后会立即回写 SKILL.md 并刷新列表。', 'Save writes SKILL.md and refreshes list immediately.'),
+    loadText: async () => String(row.content || ''),
+    saveText: async (content) => {
+      if (!String(content || '').trim()) {
+        throw new Error(tx('Skill 内容不能为空', 'Skill content cannot be empty'));
+      }
+      await apiWrite(
+        '/console/agents/' + encodeURIComponent(activeAgentId) + '/skills/' + encodeURIComponent(skill),
+        'PUT',
+        {content}
+      );
+    },
+    onSaved: async () => {
+      await reloadActiveAgentSkills();
+      await loadAgents();
+    },
+  });
 }
 
 async function loadSkillEvolution() {
   const status = document.getElementById('sev-status').value;
+  const q = document.getElementById('sev-q')?.value?.trim() || '';
+  const sizeSel = Number(document.getElementById('sev-page-size')?.value || 20);
+  _listState('skill_evolution', {size: sizeSel}).size = sizeSel;
   const tbody = document.getElementById('sev-tbody');
-  tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">Loading…</td></tr>';
-  let url = '/console/skill-evolution/proposals?limit=200';
+  tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
+  let url = '/console/skill-evolution/proposals?limit=500';
   if (status) url += '&status=' + encodeURIComponent(status);
   try {
     const rows = await api(url);
-    if (!rows.length) {
-      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">No proposals found</td></tr>';
+    const filtered = _applyListQuery(rows || [], q, ['proposal_id', 'skill', 'status', 'reviewed_utc']);
+    const pageRows = _paginate(filtered, 'skill_evolution', 'sev-pager', 'loadSkillEvolution');
+    if (!pageRows.length) {
+      tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted)">${tx('未找到提案', 'No proposals found')}</td></tr>`;
       return;
     }
-    tbody.innerHTML = rows.map(p => {
+    tbody.innerHTML = pageRows.map(p => {
       const pid = encodeURIComponent(p.proposal_id || '');
       return `<tr>
         <td style="color:var(--muted);font-size:11px">${esc(p.proposal_id || '')}</td>
@@ -1701,15 +2896,15 @@ async function loadSkillEvolution() {
         <td><span class="badge ${p.status === 'applied' ? 'ok' : p.status === 'rejected' || p.status === 'apply_failed' ? 'error' : 'degraded'}">${esc(p.status || '')}</span></td>
         <td style="color:var(--muted)">${((p.reviewed_utc||'').replace('T',' ').replace('Z','')) || '—'}</td>
         <td>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewSkillProposal('${pid}')">View</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#14532d" onclick="reviewSkillProposal('${pid}','approve')">Approve</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="reviewSkillProposal('${pid}','reject')">Reject</button>
-          <button class="action" style="font-size:11px;padding:3px 8px" onclick="applySkillProposal('${pid}')">Apply</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewSkillProposal('${pid}')">${tx('查看', 'View')}</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#14532d" onclick="reviewSkillProposal('${pid}','approve')">${tx('通过', 'Approve')}</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="reviewSkillProposal('${pid}','reject')">${tx('拒绝', 'Reject')}</button>
+          <button class="action" style="font-size:11px;padding:3px 8px" onclick="applySkillProposal('${pid}')">${tx('应用', 'Apply')}</button>
         </td>
       </tr>`;
     }).join('');
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -1721,22 +2916,22 @@ async function _findSkillProposal(proposalId) {
 async function viewSkillProposal(pidKey) {
   const proposalId = decodeURIComponent(pidKey);
   const detail = document.getElementById('sev-detail');
-  detail.textContent = 'Loading proposal detail…';
+  detail.textContent = tx('加载提案详情…', 'Loading proposal detail…');
   try {
     const row = await _findSkillProposal(proposalId);
     if (!row) {
-      detail.textContent = 'Proposal not found.';
+      detail.textContent = tx('未找到提案。', 'Proposal not found.');
       return;
     }
     detail.textContent = JSON.stringify(row, null, 2);
   } catch (e) {
-    detail.textContent = 'Error: ' + e.message;
+    detail.textContent = tx('错误：', 'Error: ') + e.message;
   }
 }
 
 async function reviewSkillProposal(pidKey, decision) {
   const proposalId = decodeURIComponent(pidKey);
-  const note = prompt(`${decision.toUpperCase()} note for ${proposalId}:`) || '';
+  const note = prompt(tx(`${decision.toUpperCase()} 给 ${proposalId} 的备注：`, `${decision.toUpperCase()} note for ${proposalId}:`)) || '';
   try {
     await apiWrite(
       '/console/skill-evolution/proposals/' + encodeURIComponent(proposalId) + '/review',
@@ -1746,7 +2941,7 @@ async function reviewSkillProposal(pidKey, decision) {
     await loadSkillEvolution();
     await viewSkillProposal(encodeURIComponent(proposalId));
   } catch (e) {
-    alert('Review failed: ' + e.message);
+    alert(tx('审核失败：', 'Review failed: ') + e.message);
   }
 }
 
@@ -1757,62 +2952,107 @@ async function applySkillProposal(pidKey) {
     await loadSkillEvolution();
     await viewSkillProposal(encodeURIComponent(proposalId));
   } catch (e) {
-    alert('Apply failed: ' + e.message);
+    alert(tx('应用失败：', 'Apply failed: ') + e.message);
   }
 }
 
 async function loadSchedules() {
+  const q = document.getElementById('schedules-q')?.value?.trim() || '';
+  const sizeSel = Number(document.getElementById('schedules-page-size')?.value || 20);
+  _listState('schedules', {size: sizeSel}).size = sizeSel;
   const routines = await api('/console/schedules');
   const routineSelect = document.getElementById('schedule-history-routine');
   if (routineSelect) {
     const existing = routineSelect.value || '';
-    routineSelect.innerHTML = '<option value="">All routines</option>' + routines.map(r => `<option value="${r.routine}">${r.routine}</option>`).join('');
+    routineSelect.innerHTML = `<option value="">${tx('全部 routines', 'All routines')}</option>` + routines.map(r => `<option value="${r.routine}">${r.routine}</option>`).join('');
     if (existing) routineSelect.value = existing;
   }
-  document.getElementById('schedules-tbody').innerHTML = routines.map(r =>
+  const filtered = _applyListQuery(routines || [], q, ['routine', 'mode', 'schedule', 'next_run_utc', 'last_run_utc']);
+  const pageRows = _paginate(filtered, 'schedules', 'schedules-pager', 'loadSchedules');
+  document.getElementById('schedules-tbody').innerHTML = pageRows.map(r =>
     `<tr>
       <td>${r.routine}</td>
       <td><span class="badge ${r.mode}">${r.mode}</span></td>
       <td style="color:var(--muted)">${r.enabled === false ? '(disabled) ' : ''}${r.schedule || '—'}</td>
-      <td style="color:var(--muted)">${r.last_run_utc ? r.last_run_utc.replace('T',' ').replace('Z','') : 'never'}</td>
+      <td style="color:var(--muted)">${r.last_run_utc ? r.last_run_utc.replace('T',' ').replace('Z','') : tx('从未', 'never')}</td>
       <td style="color:var(--muted)">${r.next_run_utc ? r.next_run_utc.replace('T',' ').replace('Z','') : '—'}</td>
       <td>
-        <button class="action" onclick="triggerRoutine('${r.routine.replace('spine.','')}')" style="font-size:11px;padding:3px 8px">▶ Run</button>
-        <button class="action" onclick="editSchedule('${r.routine}')" style="font-size:11px;padding:3px 8px;background:#334155">✎ Edit</button>
+        <button class="action" onclick="triggerRoutine('${r.routine.replace('spine.','')}')" style="font-size:11px;padding:3px 8px">${tx('▶ 运行', '▶ Run')}</button>
+        <button class="action" onclick="editSchedule('${r.routine}')" style="font-size:11px;padding:3px 8px;background:#334155">${tx('✎ 编辑', '✎ Edit')}</button>
       </td>
     </tr>`
-  ).join('') || '<tr><td colspan="6" style="color:var(--muted)">No schedules</td></tr>';
+  ).join('') || `<tr><td colspan="6" style="color:var(--muted)">${tx('暂无调度', 'No schedules')}</td></tr>`;
   await loadScheduleHistory();
 }
 
 async function editSchedule(routine) {
-  const schedule = prompt(`Schedule for ${routine} (cron/adaptive, empty keeps current):`);
-  if (schedule === null) return;
-  const enabled = confirm(`Enable ${routine}? Click Cancel to disable.`);
-  try {
-    const r = await fetch(`${API}/console/schedules/${routine}`, {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({schedule: schedule || undefined, enabled}),
-    });
-    const d = await r.json();
-    if (!r.ok || !d.ok) throw new Error(d.error || d.detail || r.status);
-    loadSchedules();
-  } catch (e) {
-    alert('Failed to update schedule: ' + e.message);
-  }
+  const rows = await api('/console/schedules');
+  const row = (rows || []).find(r => String(r.routine || '') === String(routine || ''));
+  const routineId = String(routine || '');
+  if (!routineId || !row) return;
+  await openUnifiedEditor({
+    key: `schedule:${routineId}`,
+    title: tx('调度编辑器', 'Schedule Editor'),
+    subtitle: routineId,
+    hint: tx('以 JSON 编辑：{"schedule":"cron/adaptive","enabled":true}', 'Edit as JSON: {"schedule":"cron/adaptive","enabled":true}'),
+    loadText: async () => JSON.stringify({
+      schedule: String(row?.schedule || ''),
+      enabled: row?.enabled !== false,
+    }, null, 2),
+    saveText: async (text) => {
+      let parsed = {};
+      try {
+        parsed = JSON.parse(String(text || '{}'));
+      } catch (e) {
+        throw new Error(tx('调度 JSON 无效：', 'Invalid schedule JSON: ') + e.message);
+      }
+      const schedule = String(parsed?.schedule || '').trim();
+      const enabled = parsed?.enabled !== false;
+      await apiWrite('/console/schedules/' + encodeURIComponent(routineId), 'PUT', {
+        schedule: schedule || undefined,
+        enabled,
+      });
+    },
+    onSaved: async () => {
+      await loadSchedules();
+    },
+  });
 }
 
 async function loadScheduleHistory() {
   const tbody = document.getElementById('schedule-history-tbody');
   if (!tbody) return;
-  let url = '/console/schedules/history?limit=80';
+  const q = document.getElementById('schedule-history-q')?.value?.trim() || '';
+  const preset = document.getElementById('schedule-history-date-preset')?.value || 'all';
+  const sizeSel = Number(document.getElementById('schedule-history-page-size')?.value || 20);
+  _listState('schedule_history', {size: sizeSel}).size = sizeSel;
+  let url = '/console/schedules/history?limit=500';
   const routine = document.getElementById('schedule-history-routine')?.value || '';
   if (routine) url += '&routine=' + encodeURIComponent(routine);
-  tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">Loading…</td></tr>';
+  tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
   try {
     const rows = await api(url);
-    tbody.innerHTML = rows.map(r => `
+    let filtered = rows || [];
+    if (preset !== 'all') {
+      const now = Date.now();
+      let deltaMs = 0;
+      if (preset === 'today') {
+        const d = new Date();
+        deltaMs = now - Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0);
+      } else if (preset === 'last_24h') {
+        deltaMs = 24 * 3600 * 1000;
+      } else if (preset === 'last_7d') {
+        deltaMs = 7 * 24 * 3600 * 1000;
+      }
+      const cutoff = now - deltaMs;
+      filtered = filtered.filter((r) => {
+        const ts = Date.parse(String(r?.run_utc || ''));
+        return Number.isFinite(ts) ? ts >= cutoff : false;
+      });
+    }
+    filtered = _applyListQuery(filtered, q, ['run_utc', 'routine', 'trigger', 'status']);
+    const pageRows = _paginate(filtered, 'schedule_history', 'schedule-history-pager', 'loadScheduleHistory');
+    tbody.innerHTML = pageRows.map(r => `
       <tr>
         <td style="color:var(--muted)">${(r.run_utc||'').replace('T',' ').replace('Z','')}</td>
         <td>${esc(r.routine||'')}</td>
@@ -1820,19 +3060,24 @@ async function loadScheduleHistory() {
         <td><span class="badge ${r.status==='ok'?'ok':r.status==='contract_failed'?'degraded':'error'}">${esc(r.status||'')}</span></td>
         <td style="color:var(--muted);font-size:11px">${esc(JSON.stringify(r.detail||{}).slice(0,140))}</td>
       </tr>
-    `).join('') || '<tr><td colspan="5" style="color:var(--muted)">No history</td></tr>';
+    `).join('') || `<tr><td colspan="5" style="color:var(--muted)">${tx('暂无历史', 'No history')}</td></tr>`;
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
   }
 }
 
 async function loadCampaigns() {
   const tbody = document.getElementById('campaigns-tbody');
   if (!tbody) return;
-  tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr>';
+  const q = document.getElementById('campaign-q')?.value?.trim() || '';
+  const sizeSel = Number(document.getElementById('campaign-page-size')?.value || 20);
+  _listState('campaigns', {size: sizeSel}).size = sizeSel;
+  tbody.innerHTML = `<tr><td colspan="7" style="color:var(--muted)">${tx('加载中…', 'Loading…')}</td></tr>`;
   try {
-    const rows = await api('/campaigns?limit=200');
-    tbody.innerHTML = (rows || []).map(r => `
+    const rows = await api('/campaigns?limit=500');
+    const filtered = _applyListQuery(rows || [], q, ['campaign_id', 'task_id', 'status', 'current_phase', 'updated_utc']);
+    const pageRows = _paginate(filtered, 'campaigns', 'campaigns-pager', 'loadCampaigns');
+    tbody.innerHTML = pageRows.map(r => `
       <tr>
         <td style="color:var(--muted);font-size:11px">${esc(r.campaign_id || '')}</td>
         <td style="color:var(--muted);font-size:11px">${esc(r.task_id || '')}</td>
@@ -1841,15 +3086,15 @@ async function loadCampaigns() {
         <td>${Number(r.current_milestone_index || 0)} / ${Number(r.total_milestones || 0)}</td>
         <td style="color:var(--muted)">${(r.updated_utc || '').replace('T', ' ').replace('Z', '')}</td>
         <td>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewCampaign('${encodeURIComponent(r.campaign_id || '')}')">View</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#0f766e" onclick="confirmCampaign('${encodeURIComponent(r.campaign_id || '')}')">Confirm</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#14532d" onclick="resumeCampaign('${encodeURIComponent(r.campaign_id || '')}')">Resume</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="cancelCampaign('${encodeURIComponent(r.campaign_id || '')}')">Cancel</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewCampaign('${encodeURIComponent(r.campaign_id || '')}')">${tx('查看', 'View')}</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#0f766e" onclick="confirmCampaign('${encodeURIComponent(r.campaign_id || '')}')">${tx('确认', 'Confirm')}</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#14532d" onclick="resumeCampaign('${encodeURIComponent(r.campaign_id || '')}')">${tx('恢复', 'Resume')}</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="cancelCampaign('${encodeURIComponent(r.campaign_id || '')}')">${tx('取消', 'Cancel')}</button>
         </td>
       </tr>
-    `).join('') || '<tr><td colspan="7" style="color:var(--muted)">No campaigns</td></tr>';
+    `).join('') || `<tr><td colspan="7" style="color:var(--muted)">${tx('暂无 Campaign', 'No campaigns')}</td></tr>`;
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -1858,12 +3103,12 @@ async function viewCampaign(campaignKey) {
   if (!campaignId) return;
   const target = document.getElementById('campaign-detail');
   if (!target) return;
-  target.textContent = 'Loading campaign detail…';
+  target.textContent = tx('加载 Campaign 详情…', 'Loading campaign detail…');
   try {
     const row = await api('/campaigns/' + encodeURIComponent(campaignId));
     target.textContent = JSON.stringify(row, null, 2);
   } catch (e) {
-    target.textContent = 'Error: ' + e.message;
+    target.textContent = tx('错误：', 'Error: ') + e.message;
   }
 }
 
@@ -1874,7 +3119,7 @@ async function resumeCampaign(campaignKey) {
   try {
     detail = await api('/campaigns/' + encodeURIComponent(campaignId));
   } catch (e) {
-    alert('Load campaign detail failed: ' + e.message);
+    alert(tx('加载 Campaign 详情失败：', 'Load campaign detail failed: ') + e.message);
     return;
   }
   const manifest = detail?.manifest || {};
@@ -1884,8 +3129,8 @@ async function resumeCampaign(campaignKey) {
     payload.confirmed = true;
   }
   if (phase === 'milestone_waiting_feedback') {
-    const satisfied = confirm(`Campaign ${campaignId} milestone feedback: click OK=满意, Cancel=不满意`);
-    const comment = prompt('Feedback comment (optional):', '') || '';
+    const satisfied = confirm(tx(`Campaign ${campaignId} 里程碑反馈：点确定=满意，点取消=不满意`, `Campaign ${campaignId} milestone feedback: click OK=satisfied, Cancel=unsatisfied`));
+    const comment = prompt(tx('反馈备注（可选）：', 'Feedback comment (optional):'), '') || '';
     payload.feedback = {
       satisfied,
       rating: satisfied ? 5 : 2,
@@ -1893,7 +3138,7 @@ async function resumeCampaign(campaignKey) {
       source: 'console',
     };
   }
-  const resumeFromRaw = prompt(`Resume ${campaignId} from milestone index (0-based, empty = current):`, '');
+  const resumeFromRaw = prompt(tx(`从哪个 milestone 序号恢复 ${campaignId}（从 0 开始，留空=当前）：`, `Resume ${campaignId} from milestone index (0-based, empty = current):`), '');
   if (resumeFromRaw !== null && String(resumeFromRaw).trim() !== '') {
     const v = Number(resumeFromRaw);
     if (!Number.isNaN(v)) payload.resume_from = Math.max(0, Math.floor(v));
@@ -1903,33 +3148,33 @@ async function resumeCampaign(campaignKey) {
     await loadCampaigns();
     await viewCampaign(encodeURIComponent(campaignId));
   } catch (e) {
-    alert('Resume campaign failed: ' + e.message);
+    alert(tx('恢复 Campaign 失败：', 'Resume campaign failed: ') + e.message);
   }
 }
 
 async function confirmCampaign(campaignKey) {
   const campaignId = decodeURIComponent(campaignKey || '');
   if (!campaignId) return;
-  if (!confirm(`Confirm campaign ${campaignId} and start execution?`)) return;
+  if (!confirm(tx(`确认 Campaign ${campaignId} 并开始执行吗？`, `Confirm campaign ${campaignId} and start execution?`))) return;
   try {
     await apiWrite('/campaigns/' + encodeURIComponent(campaignId) + '/confirm', 'POST', {});
     await loadCampaigns();
     await viewCampaign(encodeURIComponent(campaignId));
   } catch (e) {
-    alert('Confirm campaign failed: ' + e.message);
+    alert(tx('确认 Campaign 失败：', 'Confirm campaign failed: ') + e.message);
   }
 }
 
 async function cancelCampaign(campaignKey) {
   const campaignId = decodeURIComponent(campaignKey || '');
   if (!campaignId) return;
-  if (!confirm(`Cancel campaign ${campaignId}?`)) return;
+  if (!confirm(tx(`确认取消 Campaign ${campaignId} 吗？`, `Cancel campaign ${campaignId}?`))) return;
   try {
     await apiWrite('/campaigns/' + encodeURIComponent(campaignId) + '/cancel', 'POST', {});
     await loadCampaigns();
     await viewCampaign(encodeURIComponent(campaignId));
   } catch (e) {
-    alert('Cancel campaign failed: ' + e.message);
+    alert(tx('取消 Campaign 失败：', 'Cancel campaign failed: ') + e.message);
   }
 }
 
@@ -1939,7 +3184,7 @@ async function loadSystemResetPanel() {
   const state = document.getElementById('system-reset-state');
   if (!state) return;
   if (!resetChallenge) {
-    state.textContent = 'No reset challenge issued.';
+    state.textContent = tx('尚未生成重置挑战码。', 'No reset challenge issued.');
     return;
   }
   state.textContent = JSON.stringify(resetChallenge, null, 2);
@@ -1957,16 +3202,16 @@ async function issueResetChallenge() {
     resetChallenge = data;
     await loadSystemResetPanel();
   } catch (e) {
-    alert('Issue challenge failed: ' + e.message);
+    alert(tx('生成挑战码失败：', 'Issue challenge failed: ') + e.message);
   }
 }
 
 async function confirmSystemReset() {
   if (!resetChallenge || !resetChallenge.challenge_id || !resetChallenge.confirm_code) {
-    alert('Issue challenge first.');
+    alert(tx('请先生成挑战码。', 'Issue challenge first.'));
     return;
   }
-  if (!confirm('Confirm system reset now? This will stop services and clean runtime state.')) return;
+  if (!confirm(tx('确认立即执行系统重置吗？这会停止服务并清理运行态。', 'Confirm system reset now? This will stop services and clean runtime state.'))) return;
   const mode = document.getElementById('reset-mode')?.value || resetChallenge.mode || 'strict';
   const restart = !!document.getElementById('reset-restart')?.checked;
   try {
@@ -1979,34 +3224,34 @@ async function confirmSystemReset() {
     const state = document.getElementById('system-reset-state');
     if (state) state.textContent = JSON.stringify(data, null, 2);
     resetChallenge = null;
-    alert('Reset accepted. Refresh report in a few seconds.');
+    alert(tx('重置请求已接收。几秒后刷新报告查看结果。', 'Reset accepted. Refresh report in a few seconds.'));
   } catch (e) {
-    alert('Confirm reset failed: ' + e.message);
+    alert(tx('确认重置失败：', 'Confirm reset failed: ') + e.message);
   }
 }
 
 async function loadSystemResetReport() {
   const target = document.getElementById('system-reset-report');
   if (!target) return;
-  target.textContent = 'Loading reset report…';
+  target.textContent = tx('加载重置报告…', 'Loading reset report…');
   try {
     const data = await api('/console/system/reset/last-report');
-    target.textContent = data && Object.keys(data).length ? JSON.stringify(data, null, 2) : 'No report.';
+    target.textContent = data && Object.keys(data).length ? JSON.stringify(data, null, 2) : tx('暂无报告。', 'No report.');
   } catch (e) {
-    target.textContent = 'Error: ' + e.message;
+    target.textContent = tx('错误：', 'Error: ') + e.message;
   }
 }
 
 async function loadSystemStorage() {
   const status = document.getElementById('system-storage-status');
   const input = document.getElementById('storage-daemon-dir-name');
-  if (status) status.textContent = 'Loading storage status…';
+  if (status) status.textContent = tx('加载存储状态…', 'Loading storage status…');
   try {
     const data = await api('/console/system/storage');
     if (input) input.value = String(data.daemon_dir_name || 'daemon');
     if (status) status.textContent = JSON.stringify(data, null, 2);
   } catch (e) {
-    if (status) status.textContent = 'Error: ' + e.message;
+    if (status) status.textContent = tx('错误：', 'Error: ') + e.message;
   }
 }
 
@@ -2014,7 +3259,7 @@ async function saveSystemStorage() {
   const input = document.getElementById('storage-daemon-dir-name');
   const daemonDirName = String(input?.value || '').trim();
   if (!daemonDirName) {
-    alert('daemon_dir_name is required.');
+    alert(tx('daemon_dir_name 不能为空。', 'daemon_dir_name is required.'));
     return;
   }
   try {
@@ -2023,7 +3268,7 @@ async function saveSystemStorage() {
     const status = document.getElementById('system-storage-status');
     if (status) status.textContent = JSON.stringify(data, null, 2);
   } catch (e) {
-    alert('Save storage settings failed: ' + e.message);
+    alert(tx('保存存储设置失败：', 'Save storage settings failed: ') + e.message);
   }
 }
 
@@ -2032,11 +3277,10 @@ function refreshAll() {
   const active = document.querySelector('.panel.active');
   if (active?.id === 'panel-overview') loadOverview();
   else if (active?.id === 'panel-spine') loadSpine();
+  else if (active?.id === 'panel-fabric') showFabric(currentFabricView || 'memory');
   else if (active?.id === 'panel-policy') loadPolicy();
   else if (active?.id === 'panel-traces') loadTraces();
-  else if (active?.id === 'panel-cortex') loadCortexUsage();
-  else if (active?.id === 'panel-strategies') loadStrategies();
-  else if (active?.id === 'panel-semantics') loadSemantics();
+  else if (active?.id === 'panel-strategies') { loadStrategies(); loadSemantics(); }
   else if (active?.id === 'panel-model') loadModelControl();
   else if (active?.id === 'panel-agents') loadAgents();
   else if (active?.id === 'panel-skill-evolution') loadSkillEvolution();
@@ -2045,9 +3289,28 @@ function refreshAll() {
   else if (active?.id === 'panel-system') loadSystemResetPanel();
 }
 
+const unifiedEditorText = document.getElementById('unified-editor-text');
+if (unifiedEditorText) {
+  unifiedEditorText.addEventListener('input', _syncUnifiedEditorDirty);
+}
+document.addEventListener('keydown', (event) => {
+  if (!unifiedEditorState.open) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeUnifiedEditor(false);
+    return;
+  }
+  if ((event.metaKey || event.ctrlKey) && String(event.key || '').toLowerCase() === 's') {
+    event.preventDefault();
+    saveUnifiedEditor();
+  }
+});
+
 // Auto-load on start.
-loadOverview();
-setInterval(loadOverview, 30000);
+applyConsoleLang();
+const startupPanel = _readConsolePanelState();
+show(startupPanel, _navButtonForPanel(startupPanel));
+setInterval(refreshAll, 30000);
 </script>
 </body>
 </html>
