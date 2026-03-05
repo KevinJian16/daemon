@@ -1,6 +1,6 @@
 # Daemon 统一方案 V2（执行权威）
 
-> 生效日期：2026-03-04
+> 生效日期：2026-03-05
 > 文档级别：后续实现唯一权威
 > 关系说明：本文件统一并继承 `.ref/daemon_系统设计方案_ddbc4981.plan.md`（骨架）与 `~/Downloads/daemon充盈血肉.md`（进化控制层）。
 
@@ -302,3 +302,259 @@
 3. 影子流量默认 10%。
 4. 全谱证据学习默认开启。
 5. 后续开发以本 V2 为唯一口径。
+
+---
+
+## 12. 知识质量：来源区分
+
+### 12.1 source_type 枚举
+
+Memory unit 必须携带 `source_type` 与 `source_agent` 两个字段：
+
+| source_type | 含义 | 可信度 |
+|---|---|---|
+| `empirical` | 从真实任务执行中观察到的 | 最高 |
+| `synthetic` | distill/witness LLM 生成 | 中（有幻觉风险）|
+| `collected` | collect agent 从外部抓取 | 低（质量不可控）|
+| `human` | 用户直接输入 | 权威但主观 |
+
+`source_agent` 记录写入该 unit 的 agent id（如 `collect`、`spine.distill`）。
+
+### 12.2 来源规则
+
+- **Router 引用**：优先引用 `empirical` 和 `human`，`collected` 仅在无更高质量来源时使用。
+- **tend/librarian TTL**：`collected` 类 unit 的有效窗口比 `empirical` 短 50%。
+- **distill dedup**：两条内容相近的 unit 合并时，`empirical` 胜 `synthetic`；`human` 胜一切。
+- **暖机评估**：来源字段是判断"系统学到了什么"的必要依据，无 source 字段的 unit 视为 synthetic。
+
+### 12.3 实现位置
+
+- `fabric/memory.py` SCHEMA：`methods` 与 `units` 表新增 `source_type TEXT` + `source_agent TEXT`
+- `_init_db()` 用 ALTER TABLE 做迁移（已有模式）
+- `store()` 与 `update()` 接口增加对应参数
+
+---
+
+## 13. 归档与清理制度
+
+### 13.1 三级 GC（Memory + Weave 统一）
+
+| 阶段 | 触发条件 | 动作 |
+|---|---|---|
+| **Soft-archive** | judge/librarian 评估后 | status='archived'，不参与 query |
+| **Cold export** | archived 满 7 天且未被引用 | 导出 JSONL → 上传 Google Drive → 从 SQLite 删除 |
+| **Hard delete（本地）** | cold export 后本地 JSONL 满 30 天 | 删除本地 JSONL 文件；Drive 端保留时间用户自行在 Drive 设置 |
+
+### 13.2 Google Drive 上传
+
+- 执行者：`librarian` routine 调用 apply agent 的 `google_drive_upload` skill（或内置 google 工具）
+- 上传路径：Drive 内 `daemon/archive/<year>/<month>/` 结构
+- 上传内容：JSONL 文件，含原始 unit/pattern 数据与元数据
+- 上传失败：降级为仅本地保留，记录 `archive_upload_failed` 告警，不阻断主流程
+
+### 13.3 Memory 容量上限
+
+- `total_units_cap` 默认 10,000（写入 Compass）
+- 超限触发 `memory_pressure` nerve 事件，librarian 收到后优先清理 `collected` 类和最老的 `synthetic`
+- Weave patterns 上限 200（已实现），Memory units 上限 10,000，共用同一 pressure 触发机制
+
+### 13.4 实现位置
+
+- `spine/routines.py`：`librarian()` 新增 `_cold_export_memory()` 与 `_cleanup_local_jsonl()` helper
+- `spine/nerve.py`：新增 `memory_pressure` 事件类型
+- `config/spine_registry.json`：librarian 的 `nerve_triggers` 加入 `memory_pressure`
+- apply agent `TOOLS.md`：新增 `google_drive_upload` skill 说明
+
+---
+
+## 14. 任务准入与并发隔离
+
+### 14.1 Budget 预检（Pre-flight Check）
+
+Router 生成 Weave Plan 前必须先做 provider budget 预检：
+
+1. 查询 Compass 中各 provider 当日剩余配额
+2. 若 primary provider 余量不足：按 `fallback_chain` 顺序切换（minimax → qwen → zhipu → deepseek）
+3. 所有 provider 余量均不足：任务进入 `queued` 状态，Telegram 告警，不得伪装成 running
+4. 预检结果写入 plan 的 `provider_routing` 字段，供后续步骤参照
+
+失败码：`provider_budget_insufficient`（与已有 `provider_budget_exceeded` 区分：前者是准入拒绝，后者是执行中触发）。
+
+### 14.2 Spine 例程逻辑隔离
+
+- `distill` / `learn` 在运行开始时对相关数据做 snapshot，处理过程中不再读最新状态
+- 避免与并发任务写操作产生逻辑冲突（SQLite WAL 保护物理一致性，不保护逻辑一致性）
+- snapshot 写入临时文件（`state/tmp/spine_<routine>_<ts>.json`），routine 结束后清理
+
+---
+
+## 15. 自适应调度与自我升级
+
+### 15.1 Adaptive 调度实现
+
+`spine_registry.json` 中声明 `adaptive:4h:2h-12h` 的例程（witness/learn）实现动态间隔：
+
+- **调度因子**：gate 状态（open/closed）+ 当前任务队列深度
+- **规则**：
+  - 队列空 + gate open → 缩短间隔（趋向 2h 下限）
+  - 队列繁忙（>3 个 running）→ 拉长间隔（趋向 12h 上限）
+  - gate closed → 暂停，等 gate 恢复后重置为默认间隔
+- **实现位置**：`services/scheduler.py`，spine routine 注册时传入 adaptive 计算函数
+
+### 15.2 自我升级边界
+
+`spine.learn` 产出的 `skill_evolution_proposals.json` 处理规则：
+
+| 改动类型 | 允许模式 | 审批要求 |
+|---|---|---|
+| SKILL.md / SOUL.md 内容 | sandbox 自动尝试，测试通过后写回 | 无需人工，Telegram 告知 |
+| Python 代码（activities/routines 等） | 仅写入 proposals，不自动执行 | 必须人工审批 |
+| config/*.json | sandbox 自动尝试，测试通过后写回 | 无需人工，Telegram 告知 |
+
+proposals 积累 ≥5 条时，Telegram 推送摘要给用户，用户回复后系统采纳或忽略。
+
+---
+
+## 16. 大任务规模分级与收敛
+
+### 16.1 任务规模分级
+
+Router 在生成 Weave Plan 前，先做规模评估（analyze 第一步 complexity probe）：
+
+| 规模 | 判断依据 | 执行模式 |
+|---|---|---|
+| 小 | estimated_phases ≤ 2，estimated_hours ≤ 1 | 标准单次 workflow |
+| 中 | estimated_phases ≤ 4，estimated_hours ≤ 4 | DAG 子任务分解（当前设计）|
+| 大 | estimated_phases > 4 或 estimated_hours > 4 | Campaign 模式（见 §17）|
+
+规模评估结果写入 `plan.task_scale`（`small`/`medium`/`large`），不得跳过。
+
+### 16.2 中间产出 Checkpoint 持久化
+
+每个 activity 完成后，中间产出必须写入 `state/runs/<task_id>/steps/<step_id>/output.json`，不只存 Temporal activity result cache。Worker 重启后可从文件系统恢复，无需重跑已完成步骤。
+
+### 16.3 Context Window 容量检查
+
+render 步骤开始前，做 context window 预检：
+
+- 统计所有上游步骤产出的 token 估算
+- 若超过目标模型 context window 的 70%：先对各步骤输出做结构化摘要压缩，再传入 render
+- 压缩动作由 analyze agent 执行，压缩后附原始产出路径供溯源
+- 不允许静默截断
+
+---
+
+## 17. Campaign 模式（长期任务）
+
+### 17.1 触发条件
+
+`plan.task_scale == 'large'` 时自动进入 Campaign 模式，无需用户显式声明。
+
+### 17.2 执行流程
+
+```
+Phase 0  规划
+  analyze complexity probe → 生成结构化 Plan（N 个 milestone）
+  → Telegram 推送计划表 → 等用户一次性确认（唯一门控点）
+
+Phase 1..N  逐 milestone 执行
+  每个 milestone = 标准 workflow（复杂度在质量可控范围内）
+  完成后 → review rubric 评分 + generate_user_feedback_survey 推送用户
+  → 两者合并决策：
+      两者均通过 → Telegram 播报进度，自动开始下一个 milestone
+      客观通过但用户不满意 → rework（用户反馈作为 hint）
+      客观不通过 → rework 一次，再不过 → Telegram 告警，暂停等人工介入
+
+Phase N+1  Synthesis
+  analyze + review → 连贯性检查 + 最终质量分
+  render → 统一交付物（不可省略）
+  apply → 交付 + Telegram 完成通知
+```
+
+### 17.3 Campaign State 结构
+
+```
+state/campaigns/<campaign_id>/
+  manifest.json          # 计划表、milestone 列表、当前 phase、用户确认记录
+  milestones/
+    <n>/
+      result.json        # 执行结果、review 评分、用户反馈、最终决策
+```
+
+### 17.4 评分体系（三层）
+
+| 层 | 执行者 | 时机 | 用途 |
+|---|---|---|---|
+| review rubric | review agent | per-milestone | 客观质量门控 |
+| 用户问卷 | review agent `generate_user_feedback_survey` skill | per-milestone | 主观验收，即时决策 + 长期学习 |
+| 连贯性检查 | campaign synthesis（analyze + review）| campaign 结束 | 跨 milestone 一致性 |
+
+用户反馈双写：① 写入 `milestones/<n>/result.json` 影响即时 rework 决策；② 写入 `playbook.evaluate()` 更新 method 的 success_rate 与 value_score，参与长期学习闭环。
+
+### 17.5 Fail-Closed 规则
+
+- milestone 超出 rework 预算（默认 2 次）→ campaign 暂停，Telegram 告警
+- synthesis 质量门失败 → 不交付，Telegram 告警
+- 用户拒绝计划确认 → campaign 取消，状态写 `cancelled`
+
+---
+
+## 18. Agent 扩容策略
+
+### 18.1 横向扩容
+
+**标准做法：调整 `maxConcurrent`**，不新增命名 agent。
+
+同一 agent 的并发 session 共享 SOUL/TOOLS/fabric 下发的记忆，行为完全一致，是真正的无状态横向扩容。修改点：
+- `openclaw.json`：对应 agent 的 `maxConcurrent`
+- `services/dispatch.py` `_agent_limits()`：对应 agent 的并发配额
+
+**当前默认并发配额**：
+
+| agent | maxConcurrent | 说明 |
+|---|---|---|
+| collect | 8 | IO 密集，可高并发 |
+| analyze | 4 | 最贵模型，限流保护成本 |
+| build | 2 | opencode 子进程耗时不可预测 |
+| review | 2 | gate 角色，不需高吞吐 |
+| render | 2 | 生成密集，适度并发 |
+| apply | 1 | 不可逆操作，必须序列化 |
+| router | 1 | 入口串行，避免决策冲突 |
+| spine | 2 | 后台维护，不在关键路径 |
+
+### 18.2 专化扩容
+
+**仅在需要不同专化时引入新命名 agent**，例如：
+- 不同模型（如 `analyze-code` 用 Qwen，`analyze-research` 用 DeepSeek R1）
+- 不同 SOUL/TOOLS 配置（不同任务域的行为规范差异大）
+
+当前阶段不需要专化扩容，标准并发配额已满足需求。
+
+---
+
+## 19. 用户反馈闭环
+
+### 19.1 问卷生成原则
+
+`generate_user_feedback_survey` skill 由 review agent 执行，生成本次专属问卷：
+
+- **输入**：milestone 产出摘要 + cluster 类型 + 评分维度锚点
+- **输出**：3-5 个动态生成的自然语言问题 + 量化选项
+- **锚点维度**（方向固定，具体问题动态生成）：
+  1. 产出是否符合预期意图
+  2. 质量/深度是否足够
+  3. 有无明显遗漏或偏差
+  4. 是否需要调整下一个 milestone 的方向
+
+问卷通过 Portal 或 Telegram 推送，不使用固定模板，每次问题内容随产出内容不同。
+
+### 19.2 反馈写入规则
+
+用户回答后：
+1. 写入 `milestones/<n>/result.json`（即时决策）
+2. 调用 `playbook.evaluate()`，`outcome=pass/fail` 由用户满意度决定（即使 review rubric 客观通过，用户不满意也记为 fail）
+3. 用户反馈的文本 hint 写入下一步 rework 的 instruction，不丢弃
+
+### 19.3 整体质量学习位置
+
+用户对整体 campaign 的最终评分（synthesis 结束后）写入 `fabric/memory.py` 作为一条 `human` 来源的 Memory unit，摘要格式：任务类型 + 关键策略 + 用户评分 + 主要反馈。这是最高质量的学习输入。
