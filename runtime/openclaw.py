@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -44,7 +45,10 @@ class OpenClawAdapter:
         # Keep daemon-only fallback to avoid accidentally binding old MAS defaults.
         port = self._cfg.get("gateway", {}).get("port", 18790)
         self._gateway_url = f"http://127.0.0.1:{port}"
-        self._token = self._cfg.get("gateway", {}).get("auth", {}).get("token", "")
+        self._token = os.environ.get(
+            "OPENCLAW_GATEWAY_TOKEN",
+            self._cfg.get("gateway", {}).get("auth", {}).get("token", ""),
+        )
 
     @property
     def _headers(self) -> dict:

@@ -10,8 +10,6 @@ venv/
 *.db-shm
 *.db-wal
 state/
-outcome/scheduled/
-outcome/manual/
 logs/
 .pytest_cache/
 .coverage
