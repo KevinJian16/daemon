@@ -54,5 +54,15 @@ def register_feedback_routes(app: FastAPI, *, ctx: Any) -> None:
         if not str(body.get("type") or "").strip():
             body["type"] = "quick" if body.get("rating") is not None else "append"
         if not str(body.get("source") or "").strip():
-            body["source"] = "telegram"
+            body["source"] = "portal"
+        return await ctx.submit_feedback_internal(run_id, body, request=request)
+
+    @app.post("/runs/{run_id}/feedback/append")
+    async def append_run_feedback(run_id: str, request: Request):
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+        body["type"] = "append"
+        if not str(body.get("source") or "").strip():
+            body["source"] = "portal"
         return await ctx.submit_feedback_internal(run_id, body, request=request)

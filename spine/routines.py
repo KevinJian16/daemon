@@ -1140,44 +1140,34 @@ class SpineRoutines:
             return {"sent": 0, "skipped": True, "reason": "already_notified", "total": total, "last": last}
 
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-        users = [int(x.strip()) for x in os.environ.get("TELEGRAM_ALLOWED_USERS", "").split(",") if x.strip().isdigit()]
-        if not token or not users:
+        if not token:
             return {"sent": 0, "skipped": True, "reason": "telegram_not_configured", "total": total}
 
-        lines = []
-        for row in proposals[-threshold:]:
-            skill = str(row.get("skill") or "").strip() or "unknown"
-            change = str(row.get("proposed_change") or "").strip().replace("\n", " ")[:120]
-            lines.append(f"- {skill}: {change}")
-        message = (
-            "🧠 Daemon Skill Evolution Digest\n\n"
-            f"累计提案数: {total}\n"
-            "最近提案:\n"
-            + "\n".join(lines)
-            + "\n\n请在 Console 审批。"
-        )
-
-        sent = 0
+        adapter_url = os.environ.get("TELEGRAM_ADAPTER_URL", "http://127.0.0.1:8001").strip()
         try:
             import httpx
 
             with httpx.Client(timeout=10) as client:
-                for uid in users:
-                    try:
-                        resp = client.post(
-                            f"https://api.telegram.org/bot{token}/sendMessage",
-                            json={"chat_id": uid, "text": message},
-                        )
-                        if resp.status_code < 300:
-                            sent += 1
-                    except Exception as exc:
-                        logger.warning("Skill evolution digest notify failed user=%s: %s", uid, exc)
+                resp = client.post(
+                    f"{adapter_url}/notify",
+                    json={
+                        "event": "skill_evolution_digest",
+                        "payload": {
+                            "total": total,
+                            "proposals": proposals[-threshold:],
+                        },
+                    },
+                )
+            if resp.status_code >= 300:
+                return {"sent": 0, "skipped": True, "reason": f"adapter_http_{resp.status_code}", "total": total}
+            data = resp.json() if resp.content else {}
+            if not isinstance(data, dict) or not data.get("ok"):
+                return {"sent": 0, "skipped": True, "reason": "adapter_rejected", "total": total}
         except Exception as exc:
             return {"sent": 0, "skipped": True, "reason": f"telegram_send_failed:{str(exc)[:120]}", "total": total}
 
-        if sent > 0:
-            self.compass.set_pref("skill_evolution.digest_last_total", str(total), source="spine.learn", changed_by="spine.learn")
-        return {"sent": sent, "total": total, "users": len(users)}
+        self.compass.set_pref("skill_evolution.digest_last_total", str(total), source="spine.learn", changed_by="spine.learn")
+        return {"sent": 1, "total": total}
 
     def _cold_export_memory(self, *, archive_after_days: int = 7, batch_limit: int = 2000) -> dict:
         """Export archived+unreferenced memory units to JSONL, then delete from local DB."""

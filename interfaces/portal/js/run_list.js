@@ -2,7 +2,13 @@
 let runs=[], outcomes=[];
 let curRunId=null;
 
-function dotCls(s){ return s==='pending_review'?'d-amber':s==='running'?'d-blue':s==='completed'||s==='done'?'d-green':'d-muted'; }
+function dotCls(s){
+  const v = String(s || '').toLowerCase();
+  if (v === 'pending_review' || v === 'awaiting_eval') return 'd-amber';
+  if (['running','queued','paused','cancelling'].includes(v)) return 'd-blue';
+  if (['completed','done','cancelled'].includes(v)) return 'd-green';
+  return 'd-muted';
+}
 function sLabel(s){ return t('s_'+(s||'').replace('-','_')) || s; }
 function relTime(u){
   if(!u) return '';
@@ -25,22 +31,17 @@ function makeItem(run_id, title, scale, runStatus, time, onClick) {
 }
 
 async function renderNav() {
-  try { runs = await api('/runs?limit=200'); } catch(e){ runs=[]; }
+  let runningRuns=[], awaitingRuns=[], historyRuns=[];
+  try { runningRuns = await api('/runs?phase=running&limit=200'); } catch(e){ runningRuns=[]; }
+  try { awaitingRuns = await api('/runs?phase=awaiting_eval&limit=200'); } catch(e){ awaitingRuns=[]; }
+  try { historyRuns = await api('/runs?phase=history&limit=200'); } catch(e){ historyRuns=[]; }
+  runs=[...runningRuns,...awaitingRuns,...historyRuns];
   try { outcomes = await api('/outcome?limit=200'); } catch(e){ outcomes=[]; }
-  let pendFb = [];
-  try { pendFb = await api('/feedback/pending?limit=50'); } catch(e){}
-  const fbIds = new Set((pendFb||[]).map(x=>x.run_id));
-
-  const pending = runs.filter(t=>{
-    const runStatus = t.run_status || '';
-    return fbIds.has(t.run_id) || runStatus === 'pending_review';
-  });
-  const pendIds = new Set(pending.map(t=>t.run_id));
-  const running = runs.filter(t=>{
-    const runStatus = t.run_status || '';
-    return ['running','queued'].includes(runStatus) && !pendIds.has(t.run_id);
-  });
-  const histOut = outcomes.filter(o=>!pendIds.has(o.run_id));
+  const pending = awaitingRuns || [];
+  const running = runningRuns || [];
+  const histOut = outcomes || [];
+  let circuits = [];
+  try { circuits = await api('/circuits'); } catch(e) { circuits = []; }
 
   // Pending
   const pb = document.getElementById('pending-badge');
@@ -50,7 +51,7 @@ async function renderNav() {
     pl.innerHTML='';
     pending.forEach(tk=>{
       const scale=tk.work_scale||(tk.plan&&tk.plan.work_scale)||'';
-      const el=makeItem(tk.run_id,tk.title||tk.run_type||tk.run_id,scale,'pending_review',tk.created_utc,()=>openRun(tk,el));
+      const el=makeItem(tk.run_id,tk.run_title||tk.title||tk.run_type||tk.run_id,scale,'pending_review',tk.updated_utc||tk.created_utc,()=>openRun(tk,el));
       pl.appendChild(el);
     });
   } else {
@@ -65,7 +66,7 @@ async function renderNav() {
     running.forEach(tk=>{
       const scale=tk.work_scale||(tk.plan&&tk.plan.work_scale)||'';
       const runStatus=tk.run_status||'';
-      const el=makeItem(tk.run_id,tk.title||tk.run_type||tk.run_id,scale,runStatus,tk.created_utc,()=>openRun(tk,el));
+      const el=makeItem(tk.run_id,tk.run_title||tk.title||tk.run_type||tk.run_id,scale,runStatus,tk.updated_utc||tk.created_utc,()=>openRun(tk,el));
       rl.appendChild(el);
     });
   } else {
@@ -78,6 +79,42 @@ async function renderNav() {
   // Update search placeholder for current lang
   const hs=document.getElementById('history-search');
   if(hs) hs.placeholder=lang==='zh'?hs.dataset.phZh:hs.dataset.phEn;
+
+  // Circuits
+  const cl = document.getElementById('circuit-list');
+  if (cl) {
+    if (circuits.length) {
+      cl.innerHTML = '';
+      circuits.forEach((c) => {
+        const cid = String(c.circuit_id || '');
+        const scale = String(c.status || '');
+        const title = c.run_title || c.name || cid;
+        const el = makeItem(
+          cid,
+          title,
+          'circuit',
+          String(c.status || 'active'),
+          c.last_triggered_utc || c.created_utc || '',
+          () => {
+            clearActive();
+            el.classList.add('active');
+            showCircuits(cid);
+          },
+        );
+        el.dataset.kind = 'circuit';
+        if (currentCircuitId && currentCircuitId === cid) {
+          el.classList.add('active');
+        }
+        cl.appendChild(el);
+      });
+    } else {
+      cl.innerHTML = `<div class="nav-empty">${t('none')}</div>`;
+    }
+  }
+
+  if (document.getElementById('view-circuits')?.style.display === 'flex') {
+    renderCircuitsPage();
+  }
 }
 
 // ── Open run ─────────────────────────────────────────────
@@ -87,17 +124,23 @@ async function openRun(run, navEl) {
   const runStatus = run.run_status || '';
   const workScale = run.work_scale || (run.plan && run.plan.work_scale) || '';
   const campaignId = run.campaign_id || (run.plan && run.plan.campaign_id) || run.run_id;
-  document.getElementById('det-title').textContent = run.title||run.run_type||run.run_id;
+  document.getElementById('det-title').textContent = run.run_title||run.title||run.run_type||run.run_id;
   setBadge(runStatus);
   const sc=document.getElementById('det-scale');
   if(workScale){sc.textContent=workScale;sc.style.display='';}else sc.style.display='none';
   document.getElementById('det-time').textContent = relTime(run.created_utc);
 
-  const isRunning=['running','queued'].includes(runStatus);
+  const runStatusLower = String(runStatus || '').toLowerCase();
+  const isRunning=['running','queued','cancelling'].includes(runStatusLower);
+  const isPaused = runStatusLower === 'paused';
   const ctrl=document.getElementById('det-controls');
-  if(isRunning){
+  if(isRunning || isPaused){
     ctrl.classList.remove('hidden');
-    ['btn-pause','btn-redirect','btn-cancel'].forEach(id=>document.getElementById(id).style.display='');
+    const isCampaign = String(workScale || '').toLowerCase() === 'campaign';
+    document.getElementById('btn-resume').style.display = isPaused && !isCampaign ? '' : 'none';
+    document.getElementById('btn-pause').style.display = isRunning && !isCampaign ? '' : 'none';
+    document.getElementById('btn-redirect').style.display = isRunning && !isCampaign ? '' : 'none';
+    document.getElementById('btn-cancel').style.display = '';
   } else ctrl.classList.add('hidden');
 
   const pw=document.getElementById('prog-wrap');
@@ -106,6 +149,10 @@ async function openRun(run, navEl) {
     const pct=run.progress_pct||(run.step_index&&run.total_steps?Math.round(run.step_index/run.total_steps*100):0);
     document.getElementById('prog-fill').style.width=pct+'%';
     document.getElementById('prog-label').textContent=run.current_step||'';
+  } else if (isPaused) {
+    pw.style.display='block';
+    document.getElementById('prog-fill').style.width='100%';
+    document.getElementById('prog-label').textContent=lang==='zh'?'已暂停':'Paused';
   } else pw.style.display='none';
 
   document.getElementById('output-body').innerHTML='<p style="color:var(--muted);font-size:13px">Loading…</p>';
@@ -119,7 +166,7 @@ async function openRun(run, navEl) {
   }
   const match=outcomes.find(o=>o.run_id===run.run_id);
   if(match) await renderOutcomeContent(match);
-  else if(isRunning) document.getElementById('output-body').innerHTML=`<p style="color:var(--muted);font-size:13px">${esc(run.current_step||'Run is active…')}</p>`;
+  else if(isRunning || isPaused) document.getElementById('output-body').innerHTML=`<p style="color:var(--muted);font-size:13px">${esc(run.current_step|| (isPaused ? (lang==='zh'?'Run 已暂停':'Run paused') : 'Run is active…'))}</p>`;
   else document.getElementById('output-body').innerHTML=`<p style="color:var(--muted);font-size:13px">No output yet.</p>`;
 }
 

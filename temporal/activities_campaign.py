@@ -24,6 +24,11 @@ def _normalize_campaign_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     rows = out.get("milestones")
     if isinstance(rows, list):
         out["milestones"] = [_normalize_milestone_summary_row(row) for row in rows if isinstance(row, dict)]
+    campaign_context = out.get("campaign_context")
+    if isinstance(campaign_context, list):
+        out["campaign_context"] = [row for row in campaign_context if isinstance(row, dict)]
+    else:
+        out["campaign_context"] = []
     return out
 
 
@@ -71,6 +76,14 @@ async def run_campaign_bootstrap(self, run_root: str, plan: dict) -> dict:
     campaign_status = str(manifest.get("campaign_status") or "running")
     campaign_phase = str(manifest.get("campaign_phase") or "phase0_planning")
 
+    campaign_context = (
+        manifest.get("campaign_context")
+        if isinstance(manifest.get("campaign_context"), list)
+        else plan.get("campaign_context")
+        if isinstance(plan.get("campaign_context"), list)
+        else []
+    )
+
     manifest.update(
         {
             "campaign_id": campaign_id,
@@ -83,6 +96,7 @@ async def run_campaign_bootstrap(self, run_root: str, plan: dict) -> dict:
             "run_root": run_root,
             "plan": plan,
             "milestones": milestone_summaries,
+            "campaign_context": campaign_context[-32:],
             "total_milestones": len(milestone_summaries),
             "updated_utc": self._utc(),
             "created_utc": str(manifest.get("created_utc") or self._utc()),
@@ -110,6 +124,7 @@ async def run_campaign_bootstrap(self, run_root: str, plan: dict) -> dict:
         "next_milestone_index": resume_from,
         "manifest_path": str(manifest_path),
         "historical_step_results": historical_step_results,
+        "campaign_context": campaign_context[-32:],
     }
 
 
@@ -143,8 +158,14 @@ async def run_campaign_record_milestone(self, campaign_id: str, milestone_index:
         rows[idx]["milestone_status"] = milestone_status or str(rows[idx].get("milestone_status") or "")
         rows[idx]["objective_score"] = payload.get("objective_score")
         rows[idx]["attempts"] = int(payload.get("attempts") or 0)
+        if payload.get("child_workflow_id"):
+            rows[idx]["child_workflow_id"] = str(payload.get("child_workflow_id") or "")
     manifest["milestones"] = rows
     manifest["current_milestone_index"] = idx + 1 if milestone_status == "passed" else idx
+    if milestone_status == "passed" and isinstance(payload.get("context_entry"), dict):
+        context = manifest.get("campaign_context") if isinstance(manifest.get("campaign_context"), list) else []
+        context.append(payload.get("context_entry"))
+        manifest["campaign_context"] = context[-32:]
     manifest["updated_utc"] = self._utc()
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     self._event_bridge.emit(
@@ -197,6 +218,10 @@ async def run_campaign_set_status(
                 pass
         if "workflow_id" in extra:
             manifest["workflow_id"] = str(extra.get("workflow_id") or "")
+        if "current_child_workflow_id" in extra:
+            manifest["current_child_workflow_id"] = str(extra.get("current_child_workflow_id") or "")
+        if isinstance(extra.get("campaign_context"), list):
+            manifest["campaign_context"] = [x for x in extra.get("campaign_context") if isinstance(x, dict)][-32:]
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     self._event_bridge.emit(
         "campaign_status_changed",

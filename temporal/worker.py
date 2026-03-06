@@ -74,4 +74,13 @@ if __name__ == "__main__":
     port = int(os.environ.get("TEMPORAL_PORT", "7233"))
     namespace = os.environ.get("TEMPORAL_NAMESPACE", "default")
     queue = os.environ.get("TEMPORAL_QUEUE", "daemon-queue")
-    asyncio.run(start_worker(host=host, port=port, namespace=namespace, queue=queue))
+    max_concurrent = int(os.environ.get("TEMPORAL_MAX_CONCURRENT_ACTIVITIES", "10") or 10)
+    asyncio.run(
+        start_worker(
+            host=host,
+            port=port,
+            namespace=namespace,
+            queue=queue,
+            max_concurrent_activities=max_concurrent,
+        )
+    )

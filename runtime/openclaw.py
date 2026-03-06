@@ -33,6 +33,7 @@ class OpenClawAdapter:
         self._cfg: dict = {}
         self._gateway_url: str = ""
         self._token: str = ""
+        self._session_alias: dict[str, str] = {}
         self._load_config()
 
     def _load_config(self) -> None:
@@ -61,18 +62,36 @@ class OpenClawAdapter:
             return f"error: {str(e)[:80]}"
 
     def send(self, session_key: str, message: str, agent_id: str | None = None) -> dict:
-        """Send a message to an Agent session."""
-        args: dict[str, Any] = {"sessionKey": session_key, "message": message}
+        """Spawn an isolated subagent execution for this step."""
+        args: dict[str, Any] = {
+            "task": message,
+            "runtime": "subagent",
+            "runTimeoutSeconds": 240,
+            "cleanup": "keep",
+        }
         if agent_id:
             args["agentId"] = agent_id
-        result = self._invoke("sessions_send", args)
+        result = self._invoke("sessions_spawn", args)
         details = self._extract_details(result)
-        self._raise_on_status("sessions_send", details)
+        self._raise_on_status("sessions_spawn", details)
+        child_session_key = str(details.get("childSessionKey") or "").strip()
+        if child_session_key:
+            self._session_alias[session_key] = child_session_key
+            details["sessionKey"] = child_session_key
+        else:
+            # Fallback for older gateways that do not return childSessionKey.
+            send_args: dict[str, Any] = {"sessionKey": session_key, "message": message}
+            if agent_id:
+                send_args["agentId"] = agent_id
+            result = self._invoke("sessions_send", send_args)
+            details = self._extract_details(result)
+            self._raise_on_status("sessions_send", details)
         return details or result
 
     def history(self, session_key: str, limit: int = 1) -> list[dict]:
         """Read recent messages from an Agent session."""
-        result = self._invoke("sessions_history", {"sessionKey": session_key, "limit": limit})
+        actual_key = self._session_alias.get(session_key, session_key)
+        result = self._invoke("sessions_history", {"sessionKey": actual_key, "limit": limit})
         details = self._extract_details(result)
         self._raise_on_status("sessions_history", details)
         rows = (details or {}).get("messages") or (result or {}).get("messages") or []

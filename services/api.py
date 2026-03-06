@@ -120,6 +120,8 @@ def create_app() -> FastAPI:
     cortex = Cortex(compass)
     nerve = Nerve()
     tracer = Tracer(state / "traces")
+    if not str(compass.get_pref("eval_window_hours", "") or "").strip():
+        compass.set_pref("eval_window_hours", "2", source="system", changed_by="bootstrap")
 
     # Initialize Spine.
     registry_path = home / "config" / "spine_registry.json"
@@ -399,7 +401,7 @@ p{
                                 {"event": event_name, "payload": payload, "created_utc": _utc()},
                             )
                             campaign_phase = str(payload.get("campaign_phase") or "")
-                            if campaign_phase in {"phase0_waiting_confirmation", "milestone_waiting_feedback", "delivery_failed"}:
+                            if campaign_phase in {"phase0_waiting_confirmation", "milestone_waiting_feedback", "milestone_failed", "delivery_failed"}:
                                 try:
                                     notify = await _notify_campaign_status_telegram(payload)
                                     _append_jsonl(
@@ -473,9 +475,22 @@ p{
         run_status = str(out.get("run_status") or "")
         work_scale = str(out.get("work_scale") or plan.get("work_scale") or "")
         campaign_id = str(out.get("campaign_id") or plan.get("campaign_id") or "")
+        run_title = str(out.get("run_title") or out.get("title") or plan.get("run_title") or plan.get("title") or run_id)
+        phase = str(out.get("phase") or "").strip().lower()
+        if phase not in {"running", "awaiting_eval", "history"}:
+            status_lower = run_status.lower()
+            if status_lower in {"running", "queued", "paused", "running_shadow", "cancel_requested", "cancelling"}:
+                phase = "running"
+            elif status_lower in {"awaiting_eval", "pending_review"}:
+                phase = "awaiting_eval"
+            else:
+                phase = "history"
         out.setdefault("run_id", run_id)
         if run_status:
             out["run_status"] = run_status
+        out["phase"] = phase
+        out["run_title"] = run_title
+        out["title"] = run_title
         if work_scale:
             out.setdefault("work_scale", work_scale)
         if campaign_id:
@@ -484,6 +499,9 @@ p{
         out.setdefault("strategy_id", plan.get("strategy_id", ""))
         out.setdefault("strategy_stage", plan.get("strategy_stage", ""))
         out.setdefault("global_score_components", plan.get("global_score_components") or {})
+        out.setdefault("eval_window_hours", plan.get("eval_window_hours", 2))
+        out.setdefault("exec_completed_utc", out.get("exec_completed_utc", ""))
+        out.setdefault("eval_deadline_utc", out.get("eval_deadline_utc", ""))
         return out
 
     def _write_json_list(path: Path, items: list[dict]) -> None:
@@ -557,19 +575,32 @@ p{
         rows.sort(key=lambda x: str(x.get("created_utc") or ""), reverse=True)
         return rows[: max(1, min(limit, 500))]
 
-    def _telegram_user_ids() -> list[int]:
-        raw = os.environ.get("TELEGRAM_ALLOWED_USERS", "")
-        out: list[int] = []
-        for piece in raw.split(","):
-            s = piece.strip()
-            if s.isdigit():
-                out.append(int(s))
-        return out
+    async def _notify_via_adapter(event: str, payload: dict) -> dict:
+        adapter_url = os.environ.get("TELEGRAM_ADAPTER_URL", "http://127.0.0.1:8001").strip()
+        if not adapter_url:
+            return {"sent": 0, "skipped": True, "reason": "adapter_url_missing"}
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=8) as client:
+                resp = await client.post(
+                    f"{adapter_url}/notify",
+                    json={"event": event, "payload": payload},
+                )
+            if resp.status_code >= 300:
+                return {"sent": 0, "skipped": True, "reason": f"adapter_http_{resp.status_code}"}
+            data = resp.json() if resp.content else {}
+            if not isinstance(data, dict):
+                data = {}
+            if not data.get("ok"):
+                return {"sent": 0, "skipped": True, "reason": str(data.get("error") or "adapter_rejected")}
+            return {"sent": 1, "event": event}
+        except Exception as exc:
+            logger.warning("Telegram adapter notify failed event=%s: %s", event, exc)
+            return {"sent": 0, "skipped": True, "reason": f"adapter_error:{str(exc)[:120]}"}
 
     async def _notify_feedback_survey_telegram(payload: dict) -> dict:
-        token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-        users = _telegram_user_ids()
-        if not token or not users:
+        if os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() == "":
             return {"sent": 0, "skipped": True}
         run_id = str(payload.get("run_id") or "")
         if run_id:
@@ -577,96 +608,41 @@ p{
             if isinstance(survey, dict):
                 if str(survey.get("status") or "") == "submitted" and str(survey.get("handled_channel") or "") == "portal":
                     return {"sent": 0, "skipped": True, "reason": "handled_by_portal"}
-        title = str(payload.get("title") or run_id)
-        prompt = str(payload.get("prompt") or "请反馈本次交付质量。")
-        work_scale = str(payload.get("work_scale") or "")
-        message = (
-            "📝 Daemon Feedback Survey\n\n"
-            f"运行: `{run_id}`\n"
-            f"规模: `{work_scale}`\n"
-            f"标题: {title}\n\n"
-            f"{prompt}\n"
-            "请在 Portal 打开该运行并提交反馈。"
+        return await _notify_via_adapter(
+            "feedback_survey",
+            {
+                "run_id": run_id,
+                "run_title": str(payload.get("title") or run_id),
+                "work_scale": str(payload.get("work_scale") or ""),
+            },
         )
-        sent = 0
-        import httpx
-        async with httpx.AsyncClient(timeout=10) as client:
-            for uid in users:
-                try:
-                    resp = await client.post(
-                        f"https://api.telegram.org/bot{token}/sendMessage",
-                        json={"chat_id": uid, "text": message, "parse_mode": "Markdown"},
-                    )
-                    if resp.status_code < 300:
-                        sent += 1
-                except Exception as exc:
-                    logger.warning("Feedback survey telegram notify failed user=%s: %s", uid, exc)
-        return {"sent": sent, "total": len(users)}
 
     async def _notify_campaign_progress_telegram(payload: dict) -> dict:
-        token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-        users = _telegram_user_ids()
-        if not token or not users:
+        if os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() == "":
             return {"sent": 0, "skipped": True}
-        campaign_id = str(payload.get("campaign_id") or "")
-        milestone_index = int(payload.get("milestone_index") or 0)
-        milestone_status = str(payload.get("milestone_status") or "")
-        score = payload.get("objective_score")
-        attempts = int(payload.get("attempts") or 0)
-        title = str(payload.get("title") or "")
-        msg = (
-            "📈 Campaign Progress\n\n"
-            f"campaign: `{campaign_id}`\n"
-            f"milestone: `{milestone_index + 1}` {title}\n"
-            f"milestone_status: `{milestone_status}`\n"
-            f"objective_score: `{score}`\n"
-            f"attempts: `{attempts}`"
+        return await _notify_via_adapter(
+            "milestone_done",
+            {
+                "campaign_id": str(payload.get("campaign_id") or ""),
+                "milestone_idx": int(payload.get("milestone_index") or 0) + 1,
+                "run_title": str(payload.get("title") or payload.get("campaign_id") or ""),
+                "milestone_status": str(payload.get("milestone_status") or ""),
+            },
         )
-        sent = 0
-        import httpx
-        async with httpx.AsyncClient(timeout=10) as client:
-            for uid in users:
-                try:
-                    resp = await client.post(
-                        f"https://api.telegram.org/bot{token}/sendMessage",
-                        json={"chat_id": uid, "text": msg, "parse_mode": "Markdown"},
-                    )
-                    if resp.status_code < 300:
-                        sent += 1
-                except Exception as exc:
-                    logger.warning("Campaign progress telegram notify failed user=%s: %s", uid, exc)
-        return {"sent": sent, "total": len(users)}
 
     async def _notify_campaign_status_telegram(payload: dict) -> dict:
-        token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-        users = _telegram_user_ids()
-        if not token or not users:
+        if os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() == "":
             return {"sent": 0, "skipped": True}
-        campaign_id = str(payload.get("campaign_id") or "")
-        campaign_status = str(payload.get("campaign_status") or "")
-        campaign_phase = str(payload.get("campaign_phase") or "")
-        cur = int(payload.get("current_milestone_index") or 0)
-        msg = (
-            "📌 Campaign Status Update\n\n"
-            f"campaign: `{campaign_id}`\n"
-            f"campaign_status: `{campaign_status}`\n"
-            f"campaign_phase: `{campaign_phase}`\n"
-            f"milestone_index: `{cur}`"
+        return await _notify_via_adapter(
+            "campaign_status",
+            {
+                "campaign_id": str(payload.get("campaign_id") or ""),
+                "run_title": str(payload.get("campaign_id") or ""),
+                "campaign_status": str(payload.get("campaign_status") or ""),
+                "campaign_phase": str(payload.get("campaign_phase") or ""),
+                "current_milestone_index": int(payload.get("current_milestone_index") or 0),
+            },
         )
-        sent = 0
-        import httpx
-        async with httpx.AsyncClient(timeout=10) as client:
-            for uid in users:
-                try:
-                    resp = await client.post(
-                        f"https://api.telegram.org/bot{token}/sendMessage",
-                        json={"chat_id": uid, "text": msg, "parse_mode": "Markdown"},
-                    )
-                    if resp.status_code < 300:
-                        sent += 1
-                except Exception as exc:
-                    logger.warning("Campaign status telegram notify failed user=%s: %s", uid, exc)
-        return {"sent": sent, "total": len(users)}
 
     def _campaign_root(campaign_id: str | None = None) -> Path:
         root = state / "campaigns"
@@ -1322,6 +1298,7 @@ p{
             fb_type = "quick"
         comment = str(body.get("comment") or "")[:1000].strip()
         aspects = body.get("aspects") if isinstance(body.get("aspects"), dict) else {}
+        answers = body.get("answers") if isinstance(body.get("answers"), dict) else {}
         rating_raw = body.get("rating")
         rating: int | None = None
         if rating_raw is not None and str(rating_raw).strip() != "":
@@ -1336,9 +1313,10 @@ p{
         if is_append and not comment:
             raise HTTPException(status_code=400, detail="append_comment_required")
         if not is_append:
-            if fb_type == "quick" and rating is None:
+            has_partial = bool(comment or aspects or answers)
+            if fb_type == "quick" and rating is None and not has_partial:
                 raise HTTPException(status_code=400, detail="quick_feedback_requires_rating")
-            if fb_type == "deep" and rating is None and not comment:
+            if fb_type == "deep" and rating is None and not has_partial:
                 raise HTTPException(status_code=400, detail="deep_feedback_requires_comment_or_rating")
 
         # Find run record to get method_id and run_type.
@@ -1445,6 +1423,7 @@ p{
                 "rating": rating,
                 "comment": comment,
                 "aspects": aspects if isinstance(aspects, dict) else {},
+                "answers": answers if isinstance(answers, dict) else {},
                 "created_utc": now,
             }
         )
@@ -1455,6 +1434,7 @@ p{
                 "score": score,
                 "comment": comment,
                 "aspects": aspects if isinstance(aspects, dict) else {},
+                "answers": answers if isinstance(answers, dict) else {},
                 "source": source,
                 "type": fb_type,
             }
@@ -1478,14 +1458,39 @@ p{
                 "score": score,
                 "comment": comment,
                 "aspects": aspects,
+                "answers": answers,
                 "run_type": run_type,
                 "work_scale": work_scale,
                 "created_utc": now,
             },
         )
 
+        # Eval window closes immediately once any feedback is submitted.
+        if not is_append and run_record:
+            for row in runs:
+                if str(row.get("run_id") or "") != run_id:
+                    continue
+                status = str(row.get("run_status") or "").strip().lower()
+                if status in {"awaiting_eval", "pending_review"}:
+                    row["run_status"] = "completed"
+                    row["phase"] = "history"
+                    row["updated_utc"] = now
+                    row["eval_submitted_utc"] = now
+                    row.pop("eval_deadline_utc", None)
+                break
+            store.save_runs(runs)
+
         if rating is not None:
             nerve.emit("user_feedback_received", {"run_id": run_id, "rating": rating, "score": score})
+        nerve.emit(
+            "run_feedback_submitted" if not is_append else "run_feedback_appended",
+            {
+                "run_id": run_id,
+                "source": source,
+                "type": "append" if is_append else fb_type,
+                "rating": rating,
+            },
+        )
         if request is not None:
             _log_portal_event(
                 "feedback_submitted" if not is_append else "feedback_appended",

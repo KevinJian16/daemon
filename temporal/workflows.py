@@ -1,6 +1,7 @@
 """GraphDispatchWorkflow — DAG-based multi-agent run orchestration."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -21,12 +22,49 @@ class RunInput:
 class GraphDispatchWorkflow:
     """Executes a DAG of Agent steps with Kahn topological ordering and per-agent concurrency limits."""
 
+    def __init__(self) -> None:
+        self._active_requirements: list[dict[str, str]] = []
+        self._pause_requested: bool = False
+
+    @workflow.signal(name="append_requirement")
+    def append_requirement(self, payload: dict | None = None) -> None:
+        row = payload if isinstance(payload, dict) else {}
+        text = str(row.get("text") or row.get("requirement") or "").strip()
+        if not text:
+            return
+        self._active_requirements.append(
+            {
+                "text": text,
+                "source": str(row.get("source") or "user"),
+                "appended_at": str(row.get("appended_at") or workflow.now().strftime("%Y-%m-%dT%H:%M:%SZ")),
+            }
+        )
+        if len(self._active_requirements) > 20:
+            self._active_requirements = self._active_requirements[-20:]
+
+    @workflow.signal(name="pause_execution")
+    def pause_execution(self, payload: dict | None = None) -> None:
+        _ = payload
+        self._pause_requested = True
+
+    @workflow.signal(name="resume_execution")
+    def resume_execution(self, payload: dict | None = None) -> None:
+        _ = payload
+        self._pause_requested = False
+
     @workflow.run
     async def run(self, inp: RunInput) -> dict:
         plan = inp.plan or {}
+        campaign_child = bool(plan.get("campaign_child"))
+        work_scale = str(plan.get("work_scale") or "").strip().lower()
+
+        async def _mark_failure(message: str) -> None:
+            if not campaign_child:
+                await self._mark_run_status(inp.run_root, plan, "failed", message[:200])
+
         steps = plan.get("steps") or plan.get("graph", {}).get("steps") or []
         if not isinstance(steps, list) or not steps:
-            await self._mark_run_status(inp.run_root, plan, "failed", "missing steps")
+            await _mark_failure("missing steps")
             raise ApplicationError("missing steps", non_retryable=True)
 
         concurrency = plan.get("concurrency") or {}
@@ -38,11 +76,11 @@ class GraphDispatchWorkflow:
         id_set: set[str] = set()
         for i, st in enumerate(steps):
             if not isinstance(st, dict):
-                await self._mark_run_status(inp.run_root, plan, "failed", f"invalid step at index {i}")
+                await _mark_failure(f"invalid step at index {i}")
                 raise ApplicationError(f"invalid step at index {i}", non_retryable=True)
             sid = self._step_id(st, i)
             if sid in id_set:
-                await self._mark_run_status(inp.run_root, plan, "failed", f"duplicate step id: {sid}")
+                await _mark_failure(f"duplicate step id: {sid}")
                 raise ApplicationError(f"duplicate step id: {sid}", non_retryable=True)
             id_set.add(sid)
             step_list.append({**st, "id": sid})
@@ -56,11 +94,11 @@ class GraphDispatchWorkflow:
         for sid, st in step_by_id.items():
             ds = set(self._deps(st))
             if sid in ds:
-                await self._mark_run_status(inp.run_root, plan, "failed", f"step {sid} depends on itself")
+                await _mark_failure(f"step {sid} depends on itself")
                 raise ApplicationError(f"step {sid} depends on itself", non_retryable=True)
             unknown = [d for d in ds if d not in step_by_id]
             if unknown:
-                await self._mark_run_status(inp.run_root, plan, "failed", f"step {sid}: unknown deps {unknown}")
+                await _mark_failure(f"step {sid}: unknown deps {unknown}")
                 raise ApplicationError(f"step {sid}: unknown deps {unknown}", non_retryable=True)
             deps[sid] = ds
             for d in ds:
@@ -80,7 +118,7 @@ class GraphDispatchWorkflow:
                 if indeg[nxt] == 0:
                     q.append(nxt)
         if seen != len(step_by_id):
-            await self._mark_run_status(inp.run_root, plan, "failed", "cycle detected in DAG")
+            await _mark_failure("cycle detected in DAG")
             raise ApplicationError("cycle detected in DAG", non_retryable=True)
 
         # Execution loop.
@@ -89,12 +127,23 @@ class GraphDispatchWorkflow:
         completed: set[str] = set()
         errors: list[dict] = []
         pending = set(step_by_id.keys())
+        pause_state_marked = False
 
         try:
             while pending or running:
+                if self._pause_requested and not running:
+                    if not campaign_child and not pause_state_marked:
+                        await self._mark_run_status(inp.run_root, plan, "paused", "paused_by_request")
+                        pause_state_marked = True
+                    await workflow.wait_condition(lambda: not self._pause_requested)
+                    if not campaign_child and pause_state_marked:
+                        await self._mark_run_status(inp.run_root, plan, "running", "")
+                    pause_state_marked = False
+                    continue
+
                 # Start ready steps up to concurrency limits.
                 made_progress = True
-                while made_progress and pending and len(running) < max_parallel:
+                while (not self._pause_requested) and made_progress and pending and len(running) < max_parallel:
                     made_progress = False
                     ready = [sid for sid in sorted(pending) if deps.get(sid, set()).issubset(completed)]
                     if not ready:
@@ -105,16 +154,20 @@ class GraphDispatchWorkflow:
                         if ag:
                             agent_running[ag] = agent_running.get(ag, 0) + 1
                     for sid in ready:
+                        if self._pause_requested:
+                            break
                         if len(running) >= max_parallel:
                             break
-                        ag = self._agent(step_by_id.get(sid, {}))
+                        base_step = step_by_id.get(sid, {})
+                        injected_step = self._inject_requirements(base_step, work_scale=work_scale)
+                        ag = self._agent(injected_step)
                         if ag:
                             cur_count = agent_running.get(ag, 0)
                             limit = int(agent_limits.get(ag, max_parallel))
                             if cur_count >= limit:
                                 continue
                         pending.discard(sid)
-                        running[sid] = self._start(sid, step_by_id[sid], inp.run_root, plan)
+                        running[sid] = self._start(sid, injected_step, inp.run_root, plan)
                         if ag:
                             agent_running[ag] = agent_running.get(ag, 0) + 1
                         made_progress = True
@@ -136,11 +189,15 @@ class GraphDispatchWorkflow:
                     results_by_id[sid] = res
                     completed.add(sid)
 
+        except asyncio.CancelledError:
+            if not campaign_child:
+                await self._mark_run_status(inp.run_root, plan, "cancelled", "cancelled_by_request")
+            raise
         except ApplicationError as e:
-            await self._mark_run_status(inp.run_root, plan, "failed", str(e)[:200])
+            await _mark_failure(str(e)[:200])
             raise
         except Exception as e:
-            await self._mark_run_status(inp.run_root, plan, "failed", str(e)[:200])
+            await _mark_failure(str(e)[:200])
             raise ApplicationError(f"workflow_exception: {str(e)[:200]}", non_retryable=True) from e
 
         ordered: list[dict] = [
@@ -149,8 +206,15 @@ class GraphDispatchWorkflow:
         ]
 
         if errors:
-            await self._mark_run_status(inp.run_root, plan, "failed", f"{len(errors)} step(s) failed")
+            await _mark_failure(f"{len(errors)} step(s) failed")
             raise ApplicationError(f"{len(errors)} step(s) failed", non_retryable=True)
+
+        if campaign_child:
+            return {
+                "ok": True,
+                "campaign_child": True,
+                "step_results": ordered,
+            }
 
         # Delivery handoff.
         delivery = await workflow.execute_activity(
@@ -176,6 +240,7 @@ class GraphDispatchWorkflow:
                         args=[inp.run_root, plan, st],
                         start_to_close_timeout=st_to,
                         schedule_to_close_timeout=sc_to,
+                        heartbeat_timeout=timedelta(seconds=90),
                         retry_policy=RetryPolicy(maximum_attempts=2),
                     )
                     if not isinstance(res, dict):
@@ -193,7 +258,7 @@ class GraphDispatchWorkflow:
 
         if not (isinstance(delivery, dict) and delivery.get("ok")):
             err_msg = str((delivery or {}).get("error_code") or (delivery or {}).get("detail") or "delivery_failed")
-            await self._mark_run_status(inp.run_root, plan, "failed", err_msg[:200])
+            await _mark_failure(err_msg[:200])
 
         return delivery or {}
 
@@ -218,6 +283,29 @@ class GraphDispatchWorkflow:
         overrides: dict = plan.get("agent_concurrency") or {}
         return {**system_defaults, **overrides}
 
+    def _inject_requirements(self, step: dict, *, work_scale: str) -> dict:
+        if work_scale == "pulse":
+            return dict(step)
+        if not self._active_requirements:
+            return dict(step)
+        out = dict(step)
+        base = str(out.get("instruction") or out.get("message") or "").strip()
+        req_lines = []
+        for idx, req in enumerate(self._active_requirements[-10:], start=1):
+            text = str(req.get("text") or "").strip()
+            if not text:
+                continue
+            req_lines.append(f"{idx}. {text}")
+        if not req_lines:
+            return out
+        appendix = (
+            "\n\nAdditional requirements received during run:\n"
+            + "\n".join(req_lines)
+            + "\n\nHonor these requirements while preserving original quality constraints."
+        )
+        out["instruction"] = (base + appendix).strip()
+        return out
+
     def _start(self, sid: str, st: dict, run_root: str, plan: dict) -> workflow.ActivityHandle:
         ag = self._agent(st)
         st_to, sc_to = self._timeouts(plan, st)
@@ -238,6 +326,7 @@ class GraphDispatchWorkflow:
             args=[run_root, plan, st],
             start_to_close_timeout=st_to,
             schedule_to_close_timeout=sc_to,
+            heartbeat_timeout=timedelta(seconds=90),
             retry_policy=retry,
         )
 

@@ -54,6 +54,7 @@ class Scheduler:
         self._overrides = self._load_overrides()
         self._history = self._load_history()
         self._circuits_lock = threading.Lock()
+        self._migrate_circuits_data()
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -164,6 +165,7 @@ class Scheduler:
                     await asyncio.to_thread(self._run_routine, rdef.name, None, "cron")
             await self._check_adaptive_routines()
             await asyncio.to_thread(self._tick_user_circuits)
+            await asyncio.to_thread(self._tick_eval_windows)
             await asyncio.sleep(30)
 
     async def _check_adaptive_routines(self) -> None:
@@ -518,6 +520,10 @@ class Scheduler:
 
     @property
     def _circuits_path(self) -> Path:
+        return self._state / "circuits.json"
+
+    @property
+    def _legacy_circuits_path(self) -> Path:
         return self._state / "recurring_circuits.json"
 
     @staticmethod
@@ -537,6 +543,42 @@ class Scheduler:
         except Exception:
             return None
 
+    def _tick_eval_windows(self) -> None:
+        runs = self._store.load_runs()
+        now = datetime.now(timezone.utc)
+        changed = False
+        expired: list[dict] = []
+        for row in runs:
+            status = str(row.get("run_status") or "").strip().lower()
+            if status not in {"awaiting_eval", "pending_review"}:
+                continue
+            deadline = self._parse_utc_iso(str(row.get("eval_deadline_utc") or ""))
+            if deadline is None:
+                continue
+            if deadline > now:
+                continue
+            row["run_status"] = "completed"
+            row["phase"] = "history"
+            row["updated_utc"] = self._utc_now_iso()
+            row["eval_expired_utc"] = row["updated_utc"]
+            row.pop("eval_deadline_utc", None)
+            expired.append(dict(row))
+            changed = True
+        if changed:
+            self._store.save_runs(runs)
+        for row in expired:
+            try:
+                self._nerve.emit(
+                    "run_eval_expired",
+                    {
+                        "run_id": str(row.get("run_id") or ""),
+                        "work_scale": str(row.get("work_scale") or ""),
+                        "campaign_id": str(row.get("campaign_id") or ""),
+                    },
+                )
+            except Exception:
+                continue
+
     @staticmethod
     def _normalize_tz(tz: str | None) -> str | None:
         value = str(tz or "UTC").strip() or "UTC"
@@ -551,9 +593,11 @@ class Scheduler:
             return []
         try:
             data = json.loads(self._circuits_path.read_text())
-            return data if isinstance(data, list) else []
+            if not isinstance(data, list):
+                return []
+            return [self._normalize_circuit_row(row) for row in data if isinstance(row, dict)]
         except Exception as exc:
-            logger.warning("Failed to load recurring_circuits.json: %s", exc)
+            logger.warning("Failed to load circuits.json: %s", exc)
             return []
 
     def _load_circuits(self) -> list[dict]:
@@ -569,6 +613,61 @@ class Scheduler:
     def _save_circuits(self, circuits: list[dict]) -> None:
         with self._circuits_lock:
             self._save_circuits_unlocked(circuits)
+
+    def _normalize_circuit_row(self, row: dict) -> dict:
+        trigger = row.get("trigger") if isinstance(row.get("trigger"), dict) else {}
+        circuit_id = str(row.get("circuit_id") or "").strip()
+        if not circuit_id:
+            circuit_id = f"circuit_{time.strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        name = str(row.get("name") or row.get("run_title") or row.get("title") or "").strip()
+        run_type = str(row.get("run_type") or "research_report").strip()
+        cron = str(row.get("cron") or trigger.get("cron") or "").strip()
+        tz = self._normalize_tz(str(row.get("tz") or trigger.get("tz") or "UTC")) or "UTC"
+        status = str(row.get("status") or "").strip().lower()
+        enabled = bool(row.get("enabled", True))
+        if status not in {"active", "paused", "cancelled"}:
+            status = "active" if enabled else "paused"
+        out = {
+            "circuit_id": circuit_id,
+            "name": name or circuit_id,
+            "run_title": name or circuit_id,
+            "prompt": str(row.get("prompt") or row.get("message") or "").strip(),
+            "run_type": run_type or "research_report",
+            "cron": cron,
+            "tz": tz,
+            "enabled": enabled,
+            "status": status,
+            "created_utc": str(row.get("created_utc") or self._utc_now_iso()),
+            "last_triggered_utc": str(row.get("last_triggered_utc") or ""),
+            "last_run_id": str(row.get("last_run_id") or ""),
+            "run_count": int(row.get("run_count") or 0),
+            "consecutive_failures": int(row.get("consecutive_failures") or 0),
+            "last_error": str(row.get("last_error") or ""),
+            "last_error_utc": str(row.get("last_error_utc") or ""),
+            "next_retry_utc": str(row.get("next_retry_utc") or ""),
+        }
+        return out
+
+    def _migrate_circuits_data(self) -> None:
+        with self._circuits_lock:
+            source = self._circuits_path
+            if not source.exists() and self._legacy_circuits_path.exists():
+                source = self._legacy_circuits_path
+            if not source.exists():
+                return
+            try:
+                raw = json.loads(source.read_text(encoding="utf-8"))
+            except Exception:
+                return
+            if not isinstance(raw, list):
+                return
+            migrated = [self._normalize_circuit_row(row) for row in raw if isinstance(row, dict)]
+            self._save_circuits_unlocked(migrated)
+            if source == self._legacy_circuits_path and self._legacy_circuits_path.exists():
+                try:
+                    self._legacy_circuits_path.unlink()
+                except Exception:
+                    pass
 
     def _patch_circuit_runtime(self, circuit_id: str, mutator: Any) -> dict | None:
         with self._circuits_lock:
@@ -627,6 +726,7 @@ class Scheduler:
             circuit: dict = {
                 "circuit_id": circuit_id,
                 "name": name,
+                "run_title": name,
                 "prompt": prompt,
                 "run_type": run_type,
                 "cron": cron,
@@ -671,6 +771,8 @@ class Scheduler:
                                 circuit["status"] = "active" if enabled else "paused"
                             continue
                         circuit[k] = v
+                        if k == "name":
+                            circuit["run_title"] = str(v)
                     self._save_circuits_unlocked(circuits)
                     return {"ok": True, "circuit": circuit}
         return {"ok": False, "error": f"Circuit not found: {circuit_id}"}
@@ -703,12 +805,37 @@ class Scheduler:
         if not self._dispatch:
             logger.warning("Circuit trigger skipped: dispatch not configured")
             return {"ok": False, "error": "dispatch_not_configured"}
+        run_type = str(circuit.get("run_type") or "research_report")
+        prompt = str(circuit.get("prompt") or "").strip()
+        cluster_by_run_type = {
+            "research_report": "clst_research_report",
+            "knowledge_synthesis": "clst_knowledge_synthesis",
+            "dev_project": "clst_dev_project",
+            "personal_plan": "clst_personal_plan",
+        }
+        cluster_id = cluster_by_run_type.get(run_type, "clst_dev_project")
         plan = {
             "title": circuit["name"],
-            "prompt": circuit["prompt"],
-            "run_type": circuit.get("run_type", "research_report"),
+            "run_title": str(circuit.get("run_title") or circuit.get("name") or "Circuit Run"),
+            "prompt": prompt,
+            "run_type": run_type,
             "circuit_id": circuit["circuit_id"],
             "circuit_name": circuit["name"],
+            "work_scale": "thread",
+            "rework_budget": 0,
+            "retry_max_attempts": 1,
+            "default_step_timeout_s": 180,
+            "steps": self._build_circuit_steps(run_type=run_type, prompt=prompt),
+            "semantic_spec": {
+                "cluster_id": cluster_id,
+                "objective": str(circuit.get("name") or run_type),
+                "artifact_types": ["report"],
+                "constraints": [],
+                "temporal_scope": "immediate",
+                "risk_level": "low",
+                "language": "zh",
+                "semantic_confidence": "high",
+            },
         }
         try:
             import asyncio as _asyncio
@@ -720,6 +847,19 @@ class Scheduler:
         except Exception as exc:
             logger.error("Circuit %s submit failed: %s", circuit.get("circuit_id"), exc, exc_info=True)
             return {"ok": False, "error": str(exc)[:200]}
+
+    def _build_circuit_steps(self, *, run_type: str, prompt: str) -> list[dict]:
+        # Circuit is a scheduler primitive: each trigger should produce one
+        # deterministic runnable step instead of replaying complex method DAGs.
+        base_prompt = prompt or f"请执行一次 {run_type} 类型的例行任务并给出结果。"
+        return [
+            {
+                "id": "step1",
+                "agent": "router",
+                "instruction": f"{base_prompt}\n\n最后一行输出 [DONE]。",
+                "timeout_s": 180,
+            }
+        ]
 
     def _tick_user_circuits(self) -> None:
         """Check and trigger due recurring user circuits."""

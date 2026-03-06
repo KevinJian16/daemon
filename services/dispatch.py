@@ -111,6 +111,11 @@ class Dispatch:
         run_type = str(plan.get("run_type") or "research_report")
         plan.setdefault("run_type", run_type)
         plan.setdefault("run_id", _new_run_id())
+        run_title = str(plan.get("run_title") or plan.get("title") or run_type or plan.get("run_id") or "").strip()
+        if not run_title:
+            run_title = str(plan.get("run_id") or _new_run_id())
+        plan["run_title"] = run_title[:200]
+        plan.setdefault("title", plan["run_title"])
 
         agent_defaults = self._agent_defaults_from_compass() or dict(self._agent_defaults)
         plan.setdefault("agent_concurrency_defaults", dict(agent_defaults))
@@ -149,6 +154,11 @@ class Dispatch:
         plan.setdefault("quality_profile", quality)
         default_timeout = int(self._compass.get_pref("default_step_timeout_s", "480") or 480)
         plan.setdefault("default_step_timeout_s", default_timeout)
+        try:
+            eval_window_hours = float(self._compass.get_pref("eval_window_hours", "2") or 2.0)
+        except Exception:
+            eval_window_hours = 2.0
+        plan.setdefault("eval_window_hours", max(0.25, min(eval_window_hours, 168.0)))
         plan.setdefault("model_primary", self._compass.get_pref("model_primary", ""))
         plan.setdefault("resource_budgets", self._compass.all_budgets())
 
@@ -593,7 +603,7 @@ class Dispatch:
                     "event": "run_started",
                     "payload": {
                         "run_id": str(plan.get("run_id") or ""),
-                        "title": str(plan.get("title") or plan.get("run_type") or "运行"),
+                        "run_title": str(plan.get("run_title") or plan.get("title") or plan.get("run_type") or "运行"),
                         "work_scale": str(plan.get("work_scale") or "thread"),
                         "run_type": str(plan.get("run_type") or ""),
                     },
@@ -612,15 +622,23 @@ class Dispatch:
         runs = self._store.load_runs()
         run_id = str(plan.get("run_id") or "")
         work_scale = str(plan.get("work_scale") or "")
+        run_title = str(plan.get("run_title") or plan.get("title") or run_id).strip()[:200]
+        phase = _phase_for_run_status(run_status)
         for row in runs:
             if str(row.get("run_id") or "") != run_id:
                 continue
             row["run_status"] = run_status
+            row["phase"] = phase
             row["updated_utc"] = _utc()
+            if run_title:
+                row["run_title"] = run_title
+                row["title"] = run_title
             if work_scale:
                 row["work_scale"] = work_scale
             if plan.get("campaign_id"):
                 row["campaign_id"] = str(plan.get("campaign_id") or "")
+            if plan.get("eval_window_hours") is not None:
+                row["eval_window_hours"] = float(plan.get("eval_window_hours") or 2.0)
             if plan.get("last_error"):
                 row["last_error"] = plan.get("last_error")
             if run_root:
@@ -638,15 +656,18 @@ class Dispatch:
             runs.append(
                 {
                     "run_id": run_id,
-                    "title": plan.get("title", ""),
+                    "run_title": run_title,
+                    "title": run_title,
                     "run_type": plan.get("run_type", ""),
                     "work_scale": work_scale or "thread",
                     "campaign_id": str(plan.get("campaign_id") or ""),
                     "run_status": run_status,
+                    "phase": phase,
                     "run_root": run_root,
                     "submitted_utc": _utc(),
                     "updated_utc": _utc(),
                     "priority": plan.get("priority", 5),
+                    "eval_window_hours": float(plan.get("eval_window_hours") or 2.0),
                     "semantic_cluster": plan.get("cluster_id", ""),
                     "strategy_id": plan.get("strategy_id", ""),
                     "strategy_stage": plan.get("strategy_stage", ""),
@@ -670,3 +691,12 @@ class Dispatch:
 def _new_run_id() -> str:
     ts = time.strftime("%Y%m%d%H%M%S", time.gmtime())
     return f"run_{ts}_{uuid.uuid4().hex[:6]}"
+
+
+def _phase_for_run_status(run_status: str) -> str:
+    status = str(run_status or "").strip().lower()
+    if status in {"running", "queued", "paused", "running_shadow", "cancel_requested", "cancelling"}:
+        return "running"
+    if status in {"awaiting_eval", "pending_review"}:
+        return "awaiting_eval"
+    return "history"

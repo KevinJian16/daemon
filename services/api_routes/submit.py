@@ -21,7 +21,7 @@ def register_submit_route(
             "submit_requested",
             {
                 "run_type": plan.get("run_type", ""),
-                "title": str(plan.get("title", ""))[:120],
+                "run_title": str(plan.get("run_title") or plan.get("title") or "")[:120],
                 "priority": plan.get("priority"),
             },
             request,

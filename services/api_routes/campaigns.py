@@ -109,6 +109,8 @@ def register_campaign_routes(app: FastAPI, *, ctx: Any) -> None:
         plan["_workflow_id"] = workflow_id
         plan["work_scale"] = "campaign"
         plan["campaign_confirmed"] = True
+        if isinstance(manifest.get("campaign_context"), list):
+            plan["campaign_context"] = [x for x in manifest.get("campaign_context") if isinstance(x, dict)][-32:]
 
         if campaign_phase == "milestone_waiting_feedback":
             result_payload = ctx.campaign_result_payload(campaign_id, current_idx)
@@ -211,19 +213,49 @@ def register_campaign_routes(app: FastAPI, *, ctx: Any) -> None:
             "decision": result.get("decision", {}),
         }
 
+    @app.post("/campaigns/{campaign_id}/milestones/{milestone_index}/retry")
+    async def retry_campaign_milestone(campaign_id: str, milestone_index: int):
+        manifest = ctx.load_campaign_manifest(campaign_id)
+        if not manifest:
+            raise HTTPException(status_code=404, detail="campaign not found")
+        campaign_phase = _campaign_phase(manifest).strip().lower()
+        campaign_status = _campaign_status(manifest).strip().lower()
+        if campaign_phase != "milestone_failed" and campaign_status != "awaiting_intervention":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "ok": False,
+                    "error": f"milestone_retry_not_allowed_in_campaign_phase:{campaign_phase}",
+                    "campaign_status": campaign_status,
+                },
+            )
+
+        class _Req:
+            async def json(self):
+                return {"resume_from": int(milestone_index), "confirmed": True}
+
+        return await resume_campaign(campaign_id, _Req())  # type: ignore[arg-type]
+
     @app.post("/campaigns/{campaign_id}/cancel")
     async def cancel_campaign(campaign_id: str):
         manifest = ctx.load_campaign_manifest(campaign_id)
         if not manifest:
             raise HTTPException(status_code=404, detail="campaign not found")
         workflow_id = str(manifest.get("workflow_id") or "")
+        child_workflow_id = str(manifest.get("current_child_workflow_id") or "")
         await ctx.ensure_temporal_client(retries=2, delay_s=0.3)
         temporal_client = ctx.get_temporal_client()
-        if temporal_client and workflow_id:
-            try:
-                await temporal_client.cancel(workflow_id)
-            except Exception as exc:
-                ctx.logger.warning("Campaign cancel failed workflow_id=%s: %s", workflow_id, exc)
+        if temporal_client:
+            if workflow_id:
+                try:
+                    await temporal_client.cancel(workflow_id)
+                except Exception as exc:
+                    ctx.logger.warning("Campaign cancel failed workflow_id=%s: %s", workflow_id, exc)
+            if child_workflow_id:
+                try:
+                    await temporal_client.cancel(child_workflow_id)
+                except Exception as exc:
+                    ctx.logger.warning("Campaign cancel failed child_workflow_id=%s: %s", child_workflow_id, exc)
         _set_campaign_state(manifest, campaign_status="cancelled", campaign_phase="cancelled")
         manifest["updated_utc"] = ctx.utc()
         ctx.save_campaign_manifest(campaign_id, manifest)
@@ -231,5 +263,6 @@ def register_campaign_routes(app: FastAPI, *, ctx: Any) -> None:
             "ok": True,
             "campaign_id": campaign_id,
             "workflow_id": workflow_id,
+            "child_workflow_id": child_workflow_id,
             "campaign_status": "cancelled",
         }

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -50,6 +52,68 @@ def register_basic_routes(
                 out.append(row)
         return out
 
+    def _phase_of(row: dict) -> str:
+        explicit = str(row.get("phase") or "").strip().lower()
+        if explicit in {"running", "awaiting_eval", "history"}:
+            return explicit
+        status = _run_status(row).lower()
+        if status in {"running", "queued", "paused", "running_shadow", "cancel_requested", "cancelling"}:
+            return "running"
+        if status in {"awaiting_eval", "pending_review"}:
+            return "awaiting_eval"
+        return "history"
+
+    def _filter_rows_by_phase(rows: list[dict], phase: str | None) -> list[dict]:
+        if not phase:
+            return rows
+        target = str(phase or "").strip().lower()
+        if target not in {"running", "awaiting_eval", "history"}:
+            return rows
+        return [row for row in rows if _phase_of(row) == target]
+
+    def _sort_runs(rows: list[dict]) -> list[dict]:
+        def _ts(row: dict) -> float:
+            for key in ("updated_utc", "submitted_utc", "created_utc"):
+                raw = str(row.get(key) or "").strip()
+                if not raw:
+                    continue
+                try:
+                    dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt.timestamp()
+                except Exception:
+                    continue
+            return 0.0
+        return sorted(rows, key=_ts, reverse=True)
+
+    def _expire_eval_windows(rows: list[dict]) -> tuple[list[dict], bool]:
+        now = datetime.now(timezone.utc)
+        changed = False
+        for row in rows:
+            status = _run_status(row).lower()
+            if status not in {"awaiting_eval", "pending_review"}:
+                continue
+            raw = str(row.get("eval_deadline_utc") or "").strip()
+            if not raw:
+                continue
+            try:
+                deadline = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if deadline.tzinfo is None:
+                    deadline = deadline.replace(tzinfo=timezone.utc)
+                deadline = deadline.astimezone(timezone.utc)
+            except Exception:
+                continue
+            if deadline > now:
+                continue
+            row["run_status"] = "completed"
+            row["phase"] = "history"
+            row["updated_utc"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+            row["eval_expired_utc"] = row["updated_utc"]
+            row.pop("eval_deadline_utc", None)
+            changed = True
+        return rows, changed
+
     @app.get("/health")
     async def health():
         temporal_connected = bool(await ensure_temporal_client(retries=1, delay_s=0.1))
@@ -86,15 +150,35 @@ def register_basic_routes(
         }
 
     @app.get("/runs")
-    def list_runs(request: Request, run_status: str | None = None, limit: int = 50):
-        rows = _filter_rows_by_run_status(store.load_runs(), run_status)
-        result = [run_view(row) for row in rows[-limit:]]
-        log_portal_event("runs_list", {"run_status": run_status, "count": len(result)}, request)
+    def list_runs(
+        request: Request,
+        run_status: str | None = None,
+        status: str | None = None,
+        phase: str | None = None,
+        limit: int = 50,
+    ):
+        target_status = run_status if run_status is not None else status
+        rows = store.load_runs()
+        rows, changed = _expire_eval_windows(rows)
+        if changed:
+            store.save_runs(rows)
+        rows = _filter_rows_by_run_status(rows, target_status)
+        rows = _filter_rows_by_phase(rows, phase)
+        rows = _sort_runs(rows)
+        result = [run_view(row) for row in rows[: max(1, min(limit, 500))]]
+        log_portal_event(
+            "runs_list",
+            {"run_status": target_status, "phase": phase, "count": len(result)},
+            request,
+        )
         return result
 
     @app.get("/runs/{run_id}")
     def get_run(run_id: str, request: Request):
         rows = store.load_runs()
+        rows, changed = _expire_eval_windows(rows)
+        if changed:
+            store.save_runs(rows)
         for row in rows:
             if str(row.get("run_id") or "") == run_id:
                 log_portal_event("run_get", {"run_id": run_id, "run_status": _run_status(row)}, request)
@@ -118,23 +202,59 @@ def register_basic_routes(
         log_portal_event("run_retry", {"run_id": run_id, "result_ok": bool(result.get("ok"))}, request)
         return result
 
+    def _workflow_ids_for_row(run_id: str, row: dict) -> list[str]:
+        plan = row.get("plan") if isinstance(row.get("plan"), dict) else {}
+        campaign_id = str(row.get("campaign_id") or plan.get("campaign_id") or "")
+        workflow_ids: list[str] = []
+        if campaign_id:
+            workflow_ids.append(str(plan.get("_workflow_id") or f"daemon-campaign-{campaign_id}"))
+        workflow_ids.append(str(plan.get("_workflow_id") or f"daemon-{run_id}"))
+        return [wid for wid in workflow_ids if wid]
+
+    async def _signal_workflows(
+        run_id: str,
+        row: dict,
+        *,
+        signal_name: str,
+        payload: dict | None = None,
+    ) -> str:
+        await ensure_temporal_client(retries=2, delay_s=0.3)
+        temporal_client = get_temporal_client()
+        if not temporal_client:
+            raise HTTPException(status_code=503, detail="temporal_unavailable")
+        workflow_ids = _workflow_ids_for_row(run_id, row)
+        if not workflow_ids:
+            raise HTTPException(status_code=409, detail="workflow_id_missing")
+
+        last_error = ""
+        accepted_workflow = ""
+        for workflow_id in workflow_ids:
+            try:
+                await temporal_client.signal(workflow_id, signal_name, payload or {})
+                accepted_workflow = workflow_id
+                break
+            except Exception as exc:
+                last_error = str(exc)[:240]
+        if not accepted_workflow:
+            raise HTTPException(status_code=409, detail={"ok": False, "error": f"run_signal_failed:{last_error}"})
+        return accepted_workflow
+
     @app.post("/runs/{run_id}/cancel")
     async def cancel_run(run_id: str, request: Request):
         rows = store.load_runs()
         row = next((r for r in rows if str(r.get("run_id") or "") == run_id), None)
         if not isinstance(row, dict):
             raise HTTPException(status_code=404, detail="run not found")
+        status = _run_status(row).lower()
+        if status in {"completed", "awaiting_eval", "pending_review", "cancelled", "failed"}:
+            raise HTTPException(status_code=409, detail=f"cancel_not_allowed_for_run_status:{status}")
 
         await ensure_temporal_client(retries=2, delay_s=0.3)
         temporal_client = get_temporal_client()
-        workflow_ids = []
-        plan = row.get("plan") if isinstance(row.get("plan"), dict) else {}
-        campaign_id = str(row.get("campaign_id") or plan.get("campaign_id") or "")
-        if campaign_id:
-            workflow_ids.append(str(plan.get("_workflow_id") or f"daemon-campaign-{campaign_id}"))
-        workflow_ids.append(str(plan.get("_workflow_id") or f"daemon-{run_id}"))
+        workflow_ids = _workflow_ids_for_row(run_id, row)
 
         cancel_error = ""
+        cancel_requested = False
         if temporal_client:
             for workflow_id in workflow_ids:
                 workflow_id = str(workflow_id or "").strip()
@@ -142,16 +262,18 @@ def register_basic_routes(
                     continue
                 try:
                     await temporal_client.cancel(workflow_id)
+                    cancel_requested = True
                     cancel_error = ""
                     break
                 except Exception as exc:
                     cancel_error = str(exc)[:240]
 
-        now = __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime())
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         for item in rows:
             if str(item.get("run_id") or "") != run_id:
                 continue
-            item["run_status"] = "cancelled"
+            item["run_status"] = "cancelling" if cancel_requested else "cancelled"
+            item["phase"] = "running" if cancel_requested else "history"
             item["updated_utc"] = now
             if cancel_error:
                 item["last_error"] = cancel_error
@@ -161,15 +283,102 @@ def register_basic_routes(
         return {
             "ok": True,
             "run_id": run_id,
-            "run_status": "cancelled",
+            "run_status": "cancelling" if cancel_requested else "cancelled",
             "cancel_error": cancel_error,
         }
 
+    async def _append_requirement(run_id: str, requirement: str, source: str = "portal") -> dict:
+        rows = store.load_runs()
+        row = next((r for r in rows if str(r.get("run_id") or "") == run_id), None)
+        if not isinstance(row, dict):
+            raise HTTPException(status_code=404, detail="run not found")
+        plan = row.get("plan") if isinstance(row.get("plan"), dict) else {}
+        work_scale = str(row.get("work_scale") or plan.get("work_scale") or "").strip().lower()
+        if work_scale == "pulse":
+            raise HTTPException(status_code=409, detail="append_not_supported_for_pulse")
+
+        payload = {
+            "text": requirement,
+            "source": source,
+            "appended_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        accepted_workflow = await _signal_workflows(
+            run_id,
+            row,
+            signal_name="append_requirement",
+            payload=payload,
+        )
+        return {
+            "ok": True,
+            "run_id": run_id,
+            "workflow_id": accepted_workflow,
+            "accepted": True,
+        }
+
+    @app.post("/runs/{run_id}/append")
+    async def append_run_requirement(run_id: str, request: Request):
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+        requirement = str(body.get("requirement") or body.get("text") or "").strip()
+        if not requirement:
+            raise HTTPException(status_code=400, detail="requirement_required")
+        result = await _append_requirement(run_id, requirement, source=str(body.get("source") or "portal"))
+        log_portal_event(
+            "run_append",
+            {"run_id": run_id, "workflow_id": result.get("workflow_id", ""), "requirement_len": len(requirement)},
+            request,
+        )
+        return result
+
     @app.post("/runs/{run_id}/pause")
     async def pause_run(run_id: str, request: Request):
-        # Pause requires workflow-level signal support; current workflows do not expose pause signals yet.
-        log_portal_event("run_pause_unsupported", {"run_id": run_id}, request)
-        raise HTTPException(status_code=501, detail="run_pause_not_supported")
+        rows = store.load_runs()
+        row = next((r for r in rows if str(r.get("run_id") or "") == run_id), None)
+        if not isinstance(row, dict):
+            raise HTTPException(status_code=404, detail="run not found")
+        work_scale = str(row.get("work_scale") or (row.get("plan") or {}).get("work_scale") or "").strip().lower()
+        if work_scale == "campaign":
+            raise HTTPException(status_code=409, detail="pause_not_supported_for_campaign")
+        status = _run_status(row).lower()
+        if status in {"completed", "cancelled", "failed", "awaiting_eval", "pending_review"}:
+            raise HTTPException(status_code=409, detail=f"pause_not_allowed_for_run_status:{status}")
+        workflow_id = await _signal_workflows(run_id, row, signal_name="pause_execution", payload={"source": "portal"})
+
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for item in rows:
+            if str(item.get("run_id") or "") != run_id:
+                continue
+            item["run_status"] = "paused"
+            item["phase"] = "running"
+            item["updated_utc"] = now
+            break
+        store.save_runs(rows)
+        log_portal_event("run_pause", {"run_id": run_id, "workflow_id": workflow_id}, request)
+        return {"ok": True, "run_id": run_id, "run_status": "paused", "workflow_id": workflow_id}
+
+    @app.post("/runs/{run_id}/resume")
+    async def resume_run(run_id: str, request: Request):
+        rows = store.load_runs()
+        row = next((r for r in rows if str(r.get("run_id") or "") == run_id), None)
+        if not isinstance(row, dict):
+            raise HTTPException(status_code=404, detail="run not found")
+        work_scale = str(row.get("work_scale") or (row.get("plan") or {}).get("work_scale") or "").strip().lower()
+        if work_scale == "campaign":
+            raise HTTPException(status_code=409, detail="resume_not_supported_for_campaign")
+        workflow_id = await _signal_workflows(run_id, row, signal_name="resume_execution", payload={"source": "portal"})
+
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for item in rows:
+            if str(item.get("run_id") or "") != run_id:
+                continue
+            item["run_status"] = "running"
+            item["phase"] = "running"
+            item["updated_utc"] = now
+            break
+        store.save_runs(rows)
+        log_portal_event("run_resume", {"run_id": run_id, "workflow_id": workflow_id}, request)
+        return {"ok": True, "run_id": run_id, "run_status": "running", "workflow_id": workflow_id}
 
     @app.post("/runs/{run_id}/redirect")
     async def redirect_run(run_id: str, request: Request):
@@ -179,20 +388,10 @@ def register_basic_routes(
         instruction = str(body.get("instruction") or "").strip()
         if not instruction:
             raise HTTPException(status_code=400, detail="instruction_required")
-        rows = store.load_runs()
-        row = next((r for r in rows if str(r.get("run_id") or "") == run_id), None)
-        if not isinstance(row, dict):
-            raise HTTPException(status_code=404, detail="run not found")
-        plan = row.get("plan") if isinstance(row.get("plan"), dict) else {}
-        redirect_log = plan.get("redirect_log") if isinstance(plan.get("redirect_log"), list) else []
-        now = __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime())
-        redirect_log.append({"instruction": instruction, "created_utc": now, "source": "portal"})
-        plan["redirect_log"] = redirect_log[-50:]
-        row["plan"] = plan
-        row["updated_utc"] = now
-        store.save_runs(rows)
+        # Redirect is now a semantic alias of append_requirement.
+        result = await _append_requirement(run_id, instruction, source="portal")
         log_portal_event("run_redirect", {"run_id": run_id, "instruction_len": len(instruction)}, request)
-        return {"ok": True, "run_id": run_id, "accepted": True}
+        return result
 
     @app.get("/outcome")
     def list_outcomes(request: Request, limit: int = 50):

@@ -7,6 +7,7 @@ import time
 import uuid
 
 from temporalio import activity
+from temporalio.exceptions import CancelledError as TemporalCancelledError
 
 
 async def run_openclaw_step(self, run_root: str, plan: dict, step: dict) -> dict:
@@ -40,59 +41,76 @@ async def run_openclaw_step(self, run_root: str, plan: dict, step: dict) -> dict
         else instruction
     )
     await asyncio.to_thread(self._openclaw.send, session_key, composed_message, agent_id)
+    activity.heartbeat({"run_id": run_id, "step_id": step_id, "phase": "sent"})
 
     deadline = time.time() + timeout_s
     poll_interval = 5
     last_content = ""
 
-    while time.time() < deadline:
-        await asyncio.sleep(poll_interval)
-        try:
-            messages = await asyncio.to_thread(self._openclaw.history, session_key, 8)
-        except Exception as exc:
-            activity.logger.warning("history poll failed for %s: %s", session_key, exc)
+    try:
+        while time.time() < deadline:
+            await asyncio.sleep(poll_interval)
+            activity.heartbeat({"run_id": run_id, "step_id": step_id, "phase": "poll"})
+            try:
+                messages = await asyncio.to_thread(self._openclaw.history, session_key, 8)
+            except Exception as exc:
+                activity.logger.warning("history poll failed for %s: %s", session_key, exc)
+                poll_interval = min(poll_interval * 1.2, 30)
+                continue
+            if not isinstance(messages, list):
+                messages = []
+
+            newest_assistant = None
+            for msg in reversed(messages):
+                if not isinstance(msg, dict):
+                    continue
+                role = str(msg.get("role") or "").strip().lower()
+                if role != "assistant":
+                    continue
+                content = str(msg.get("content") or msg.get("text") or "").strip()
+                if not content:
+                    continue
+                newest_assistant = msg
+                break
+
+            if newest_assistant:
+                content = str(newest_assistant.get("content") or newest_assistant.get("text") or "").strip()
+                if content:
+                    raw = newest_assistant.get("raw") if isinstance(newest_assistant.get("raw"), dict) else {}
+                    stop_reason = str(raw.get("stopReason") or "").strip().lower()
+                    has_done_signal = any(
+                        signal in content.lower()
+                        for signal in ["[done]", "[complete]", "run complete", "completed successfully"]
+                    )
+                    if content != last_content:
+                        last_content = content
+                    if has_done_signal or stop_reason in {"stop", "end_turn"}:
+                        output_path = self._write_step_output(run_root, step_id, content)
+                        result = {
+                            "status": "ok",
+                            "step_id": step_id,
+                            "agent": agent_id,
+                            "session_key": session_key,
+                            "output_path": output_path,
+                        }
+                        self._write_step_checkpoint(run_root, step_id, result)
+                        return result
+
             poll_interval = min(poll_interval * 1.2, 30)
-            continue
-        if not isinstance(messages, list):
-            messages = []
-
-        newest_assistant = None
-        for msg in reversed(messages):
-            if not isinstance(msg, dict):
-                continue
-            role = str(msg.get("role") or "").strip().lower()
-            if role != "assistant":
-                continue
-            content = str(msg.get("content") or msg.get("text") or "").strip()
-            if not content:
-                continue
-            newest_assistant = msg
-            break
-
-        if newest_assistant:
-            content = str(newest_assistant.get("content") or newest_assistant.get("text") or "").strip()
-            if content:
-                raw = newest_assistant.get("raw") if isinstance(newest_assistant.get("raw"), dict) else {}
-                stop_reason = str(raw.get("stopReason") or "").strip().lower()
-                has_done_signal = any(
-                    signal in content.lower()
-                    for signal in ["[done]", "[complete]", "run complete", "completed successfully"]
-                )
-                if content != last_content:
-                    last_content = content
-                if has_done_signal or stop_reason in {"stop", "end_turn"}:
-                    output_path = self._write_step_output(run_root, step_id, content)
-                    result = {
-                        "status": "ok",
-                        "step_id": step_id,
-                        "agent": agent_id,
-                        "session_key": session_key,
-                        "output_path": output_path,
-                    }
-                    self._write_step_checkpoint(run_root, step_id, result)
-                    return result
-
-        poll_interval = min(poll_interval * 1.2, 30)
+    except (TemporalCancelledError, asyncio.CancelledError):
+        result = {
+            "status": "cancelled",
+            "step_id": step_id,
+            "agent": agent_id,
+            "session_key": session_key,
+            "error": "cancelled",
+        }
+        self._write_step_checkpoint(run_root, step_id, result)
+        try:
+            self._update_run_status(run_root, plan, "cancelled")
+        except Exception:
+            pass
+        raise
 
     activity.logger.warning("Step %s timed out after %ss — marking degraded", step_id, timeout_s)
     result = {

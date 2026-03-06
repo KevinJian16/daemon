@@ -449,7 +449,7 @@ Router 生成 Weave Plan 前必须先做 provider budget 预检：
 | Python 代码（activities/routines 等） | 仅写入 proposals，不自动执行 | 必须人工审批 |
 | config/*.json | sandbox 自动尝试，测试通过后写回 | 无需人工，Telegram 告知 |
 
-proposals 积累 ≥5 条时，Telegram 推送摘要给用户，用户回复后系统采纳或忽略。
+proposals 积累 ≥5 条时，Telegram 推送摘要给用户，用户打开 Portal 对话页回复意见后系统采纳或忽略（Telegram 仅推通知，不接受输入）。
 
 **Skill 改动生效前必须通过 §21 定义的 Skill Benchmark 验证，不得跳过。**
 
@@ -509,38 +509,69 @@ Milestone 按**语义相变点**划分，而非按大小机械切分——即产
 
 Milestone 列表由 analyze agent 在 Phase 0 规划阶段生成，每条包含：`名称 + 预期产出描述 + 输入依赖`。用户在确认计划表时看到的就是这个列表。
 
+**结构约束：**
+- Milestone 之间严格线性顺序，不引入 DAG / 并行分支
+- "同时抓取多个来源"属于单个 milestone 内部的并行 activity，不提升为并行 milestone
+- 条件分支通过继续/中止门控（见 §17.3）实现，不做 milestone 级别的 if/else
+
+**Campaign context 传递：**
+每个 milestone 完成后，review agent 生成的摘要写入 `manifest.json` 的 `campaign_context` 累积字段。下一个 milestone 执行时，Campaign context 作为额外输入注入其 Weave Plan，使后续 milestone 能在前序产出基础上推进（显式、可追溯）。Memory fabric 负责跨 Campaign 的长期学习，Campaign context 只在当次 Campaign 内传递。
+
 ### 17.3 执行流程
 
 ```
 Phase 0  规划（analyze complexity probe）
   → 生成结构化计划（milestone 列表）
-  → Telegram 推送计划表 → 等用户一次性确认（唯一主动门控点）
+  → Portal 对话框呈现计划表 → 等用户一次性确认（唯一主动门控点）
+  → 用户拒绝 → campaign 取消
 
-Phase 1..N  逐 milestone 执行（每个 milestone = Thread 级 workflow）
-  执行完成
-  → step 1: review rubric 评分（系统自动）
-      客观不通过 → 直接 rework，不打扰用户（最多 2 次）
-      超出 rework 预算 → Telegram 告警，campaign 暂停等人工介入
-  → step 2（仅客观通过后）: generate_user_feedback_survey → Telegram/Portal 推送
-      用户满意 → Telegram 播报进度，自动开始下一个 milestone
-      用户不满意 → rework（用户反馈作为 hint，最多 1 次）
-      用户不满意且已 rework → Telegram 告警，暂停等人工介入
+Phase 1..N  逐 milestone 执行（每个 milestone 行为 = Thread，Campaign 全程常驻运行中页）
+  执行中
+  → Portal 运行中页显示"执行中 · milestone N/总数"，有取消整个 Campaign 按钮
+
+  执行失败（review 不通过，超出 rework 预算）
+  → Telegram 告警"milestone N 执行失败"
+  → Portal 运行中页显示 milestone 失败状态，出现**重试 / 中止 Campaign** 按钮
+  → 用户选重试 → milestone 重新执行（视为新的执行实例）
+  → 用户选中止 → campaign 取消，状态写 `cancelled`
+  → 用户不操作 → Campaign 保持暂停，等待人工介入
+
+  执行成功
+  → review rubric 评分通过 → 生成 milestone 摘要 → 追加到 manifest.campaign_context
+  → milestone 产出写入 Drive
+  → Telegram 推送"里程碑 N 完成"通知
+  → milestone 独立进入待评价页（行为与 Thread 完全相同）：
+      Portal 运行中页同步显示"等待 milestone N 评价 · 剩余 Xh Xm"
+      用户在窗口期内评价并选择继续 → 自动开始下一个 milestone
+      用户在窗口期内评价并选择中止 → campaign 取消
+      窗口期到期无操作 → 自动继续下一个 milestone，Telegram 告知已自动推进
 
 Phase N+1  Synthesis（强制，不可省略）
   analyze + review → 连贯性检查 + 最终质量分
-  → Telegram 推送最终评价问卷（用户对整体 campaign 评价）
   render → 统一交付物
-  apply → 交付 + Telegram 完成通知
+  apply → 交付 + Telegram 完成通知（用户去 Portal 历史页查看）
 ```
 
 ### 17.4 Campaign State 结构
 
 ```
 state/campaigns/<campaign_id>/
-  manifest.json          # 计划表、milestone 列表、当前 phase、用户确认记录
+  manifest.json          # 计划表、milestone 列表、当前 phase、用户确认记录、campaign_context
   milestones/
     <n>/
       result.json        # 执行结果、review 评分、用户反馈、最终决策、rework 次数
+```
+
+`manifest.json` 的 `campaign_context` 字段（累积追加，只增不删）：
+```json
+"campaign_context": [
+  {
+    "milestone_n": 1,
+    "summary": "review agent 生成的简述，含关键发现",
+    "drive_links": ["https://drive.google.com/..."],
+    "completed_utc": "2026-03-06T10:00:00Z"
+  }
+]
 ```
 
 ### 17.5 评分体系（三层，严格先后）
@@ -559,10 +590,11 @@ state/campaigns/<campaign_id>/
 
 ### 17.6 Fail-Closed 规则
 
-- milestone 客观评分超出 rework 预算（默认 2 次）→ campaign 暂停，Telegram 告警
-- 用户评价不满意超出 rework 预算（默认 1 次）→ campaign 暂停，Telegram 告警
+- milestone 执行失败（超出 rework 预算）→ Telegram 告警 → Campaign 暂停 → 用户在 Portal 运行中页选择**重试或中止**
 - synthesis 质量门失败 → 不交付，Telegram 告警
 - 用户拒绝计划确认 → campaign 取消，状态写 `cancelled`
+- 用户在评价窗口期选择中止 → campaign 取消，状态写 `cancelled`
+- 用户不操作（窗口期到期）→ 自动继续，**不视为失败**
 
 ---
 
@@ -613,7 +645,7 @@ state/campaigns/<campaign_id>/
   3. 有无明显遗漏或偏差
   4. 是否需要调整下一个 milestone 的方向
 
-问卷通过 Portal 或 Telegram 推送，不使用固定模板，每次问题内容随产出内容不同。
+问卷通过 **Portal 待评价页**呈现，不使用固定模板，每次问题内容随产出内容不同。Telegram 仅推完成通知，不推问卷本身。
 
 ### 19.2 反馈写入规则
 
@@ -625,6 +657,46 @@ state/campaigns/<campaign_id>/
 ### 19.3 整体质量学习位置
 
 用户对整体 campaign 的最终评分（synthesis 结束后）写入 `fabric/memory.py` 作为一条 `human` 来源的 Memory unit，摘要格式：运行类型 + 关键策略 + 用户评分 + 主要反馈。这是最高质量的学习输入。
+
+### 19.4 用户评价对系统校验的影响
+
+用户评价永远是 optional 附加输入：
+- 未评价、部分作答、超窗口期——均不影响 run 的 `completed` 状态
+- `POST /runs/{run_id}/feedback` 接受 partial payload，无必填约束
+- Spine learn 例程遇到空或不完整用户反馈时静默跳过，不报错
+
+**系统内置 review（review agent）与用户评价严格分离**：review agent 是 pipeline 必要步骤，通不过则进入 rework/fail 流程，与用户评价无关。
+
+---
+
+## 19A. 评价窗口期机制（Eval Window）
+
+### 19A.1 规则
+
+run 执行完成 → 进入评价窗口期（`awaiting_eval` 状态）→ 窗口期内用户可在 Portal 做完整评价：
+
+| 情形 | 结果 |
+|---|---|
+| 用户在窗口期内完成评价 | 评价数据写入 Memory，run 立即 `completed` |
+| 用户在窗口期内部分回答 | 已回答部分写入，run 立即 `completed` |
+| 窗口期到期，无任何评价 | run 自动 `completed`，无评价数据 |
+| Campaign milestone 窗口期到期 | milestone 自动 `passed`，Campaign 继续，Telegram 推送告知 |
+
+**窗口期时长**：Norm 配置项 `eval_window_hours`，默认 2 小时，在 Console Norm 面板修改。
+
+### 19A.2 Circuit 特殊行为
+
+Circuit 每个实例执行完成 → 立即 `completed`（不被窗口期阻塞），但在窗口期内出现在 Portal 待评价页供用户可选评价。窗口期过后移入历史页。
+
+### 19A.3 Portal 三页结构
+
+| 页面 | 包含内容 |
+|---|---|
+| **运行中** | `run_status = running` 的 run |
+| **待评价** | 处于评价窗口期内的 run（含 Circuit 实例），显示倒计时 |
+| **历史** | 已过窗口期的所有 run，可追加纯文字评语 |
+
+详见 `.ref/INTERFACE_DESIGN.md`。
 
 ---
 
@@ -828,13 +900,16 @@ POST   /circuits/{id}/trigger  手动立即触发一次
 
 ### 22.3 用户交互入口
 
-- **Telegram**：`/circuits` 列表；`取消回路 <id>` 断路
-- **Console Schedules 面板**：Circuit 列表，含状态、最近运行、次数、暂停/断路/立即触发
+- **Portal Circuit 页**：Circuit 列表，含状态、最近触发时间、次数、暂停 / 立即触发 / 删除；创建通过对话框发起（Router 识别 Circuit 意图）
+- **Console Schedules 面板**：Circuit 列表只读，供运维观察
+
+Telegram 不接受 Circuit 操作命令，仅推送实例完成通知。
 
 ### 22.4 实施状态
 
 | 功能 | 状态 |
 |---|---|
 | cron 触发 + CRUD API | ✅ 已实现（代码待从 chains 重命名为 circuits） |
-| Console UI（Schedules 面板 Circuit 区块） | ✅ 已实现 |
-| Telegram 命令 | ✅ 已实现 |
+| Console UI（Schedules 面板 Circuit 区块，只读） | ✅ 已实现 |
+| Portal Circuit 页（CRUD） | ❌ 待实现 |
+| Telegram Circuit 命令 | ❌ 废弃（Telegram 改为纯推送）|

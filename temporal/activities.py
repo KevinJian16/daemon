@@ -143,6 +143,7 @@ class DaemonActivities:
         # Embed run/strategy contract so Agent sees active semantic + governance context.
         context["execution_contract"] = {
             "run_id": str(plan.get("run_id") or ""),
+            "run_title": str(plan.get("run_title") or plan.get("title") or ""),
             "cluster_id": str(plan.get("cluster_id") or ""),
             "semantic_spec": plan.get("semantic_spec") if isinstance(plan.get("semantic_spec"), dict) else {},
             "strategy_id": str(plan.get("strategy_id") or ""),
@@ -152,6 +153,9 @@ class DaemonActivities:
             "capability_id": str(step.get("capability_id") or ""),
             "quality_contract_id": str(step.get("quality_contract_id") or ""),
         }
+        campaign_context = plan.get("campaign_context") if isinstance(plan.get("campaign_context"), list) else []
+        if campaign_context:
+            context["campaign_context"] = campaign_context[-8:]
         return context
 
     def _apply_context_window_precheck(
@@ -367,7 +371,7 @@ class DaemonActivities:
         run_id = str(plan.get("run_id") or "")
         work_scale = str(plan.get("work_scale") or plan.get("work_scale") or "thread").strip().lower() or "thread"
         run_type = str(plan.get("run_type") or "")
-        title = str(plan.get("title") or run_id)[:200]
+        title = str(plan.get("run_title") or plan.get("title") or run_id)[:200]
         channels = ["portal", "telegram"]
         required = work_scale in {"pulse", "thread", "campaign"}
         if work_scale == "campaign":
@@ -706,7 +710,7 @@ class DaemonActivities:
     ) -> Path:
         run_type = str(plan.get("run_type") or "manual")
         run_id = str(plan.get("run_id") or uuid.uuid4().hex[:8])
-        raw_title = str(plan.get("title") or run_type)
+        raw_title = str(plan.get("run_title") or plan.get("title") or run_type)
         title = raw_title[:60].replace("/", "-").replace(":", "-").strip()
         root = outcome_root or self._resolve_outcome_root()
 
@@ -781,7 +785,7 @@ class DaemonActivities:
         entry = {
             "path": rel_path,
             "drive_path": rel_path,  # run_id → drive_path mapping for Portal lookup
-            "title": plan.get("title", ""),
+            "title": plan.get("run_title", plan.get("title", "")),
             "run_type": plan.get("run_type", "manual"),
             "run_id": plan.get("run_id", ""),
             "work_scale": plan.get("work_scale", ""),
@@ -803,11 +807,37 @@ class DaemonActivities:
         run_id = str(plan.get("run_id") or "")
         work_scale = str(plan.get("work_scale") or "")
         last_error = str(plan.get("last_error") or "")
+        now_utc = _utc()
+        requested_status = str(run_status or "").strip()
+        final_status = requested_status
+        phase = "history"
+        if requested_status in {"running", "queued", "paused", "running_shadow", "cancel_requested", "cancelling"}:
+            phase = "running"
+        elif requested_status in {"awaiting_eval", "pending_review"}:
+            phase = "awaiting_eval"
+        elif requested_status == "completed":
+            # Eval window is optional and non-blocking for completion semantics.
+            # We keep run in awaiting_eval phase until timeout or feedback submit.
+            final_status = "awaiting_eval"
+            phase = "awaiting_eval"
+
+        try:
+            eval_window_hours = float(plan.get("eval_window_hours") or 2.0)
+        except Exception:
+            eval_window_hours = 2.0
+        eval_window_hours = max(0.25, min(eval_window_hours, 168.0))
+        deadline_utc = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(time.time() + int(eval_window_hours * 3600)),
+        )
         for row in runs:
             if row.get("run_id") == run_id:
-                row["run_status"] = run_status
-                row["updated_utc"] = _utc()
+                row["run_status"] = final_status
+                row["phase"] = phase
+                row["updated_utc"] = now_utc
                 row["run_id"] = run_id
+                row["run_title"] = str(plan.get("run_title") or plan.get("title") or row.get("run_title") or "")
+                row["title"] = row.get("run_title") or row.get("title") or ""
                 if work_scale:
                     row["work_scale"] = work_scale
                 if plan.get("campaign_id"):
@@ -816,20 +846,33 @@ class DaemonActivities:
                     row["last_error"] = last_error
                 if outcome_path:
                     row["outcome_path"] = outcome_path
+                if final_status == "awaiting_eval":
+                    row["exec_completed_utc"] = now_utc
+                    row["eval_window_hours"] = eval_window_hours
+                    row["eval_deadline_utc"] = deadline_utc
+                elif final_status in {"completed", "completed_shadow", "failed", "cancelled"}:
+                    row.pop("eval_deadline_utc", None)
                 break
         else:
             row = {
                 "run_id": run_id,
+                "run_title": str(plan.get("run_title") or plan.get("title") or run_id),
+                "title": str(plan.get("run_title") or plan.get("title") or run_id),
                 "work_scale": work_scale,
                 "campaign_id": str(plan.get("campaign_id") or ""),
-                "run_status": run_status,
-                "updated_utc": _utc(),
+                "run_status": final_status,
+                "phase": phase,
+                "updated_utc": now_utc,
                 "run_root": run_root,
             }
             if last_error:
                 row["last_error"] = last_error
             if outcome_path:
                 row["outcome_path"] = outcome_path
+            if final_status == "awaiting_eval":
+                row["exec_completed_utc"] = now_utc
+                row["eval_window_hours"] = eval_window_hours
+                row["eval_deadline_utc"] = deadline_utc
             runs.append(row)
         self._store.save_runs(runs)
 

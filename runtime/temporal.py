@@ -59,6 +59,10 @@ class TemporalClient:
         handle = self._client.get_workflow_handle(workflow_id)
         await handle.cancel()
 
+    async def signal(self, workflow_id: str, signal_name: str, payload: dict | None = None) -> None:
+        handle = self._client.get_workflow_handle(workflow_id)
+        await handle.signal(signal_name, payload or {})
+
     async def status(self, workflow_id: str) -> str:
         try:
             handle = self._client.get_workflow_handle(workflow_id)

@@ -242,12 +242,17 @@ input,textarea{font-family:inherit}
 #det-header{padding:20px 28px 14px;border-bottom:1px solid var(--border);flex-shrink:0}
 #det-title{font-size:17px;font-weight:600;line-height:1.3;margin-bottom:8px}
 #det-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+#cir-header{padding:20px 28px 14px;border-bottom:1px solid var(--border);flex-shrink:0}
+#cir-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .sbadge{
   display:inline-flex;align-items:center;gap:4px;
   font-size:11px;font-weight:500;padding:3px 9px;border-radius:20px;
 }
 .s-running {background:rgba(29,78,216,.1);color:var(--blue)}
 .s-queued  {background:var(--hover);color:var(--muted)}
+.s-paused {background:rgba(29,78,216,.1);color:var(--blue)}
+.s-cancelling {background:rgba(180,83,9,.1);color:var(--amber)}
+.s-awaiting_eval{background:rgba(180,83,9,.1);color:var(--amber)}
 .s-completed,.s-done{background:rgba(21,128,61,.1);color:var(--green)}
 .s-failed,.s-error{background:rgba(185,28,28,.1);color:var(--red)}
 .s-cancelled{background:var(--hover);color:var(--muted)}
@@ -262,6 +267,7 @@ input,textarea{font-family:inherit}
 #det-controls.hidden{display:none}
 
 #det-body{flex:1;overflow-y:auto;padding:24px 28px}
+#cir-body{flex:1;overflow-y:auto;padding:24px 28px}
 
 .prog-track{background:var(--hover);border-radius:4px;height:3px;margin:12px 0;overflow:hidden}
 .prog-fill{height:100%;background:var(--blue);border-radius:4px;transition:width .5s ease}
@@ -296,6 +302,39 @@ input,textarea{font-family:inherit}
 #output-body pre code{background:none;padding:0}
 #output-body blockquote{border-left:3px solid var(--border);padding-left:14px;color:var(--muted);margin:12px 0}
 #output-body iframe{width:100%;min-height:480px;border:1px solid var(--border);border-radius:var(--r);display:block}
+
+/* ── Circuits ───────────────────────────────────────────── */
+#circuits-wrap{
+  border:1px solid var(--border);
+  border-radius:var(--r);
+  overflow:hidden;
+}
+#circuits-table{
+  width:100%;
+  border-collapse:collapse;
+  table-layout:fixed;
+}
+#circuits-table thead th{
+  text-align:left;
+  font-size:11px;
+  color:var(--muted);
+  background:var(--surface);
+  border-bottom:1px solid var(--border);
+  padding:10px 12px;
+  letter-spacing:.2px;
+}
+#circuits-table tbody td{
+  padding:10px 12px;
+  border-bottom:1px solid var(--border);
+  vertical-align:middle;
+}
+#circuits-table tbody tr:last-child td{border-bottom:none}
+#circuits-table tbody tr.active{background:var(--accent-s)}
+.cir-actions{
+  display:flex;
+  gap:6px;
+  flex-wrap:wrap;
+}
 
 /* ── Rating ─────────────────────────────────────────────── */
 #rating-wrap{margin-top:36px;padding-top:24px;border-top:1px solid var(--border)}
@@ -368,6 +407,8 @@ input,textarea{font-family:inherit}
   #det-header { padding: 16px 20px 12px; }
   #det-body { padding: 18px 20px; }
   #det-controls { padding: 8px 20px; }
+  #cir-header { padding: 16px 20px 12px; }
+  #cir-body { padding: 18px 20px; }
 }
 
 @media (max-width: 760px) {
@@ -425,11 +466,31 @@ input,textarea{font-family:inherit}
     justify-content: center;
   }
   #det-body { padding: 14px; }
+  #cir-header { padding: 14px 14px 10px; }
+  #cir-body { padding: 14px; }
   #output-body {
     font-size: 13px;
     line-height: 1.7;
   }
   #output-body iframe { min-height: 320px; }
+  #circuits-table {
+    table-layout:auto;
+  }
+  #circuits-table thead {
+    display:none;
+  }
+  #circuits-table tbody tr{
+    display:block;
+    padding:10px 0;
+  }
+  #circuits-table tbody td{
+    display:block;
+    border-bottom:none;
+    padding:3px 10px;
+  }
+  #circuits-table tbody tr:not(:last-child){
+    border-bottom:1px solid var(--border);
+  }
 
   #q-choices {
     display: grid;

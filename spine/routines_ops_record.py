@@ -29,7 +29,7 @@ def run_record(self, run_id: str, plan: dict, step_results: list[dict], outcome:
                 "run_id": run_id,
                 "steps": len(step_results),
                 "failed_steps": sum(1 for r in step_results if r.get("status") == "error"),
-                "plan_title": plan.get("title", "")[:100],
+                "plan_title": str(plan.get("run_title") or plan.get("title") or "")[:100],
             }
             self.playbook.evaluate(method_id, run_id, status, score, eval_detail)
             ctx.step("playbook_eval", {"method_id": method_id, "outcome": status})

@@ -375,7 +375,7 @@ class DeliveryService:
     def _archive(self, run_root: str, plan: dict, render_file: Path) -> Path:
         run_type = str(plan.get("run_type") or "manual")
         run_id = str(plan.get("run_id") or uuid.uuid4().hex[:8])
-        raw_title = str(plan.get("title") or run_type)
+        raw_title = str(plan.get("run_title") or plan.get("title") or run_type)
         title = raw_title[:60].replace("/", "-").replace(":", "-").strip()
         outcome_root = self._resolve_outcome_root()
 
@@ -414,7 +414,7 @@ class DeliveryService:
         index.append({
             "path": rel_path,
             "drive_path": rel_path,  # run_id → drive_path mapping for Portal lookup
-            "title": plan.get("title", ""),
+            "title": plan.get("run_title", plan.get("title", "")),
             "run_type": plan.get("run_type", "manual"),
             "run_id": plan.get("run_id", ""),
             "delivered_utc": _utc(),
@@ -441,11 +441,12 @@ class DeliveryService:
             "event": "run_completed",
             "payload": {
                 "run_id": str(plan.get("run_id") or ""),
-                "title": str(plan.get("title") or plan.get("run_type") or "任务"),
+                "run_title": str(plan.get("run_title") or plan.get("title") or plan.get("run_type") or "运行"),
                 "summary": content[:1200].strip(),
                 "score": round(quality_score, 4),
                 "run_type": str(plan.get("run_type") or ""),
                 "work_scale": str(plan.get("work_scale") or "thread"),
+                "circuit_id": str(plan.get("circuit_id") or ""),
             },
         }
         try:

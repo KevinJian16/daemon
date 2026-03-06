@@ -11,9 +11,14 @@ async function runPause(){
   try{ await api('/runs/'+curRunId+'/pause',{method:'POST'}); renderNav(); }
   catch(e){ alert('Error: '+e.message); }
 }
+async function runResume(){
+  if(!curRunId) return;
+  try{ await api('/runs/'+curRunId+'/resume',{method:'POST'}); renderNav(); }
+  catch(e){ alert('Error: '+e.message); }
+}
 async function runRedirect(){
   if(!curRunId) return;
   const ins=prompt(t('redirectPrompt')); if(!ins) return;
-  try{ await api('/runs/'+curRunId+'/redirect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({instruction:ins})}); renderNav(); }
+  try{ await api('/runs/'+curRunId+'/append',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({requirement:ins,source:'portal'})}); renderNav(); }
   catch(e){ alert('Error: '+e.message); }
 }

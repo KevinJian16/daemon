@@ -20,6 +20,51 @@ async function composeSend(){
   addMsg('user',msg);
   const thinking=addMsg('system','…');
   try{
+    let running=[];
+    try{ running=await api('/runs?phase=running&limit=5'); }catch(_){}
+    const active=(running&&running[0])||null;
+    const lower=msg.toLowerCase();
+    const isCancel=lower==='cancel'||msg==='取消';
+    const isPause=lower==='pause'||msg==='暂停';
+    const isResume=lower==='resume'||msg==='继续';
+    if(active&&active.run_id){
+      if(isCancel){
+        await api('/runs/'+encodeURIComponent(active.run_id)+'/cancel',{method:'POST'});
+        thinking.remove(); addMsg('assistant',`已发送取消请求：${active.run_title||active.title||active.run_id}`);
+        setTimeout(renderNav,500);
+        return;
+      }
+      if(isPause){
+        try{
+          await api('/runs/'+encodeURIComponent(active.run_id)+'/pause',{method:'POST'});
+          thinking.remove(); addMsg('assistant',`已发送暂停请求：${active.run_title||active.title||active.run_id}`);
+        }catch(e){
+          thinking.remove(); addMsg('assistant','暂停暂不支持，建议直接使用取消。');
+        }
+        setTimeout(renderNav,500);
+        return;
+      }
+      if(isResume){
+        try{
+          await api('/runs/'+encodeURIComponent(active.run_id)+'/resume',{method:'POST'});
+          thinking.remove(); addMsg('assistant',`已发送继续请求：${active.run_title||active.title||active.run_id}`);
+        }catch(e){
+          thinking.remove(); addMsg('assistant','继续暂不支持，建议在 Portal 面板中继续操作。');
+        }
+        setTimeout(renderNav,500);
+        return;
+      }
+      await api('/runs/'+encodeURIComponent(active.run_id)+'/append',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({requirement:msg,source:'portal'})
+      });
+      thinking.remove();
+      addMsg('assistant',`已追加到运行：${active.run_title||active.title||active.run_id}`);
+      setTimeout(renderNav,500);
+      return;
+    }
+
     if(!sessId){ const s=await api('/chat/session',{method:'POST'}); sessId=s.session_id; }
     const d=await api('/chat/'+sessId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg})});
     thinking.remove(); addMsg('assistant',d.content||'');

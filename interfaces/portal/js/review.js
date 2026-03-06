@@ -111,7 +111,7 @@ async function submitRating(){
   }
   if(note) payload.comment=note;
   try{
-    await api('/feedback/'+curRunId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    await api('/runs/'+curRunId+'/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     st.textContent=t('submitOk'); st.className='ok';
     await showRating(curRunId);
     setTimeout(renderNav,500);
@@ -125,7 +125,7 @@ async function submitAppend(){
   const st=document.getElementById('append-status');
   btn.disabled=true; st.textContent=t('submitting'); st.className='';
   try{
-    await api('/feedback/'+curRunId+'/append',{
+    await api('/runs/'+curRunId+'/feedback/append',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({comment:note, source:'portal'}),
@@ -139,4 +139,3 @@ async function submitAppend(){
     btn.disabled=false;
   }
 }
-

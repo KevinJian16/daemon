@@ -98,6 +98,17 @@ def normalize_openclaw_config(oc_home: Path) -> dict:
             router["default"] = True
             report["updated"] = True
             report["changes"].append("agents.list.default=router")
+        # Ensure router can spawn canonical daemon agents when using sessions_spawn.
+        subagents = router.get("subagents")
+        if not isinstance(subagents, dict):
+            subagents = {}
+            router["subagents"] = subagents
+        allow_agents = subagents.get("allowAgents")
+        desired_allow = [a for a in CANONICAL_AGENTS if a]
+        if not isinstance(allow_agents, list) or sorted(str(x) for x in allow_agents) != sorted(desired_allow):
+            subagents["allowAgents"] = desired_allow
+            report["updated"] = True
+            report["changes"].append("router.subagents.allowAgents=canonical")
 
     desired_default_workspace = (oc_home / "workspace" / "_default").resolve()
     current_workspace = str(defaults.get("workspace") or "").strip()
@@ -114,6 +125,17 @@ def normalize_openclaw_config(oc_home: Path) -> dict:
         desired_default_workspace.mkdir(parents=True, exist_ok=True)
         report["updated"] = True
         report["changes"].append(f"agents.defaults.workspace={desired_default_workspace}")
+
+    gateway = cfg.get("gateway")
+    if isinstance(gateway, dict):
+        tailscale = gateway.get("tailscale")
+        if isinstance(tailscale, dict):
+            # OpenClaw 2026.3.x does not accept persisted runtime-discovery keys here.
+            for k in ("url", "port"):
+                if k in tailscale:
+                    tailscale.pop(k, None)
+                    report["updated"] = True
+                    report["changes"].append(f"gateway.tailscale.removed:{k}")
 
     if report["updated"]:
         cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -8,19 +8,19 @@
 
 ## 优先级 1：立即执行（阻塞主线）
 
-### 1.1 术语对齐：task → Pulse / Thread / Campaign
+### 1.1 术语对齐：run + Pulse / Thread / Campaign
 
-代码、API、UI 全面将 `task` 替换为正确术语。V2 §16 已定义三级命名，但代码里仍在用 `task`。
+代码、API、UI 全面使用 `run` 作为执行实例术语。V2 §16 已定义三级命名（Pulse / Thread / Campaign），对外不再出现旧执行实例口径。
 
 **涉及范围：**
-- `state/tasks.json` → 文件名及内部字段（`task_id` → 保留作内部 ID，但展示层用 Pulse/Thread/Campaign）
-- `GET /tasks` / `GET /tasks/{id}` → 路由名称及响应字段
-- Console UI：Tasks 面板标题、列名
-- Portal UI：任务列表展示
-- Telegram 通知文案：`任务完成` → 根据 `task_scale` 显示 `Pulse 完成` / `Thread 完成`
-- `dispatch.py`、`activities.py` 内部注释和 log 文案（代码变量名可以暂时不改，优先改对外展示）
+- `state/runs.json`（及 run 相关状态文件）作为执行实例存储，展示层使用 Pulse / Thread / Campaign
+- `GET /runs` / `GET /runs/{id}` 路由及响应字段
+- Console UI：Runs 面板标题、列名
+- Portal UI：运行列表展示
+- Telegram 通知文案：`运行完成`，并根据 `work_scale` 显示 `Pulse 完成` / `Thread 完成`
+- `dispatch.py`、`activities.py` 内部注释和 log 文案（优先修正所有对外可见文本）
 
-**注意：** `task_id` 作为内部主键可以保留，但对用户展示的地方必须用正确术语。
+**注意：** `run_id` 作为内部主键保留，对用户展示统一使用 `run_title`。
 
 ---
 
@@ -60,28 +60,227 @@
 
 ---
 
-### 1.3 Portal 对话控制命令
+### 1.3 Telegram 改为纯推送 + Portal 成为用户操作唯一入口
 
-**问题：** Portal 的对话框（`chat.py`）把所有消息直接发给 Router agent，没有控制命令拦截。Telegram 有，Portal 没有，用户无法在 Portal 通过对话取消/暂停任务。
+**背景：** 新界面分野设计（见 `.ref/INTERFACE_DESIGN.md`）确立零重叠原则：Telegram 改为纯推送频道，Portal 承接所有用户操作。原 P1.3 描述的"Portal 对话控制命令对标 Telegram"方向已废弃。
 
-**改动位置：** `services/api_routes/chat.py` 的 `chat()` endpoint，在调用 `dialog.chat()` 之前加意图识别层。
+---
 
-**需要识别的指令（参考 `telegram/adapter.py` 的实现）：**
+#### 1.3.1 Telegram adapter 改造（`interfaces/telegram/adapter.py`）
+
+**删除：**
+- `_handle_text()` 函数及其所有分支
+- 所有 `/command` 处理器（`/circuits`、`/runs`、`/status` 等）
+- 所有 callback_query（inline keyboard）处理逻辑
+- 所有入站消息路由（`application.add_handler(MessageHandler(...))` 等）
+
+**保留（只保留出站推送）：**
+- `send_message(text)` 函数
+- `send_notification(event_type, run_title, extra)` 封装函数
+
+**通知格式（固定中文 + 原样 run_title）：**
+```
+Thread 完成 · "Write a summary of this paper" · 请去 Portal 评价
+Campaign 里程碑 2 完成 · "分阶段竞争格局研究" · 请去 Portal 查看
+Campaign 里程碑已自动推进（无操作）· "分阶段竞争格局研究"
+Circuit 实例完成 · "每日简报" · 请去 Portal 评价
+```
+注：`run_title` 原样嵌入，不翻译。`run_id` 不对用户暴露。
+
+---
+
+#### 1.3.2 Portal 对话框意图识别（`services/api_routes/chat.py`）
+
+在 `chat()` endpoint 调用 `dialog.chat()` 之前加意图识别层：
 
 | 用户输入 | 动作 |
 |---|---|
-| `取消` / `cancel` / `暂停` / `pause` | 查找当前 running 状态的 run，调 `POST /runs/{id}/pause` |
-| `取消任务 <id>` / `cancel <id>` | 调 `POST /runs/{id}/cancel` |
-| `取消回路 <id>` / `cancel circuit <id>` | 调 `DELETE /circuits/{id}` |
-| `取消 campaign <id>` | 调 `POST /campaigns/{id}/cancel` |
+| `取消` / `cancel` | 查找 `running` 状态的 run，调 `POST /runs/{id}/cancel` |
+| `暂停` / `pause` | 查找 `running` 状态的 run，调 `POST /runs/{id}/pause` |
 
-**返回格式：** 不走 Router，直接返回操作结果文本，格式和 Telegram 保持一致。
+匹配后直接返回结果文本，不走 Router。Circuit 操作和 Campaign 操作通过 Portal 页面按钮执行，不走对话框。
 
-**参考：** `interfaces/telegram/adapter.py` 的 `_handle_text()` 和 callback 处理部分，逻辑照搬，替换 httpx 调用为内部函数调用即可。
+---
+
+#### 1.3.3 Portal 三页结构 + 评价窗口期（新建）
+
+**新增 API endpoints（`services/api_routes/runs.py` 或扩展现有）：**
+
+```
+GET /runs?status=running          → 运行中页数据
+GET /runs?phase=awaiting_eval     → 待评价页数据（含 circuit 实例窗口期内的）
+GET /runs?phase=history           → 历史页数据（窗口期已过）
+POST /runs/{run_id}/feedback      → 提交用户评价（partial OK，不报错）
+POST /runs/{run_id}/feedback/append → 追加评语（历史页，纯文字）
+POST /campaigns/{campaign_id}/milestones/{n}/gate → 里程碑门控（continue / abort）
+```
+
+**窗口期计时实现（`services/scheduler.py` 的 `_tick()` 里加）：**
+- 遍历 `run_status = awaiting_eval` 的 run
+- 检查 `eval_deadline_utc`（= `exec_completed_utc` + `eval_window_hours`）
+- 超时 → 将 run 转为 `completed`，写事件 `run_eval_expired`
+- Campaign milestone 超时 → 调 `milestone_auto_advance()`，发 Telegram 通知
+
+**Norm 配置项：** `eval_window_hours`（默认 2），在 Console Norm 面板暴露为可编辑字段。
+
+---
+
+#### 1.3.4 run_title 生成（Router 改动）
+
+Router 在生成 Weave Plan 时同步生成 `run_title`：
+- 风格：简短描述性（≤15 词），与用户提交语言一致
+- 写入 run 记录字段 `run_title`（不可变）
+- **所有对用户可见的界面**（Portal、Telegram）使用 `run_title`，不显示 `run_id`
+
+**涉及文件：** `services/dispatch.py` 的 `enrich()` 函数负责将 Router 返回的 `run_title` 写入 run 记录。
+
+---
+
+## 优先级 1（续）：Cancel 与追加要求机制
+
+### 1.4 Activity Heartbeat 取消（替代文件轮询）
+
+**问题：** 当前 `activity_openclaw_step` 内部用文件 flag（`state/runs/<run_id>/cancel_requested`）轮询来响应取消请求。对于运行时间长的 session（可能持续数分钟甚至更长），轮询间隔决定了响应延迟——且本质上不优雅，Temporal 本身有更好的机制。
+
+**正确方案：Temporal activity heartbeat**
+
+Temporal Python SDK 提供 `activity.heartbeat(details=...)` 机制：
+- 长时间运行的 activity 应定期调用 `activity.heartbeat()`（建议每次工具调用之间调用一次）
+- 当 workflow 收到取消信号时，下一次 `heartbeat()` 调用会抛出 `CancelledError`
+- Activity 捕获 `CancelledError` → 执行清理 → 重新抛出，Temporal 自动标记 activity 为 cancelled
+- OpenClaw 的 Python 层也支持 heartbeat，两侧都可触发
+
+**改动范围：**
+
+- `temporal/activities.py` 的 `activity_openclaw_step()`：
+  - 在每次工具调用（即每次对 OpenClaw 的一轮请求）结束后加 `activity.heartbeat({"step": step_index, "run_id": run_id})`
+  - 捕获 `temporalio.exceptions.CancelledError`（而非检查文件 flag）→ 写 `run_status = cancelled` → 重新抛出
+  - 移除现有的文件 flag 检查逻辑（`cancel_requested` 文件读取）
+
+- `temporal/workflows.py` / `temporal/campaign_workflow.py`：
+  - 工作流层无需修改；cancel 请求通过 `workflow.cancel()` 发给 workflow → 自动传播给当前 activity
+
+- `services/api_routes/runs.py`（cancel endpoint）：
+  - `POST /runs/{run_id}/cancel` → 调 `temporal_client.get_workflow_handle(workflow_id).cancel()`
+  - 无需再写文件 flag，heartbeat 机制负责 intra-activity 传播
+
+- **删除：** `state/runs/<run_id>/cancel_requested` 机制（文件读写相关代码全部移除）
+
+**Heartbeat timeout 配置（`temporal/activities.py` 注册处）：**
+```python
+@activity.defn
+async def activity_openclaw_step(...):
+    ...
+# 注册时设置：
+# heartbeat_timeout=timedelta(seconds=30)
+# 即 30s 内未 heartbeat → Temporal 视 worker 失联，自动重新调度
+```
+
+**注意：** heartbeat_timeout 应 > 单次工具调用的最长时间（建议 60-120s），防止正常工具调用期间被误判超时。
+
+---
+
+### 1.5 追加要求机制（Mid-Run Modification）
+
+**问题：** 目前没有任何机制让用户在 run 执行中途追加或修改要求。Pulse/Thread/Campaign 的 prompt 一旦提交即固定，无法注入新信息。
+
+**设计方案：Temporal workflow signal + signal queue**
+
+对于需要中途接受用户输入的 run，引入 `append_requirement` signal：
+
+```
+用户在 Portal 对话框输入追加要求
+  → POST /runs/{run_id}/append
+  → temporal_client.get_workflow_handle(workflow_id).signal("append_requirement", payload)
+  → Workflow 收到 signal，存入 signal queue（列表）
+  → 当前 activity 完成后，workflow 在下一个 activity 开始前将 queue 中的内容注入 context
+```
+
+**适用范围：**
+- **Thread**：可在任意两个 activity 之间接收追加要求，注入到下一 activity 的 system prompt 补充区
+- **Campaign**：在里程碑间（milestone gate 等待期间）接收，影响下一 milestone 的执行
+- **Pulse**：不适用（单步执行，注入时机不存在）
+- **Circuit 实例**：每次是独立 run，可用 Thread 规则
+
+**注入格式（追加到 activity 的 system prompt 末尾）：**
+```
+---
+[用户追加要求 · 注入时间 2026-03-06T08:30:00Z]
+请在本步骤中额外关注：<用户输入内容>
+---
+```
+
+**改动范围：**
+
+- `temporal/workflows.py`（`GraphDispatchWorkflow`）：
+  - 加 `@workflow.signal` handler `append_requirement(payload)`，将 payload append 到 `self._pending_requirements: list`
+  - 在每次 `execute_activity(activity_openclaw_step, ...)` 调用前，将 `_pending_requirements` 合并进 step 参数，清空队列
+
+- `temporal/campaign_workflow.py`：
+  - 同样加 `@workflow.signal` handler，在里程碑间等待期间积累，下一 milestone 开始时注入
+
+- `services/api_routes/runs.py`：
+  - 新增 `POST /runs/{run_id}/append`，body: `{"requirement": "..."}`
+  - 调用 `workflow_handle.signal("append_requirement", {"text": requirement, "appended_at": utc_now()})`
+
+- **Portal 对话页**：
+  - 意图识别层（§1.3.2）追加一条：检测到有 `running` 状态的 run 时，普通文本（非 cancel/pause 关键词）→ 识别为追加要求 → 调 `POST /runs/{run_id}/append`，返回"已将要求追加至 run：<run_title>"
+
+**注意：** 仅 Thread / Campaign 支持此机制（workflow signal 在 Pulse 场景下 timing 无意义）；Portal UI 需在运行中页和待评价页显示"追加要求"入口。
+
+**`已知不改` 表格更新：** 见下方。
 
 ---
 
 ## 优先级 2：架构修复（暖机前完成）
+
+### 2.0 Campaign Context 累积器 + Milestone 失败门控
+
+**Campaign context 累积（新增字段）：**
+
+每个 milestone 成功完成后，`temporal/campaign_workflow.py` 负责将 review agent 生成的摘要追加到 manifest：
+
+```python
+manifest["campaign_context"].append({
+    "milestone_n": n,
+    "summary": review_summary,       # review agent 输出的简述
+    "drive_links": drive_links,      # 本 milestone 的 Drive 产出链接列表
+    "completed_utc": utc_now_iso()
+})
+save_manifest(campaign_id, manifest)
+```
+
+下一个 milestone 执行时，`campaign_context` 作为额外字段注入其 Weave Plan（`plan.context.campaign_context`），各 activity 的 system prompt 末尾附加前序 milestone 摘要列表。
+
+**manifest.json 补充字段：**
+```json
+{
+  "campaign_context": [],      // 初始为空，随 milestone 完成追加
+  "campaign_status": "running" // 新增状态值：awaiting_intervention（失败等待人工）
+}
+```
+
+**Milestone 执行失败处理：**
+
+失败条件：review rubric 不通过且超出 rework 预算（默认 2 次）。
+
+处理流程：
+1. 写 `milestones/<n>/result.json`：`{ "status": "failed", "reason": "..." }`
+2. 写 manifest：`campaign_status = "awaiting_intervention"`
+3. Telegram 推送告警
+4. Campaign 保持在 Portal 运行中页，显示"milestone N 执行失败" + **重试 / 中止** 按钮
+
+**新增 API endpoint：**
+```
+POST /campaigns/{campaign_id}/milestones/{n}/retry  → 重新执行 milestone N
+```
+中止 Campaign 复用现有 `DELETE /campaigns/{campaign_id}`。
+
+**改动范围：**
+- `temporal/campaign_workflow.py`：milestone 失败后写 `awaiting_intervention`，通过 `@workflow.signal` 等待 retry 或 cancel
+- `services/api_routes/campaigns.py`：新增 `/milestones/{n}/retry` endpoint，发 signal 给 CampaignWorkflow
+
+---
 
 ### 2.1 CampaignWorkflow → Child Workflow 架构
 
@@ -231,5 +430,7 @@ workspace/<agent>/skills/<skill_name>/benchmark/
 |---|---|---|
 | Circuit 触发策略 | 只保留 cron，不加 on_complete/on_event | 没有具体场景驱动，过度设计 |
 | Circuit 实例历史 API | 不做 `/circuits/{id}/history` | Memory fabric 负责实例间记忆，Circuit 自身无状态 |
-| Workflow signals/queries | 不引入 | 现有 activity 模式够用，增加复杂度 |
+| Workflow signals（追加要求） | **已引入**（§1.5） | Thread/Campaign 需要；Pulse 不需要 |
+| Workflow queries | 不引入 | 现有 REST 轮询够用，queries 仅适合 workflow 内部状态查询 |
 | Child workflows for Pulse/Thread | 不引入 | 只有 Campaign milestone 需要，Pulse/Thread 直接用 activity 即可 |
+| Activity 文件 flag 取消轮询 | **已废弃**，改为 heartbeat（§1.4） | Heartbeat 是 Temporal 原生机制，延迟低、无竞争条件 |

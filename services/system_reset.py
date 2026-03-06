@@ -390,7 +390,12 @@ class SystemResetManager:
                 stdout=f,
                 stderr=f,
                 start_new_session=True,
-                env={**os.environ, "DAEMON_HOME": str(self.home), "OPENCLAW_HOME": str(self.openclaw_home)},
+                env={
+                    **os.environ,
+                    "DAEMON_HOME": str(self.home),
+                    "OPENCLAW_HOME": str(self.openclaw_home),
+                    "OPENCLAW_CONFIG_PATH": str(openclaw_cfg),
+                },
             )
             procs[name] = {"pid": proc.pid, "cmd": cmd, "log": str(lp)}
 
@@ -455,6 +460,8 @@ class SystemResetManager:
                 str(gw_port),
                 "--bind",
                 "loopback",
+                "--tailscale",
+                "off",
             ]
             if gw_token:
                 gateway_cmd.extend(["--token", gw_token])

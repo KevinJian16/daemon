@@ -115,56 +115,22 @@ async function loadCircuits() {
   try {
     const circuits = await api('/circuits');
     if (!circuits || !circuits.length) {
-      tbody.innerHTML = `<tr><td colspan="7" style="color:var(--muted)">${tx('暂无周期 Circuit', 'No circuits')}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="6" style="color:var(--muted)">${tx('暂无周期 Circuit', 'No circuits')}</td></tr>`;
       return;
     }
     tbody.innerHTML = circuits.map(c => {
       const status = c.status || 'active';
       const badge = status === 'active' ? 'ok' : status === 'paused' ? 'degraded' : 'error';
       return `<tr>
-        <td>${esc(c.name||'')}</td>
+        <td>${esc(c.run_title||c.name||'')}</td>
         <td style="color:var(--muted);font-family:monospace">${esc(c.cron||'')}</td>
         <td style="color:var(--muted)">${esc(c.run_type||'')}</td>
         <td><span class="badge ${badge}">${status}</span></td>
         <td style="color:var(--muted)">${c.last_triggered_utc ? fmtTime(c.last_triggered_utc) : '—'}</td>
         <td style="color:var(--muted)">${c.run_count||0}</td>
-        <td style="text-align:center">
-          <button class="action" style="font-size:11px;padding:3px 7px;background:#334155" onclick="triggerCircuit('${esc(c.circuit_id)}')" title="立即触发">▶</button>
-          <button class="action" style="font-size:11px;padding:3px 7px;background:#7f1d1d;margin-left:4px" onclick="cancelCircuit('${esc(c.circuit_id)}','${esc(c.name)}')" title="取消">✕</button>
-        </td>
       </tr>`;
     }).join('');
   } catch (e) {
-    if (tbody) tbody.innerHTML = `<tr><td colspan="7" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
+    if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
   }
-}
-
-async function triggerCircuit(circuitId) {
-  try {
-    const r = await apiWrite(`/circuits/${circuitId}/trigger`, 'POST', {});
-    alert(tx('已触发，运行 ID：', 'Triggered, run ID: ') + (r.run_id || '?'));
-    loadCircuits();
-  } catch (e) { alert(tx('触发失败：', 'Trigger failed: ') + e.message); }
-}
-
-async function cancelCircuit(circuitId, name) {
-  if (!confirm(tx(`确认取消 Circuit「${name}」？取消后不再自动触发。`, `Cancel circuit "${name}"? It will stop triggering.`))) return;
-  try {
-    await apiWrite(`/circuits/${circuitId}`, 'DELETE', null);
-    loadCircuits();
-  } catch (e) { alert(tx('取消失败：', 'Cancel failed: ') + e.message); }
-}
-
-function openCreateCircuitModal() {
-  const name = prompt(tx('Circuit 名称：', 'Circuit name:'));
-  if (!name) return;
-  const cron = prompt(tx('Cron 表达式（例：0 8 * * *）：', 'Cron expression (e.g. 0 8 * * *):'));
-  if (!cron) return;
-  const prompt_ = prompt(tx('运行 Prompt：', 'Run prompt:'));
-  if (!prompt_) return;
-  const run_type = prompt(tx('运行类型（默认 research_report）：', 'Run type (default: research_report):')) || 'research_report';
-  const tz = prompt(tx('时区（默认 Asia/Shanghai）：', 'Timezone (default: Asia/Shanghai):')) || 'Asia/Shanghai';
-  apiWrite('/circuits', 'POST', {name, prompt: prompt_, run_type, cron, tz})
-    .then(() => { loadCircuits(); })
-    .catch(e => alert(tx('创建失败：', 'Create failed: ') + e.message));
 }
