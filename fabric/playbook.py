@@ -32,7 +32,7 @@ def _days_since(iso_utc: str | None) -> float:
         return 999.0
 
 
-_STAGE_TRANSITIONS: dict[str, set[str]] = {
+_STRATEGY_STAGE_TRANSITIONS: dict[str, set[str]] = {
     "candidate": {"shadow", "retired"},
     "shadow": {"challenger", "retired"},
     "challenger": {"champion", "retired"},
@@ -40,7 +40,7 @@ _STAGE_TRANSITIONS: dict[str, set[str]] = {
     "retired": set(),
 }
 
-_STAGE_PHASE: dict[str, str] = {
+_STRATEGY_STAGE_PHASE: dict[str, str] = {
     "candidate": "sandbox",
     "shadow": "shadow",
     "challenger": "pre_production",
@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS versions (
 CREATE TABLE IF NOT EXISTS evaluations (
     eval_id      TEXT PRIMARY KEY,
     method_id    TEXT NOT NULL REFERENCES methods(method_id),
-    task_id      TEXT,
+    run_id      TEXT,
     outcome      TEXT NOT NULL,
     score        REAL,
     detail_json  TEXT,
@@ -103,7 +103,7 @@ CREATE INDEX IF NOT EXISTS idx_evals_outcome    ON evaluations(outcome);
 CREATE TABLE IF NOT EXISTS semantic_clusters (
     cluster_id       TEXT PRIMARY KEY,
     display_name     TEXT NOT NULL,
-    task_type_compat TEXT,
+    run_type_compat TEXT,
     created_utc      TEXT NOT NULL,
     updated_utc      TEXT NOT NULL
 );
@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS semantic_clusters (
 CREATE TABLE IF NOT EXISTS strategy_candidates (
     strategy_id      TEXT PRIMARY KEY,
     cluster_id       TEXT NOT NULL REFERENCES semantic_clusters(cluster_id),
-    stage            TEXT NOT NULL DEFAULT 'candidate',
+    strategy_stage            TEXT NOT NULL DEFAULT 'candidate',
     spec_json        TEXT NOT NULL,
     global_score     REAL,
     score_components TEXT,
@@ -125,7 +125,7 @@ CREATE TABLE IF NOT EXISTS strategy_candidates (
 CREATE TABLE IF NOT EXISTS strategy_experiments (
     experiment_id    TEXT PRIMARY KEY,
     strategy_id      TEXT NOT NULL REFERENCES strategy_candidates(strategy_id),
-    task_id          TEXT NOT NULL,
+    run_id          TEXT NOT NULL,
     cluster_id       TEXT NOT NULL,
     is_shadow        INTEGER NOT NULL DEFAULT 0,
     score_components TEXT,
@@ -139,15 +139,15 @@ CREATE TABLE IF NOT EXISTS strategy_promotions (
     strategy_id      TEXT NOT NULL REFERENCES strategy_candidates(strategy_id),
     cluster_id       TEXT NOT NULL,
     decision         TEXT NOT NULL,
-    prev_stage       TEXT NOT NULL,
-    next_stage       TEXT NOT NULL,
+    prev_strategy_stage       TEXT NOT NULL,
+    next_strategy_stage       TEXT NOT NULL,
     reason           TEXT,
     decided_by       TEXT NOT NULL DEFAULT 'auto',
     decided_utc      TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sc_cluster  ON strategy_candidates(cluster_id);
-CREATE INDEX IF NOT EXISTS idx_sc_stage    ON strategy_candidates(stage);
+CREATE INDEX IF NOT EXISTS idx_sc_strategy_stage ON strategy_candidates(strategy_stage);
 CREATE INDEX IF NOT EXISTS idx_se_strategy ON strategy_experiments(strategy_id);
 CREATE INDEX IF NOT EXISTS idx_se_cluster  ON strategy_experiments(cluster_id);
 CREATE INDEX IF NOT EXISTS idx_sp_strategy ON strategy_promotions(strategy_id);
@@ -210,7 +210,7 @@ BOOTSTRAP_METHODS: list[dict] = [
     {
         "name": "personal_plan",
         "category": "dag_pattern",
-        "description": "Personal planning and task management",
+        "description": "Personal planning and run management",
         "spec": {
             "steps_template": [
                 {"id": "collect", "agent": "collect", "depends_on": []},
@@ -250,6 +250,13 @@ class PlaybookFabric:
     def _init_db(self) -> None:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            # Strict schema contract: runtime does not carry compatibility mapping paths.
+            strategy_cols = {r["name"] for r in conn.execute("PRAGMA table_info(strategy_candidates)").fetchall()}
+            if "strategy_stage" not in strategy_cols:
+                raise RuntimeError("playbook_schema_invalid: strategy_candidates.strategy_stage missing")
+            promotion_cols = {r["name"] for r in conn.execute("PRAGMA table_info(strategy_promotions)").fetchall()}
+            if "prev_strategy_stage" not in promotion_cols or "next_strategy_stage" not in promotion_cols:
+                raise RuntimeError("playbook_schema_invalid: strategy_promotions strategy-stage columns missing")
             # Migrate existing databases: add new columns if missing.
             for table, col, defn in [
                 ("methods", "last_used_at", "TEXT"),
@@ -264,6 +271,19 @@ class PlaybookFabric:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {defn}")
                 except sqlite3.OperationalError:
                     pass  # Column already exists.
+
+            # Ensure semantic_clusters.run_type_compat exists for older databases.
+            try:
+                conn.execute("ALTER TABLE semantic_clusters ADD COLUMN run_type_compat TEXT")
+            except sqlite3.OperationalError:
+                pass
+
+            # Ensure run_id exists on history tables.
+            for table in ("evaluations", "strategy_experiments"):
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN run_id TEXT")
+                except sqlite3.OperationalError:
+                    pass
 
     @staticmethod
     def _compute_value_score(
@@ -326,7 +346,7 @@ class PlaybookFabric:
     def evaluate(
         self,
         method_id: str,
-        task_id: str | None,
+        run_id: str | None,
         outcome: str,
         score: float | None = None,
         detail: dict | None = None,
@@ -340,7 +360,7 @@ class PlaybookFabric:
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO evaluations VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (eid, method_id, task_id, outcome, score,
+                (eid, method_id, run_id, outcome, score,
                  json.dumps(detail) if detail else None, 0, now, cost, steps),
             )
             conn.execute(
@@ -364,7 +384,7 @@ class PlaybookFabric:
                                      (round(new_avg, 4), method_id))
         return eid
 
-    def consult(self, task_type: str | None = None, category: str = "dag_pattern") -> list[dict]:
+    def consult(self, run_type: str | None = None, category: str = "dag_pattern") -> list[dict]:
         """Return active methods ordered by tier (hot→warm→cold) then value_score."""
         with self._conn() as conn:
             rows = conn.execute(
@@ -679,14 +699,14 @@ class PlaybookFabric:
                 if existing:
                     continue
                 conn.execute(
-                    "INSERT INTO semantic_clusters(cluster_id,display_name,task_type_compat,created_utc,updated_utc) VALUES(?,?,?,?,?)",
-                    (cid, str(c.get("display_name") or cid), c.get("task_type_compat"), now, now),
+                    "INSERT INTO semantic_clusters(cluster_id,display_name,run_type_compat,created_utc,updated_utc) VALUES(?,?,?,?,?)",
+                    (cid, str(c.get("display_name") or cid), c.get("run_type_compat"), now, now),
                 )
                 # Seed a champion strategy candidate per cluster.
                 sid = _new_id("strat")
                 default_spec = {"source": "seed", "cluster_id": cid}
                 conn.execute(
-                    "INSERT INTO strategy_candidates(strategy_id,cluster_id,stage,spec_json,sample_n,created_utc,updated_utc) VALUES(?,?,?,?,?,?,?)",
+                    "INSERT INTO strategy_candidates(strategy_id,cluster_id,strategy_stage,spec_json,sample_n,created_utc,updated_utc) VALUES(?,?,?,?,?,?,?)",
                     (sid, cid, "champion", json.dumps(default_spec), 0, now, now),
                 )
                 inserted += 1
@@ -695,8 +715,8 @@ class PlaybookFabric:
             self._append_release_transition(
                 strategy_id=sid,
                 cluster_id=cid,
-                prev_stage="none",
-                next_stage="champion",
+                prev_strategy_stage="none",
+                next_strategy_stage="champion",
                 action="seed_champion",
                 actor="bootstrap",
                 reason="cluster_seeded",
@@ -707,7 +727,7 @@ class PlaybookFabric:
         """Return the current champion strategy for a cluster."""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT * FROM strategy_candidates WHERE cluster_id=? AND stage='champion' ORDER BY updated_utc DESC LIMIT 1",
+                "SELECT * FROM strategy_candidates WHERE cluster_id=? AND strategy_stage='champion' ORDER BY updated_utc DESC LIMIT 1",
                 (cluster_id,),
             ).fetchone()
         if not row:
@@ -733,14 +753,14 @@ class PlaybookFabric:
     def list_clusters(self) -> list[dict]:
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT cluster_id, display_name, task_type_compat, created_utc, updated_utc FROM semantic_clusters ORDER BY cluster_id"
+                "SELECT cluster_id, display_name, run_type_compat, created_utc, updated_utc FROM semantic_clusters ORDER BY cluster_id"
             ).fetchall()
         return [dict(r) for r in rows]
 
     def record_experiment(
         self,
         strategy_id: str,
-        task_id: str,
+        run_id: str,
         cluster_id: str,
         score_components: dict,
         global_score: float,
@@ -752,8 +772,8 @@ class PlaybookFabric:
         now = _utc()
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO strategy_experiments(experiment_id,strategy_id,task_id,cluster_id,is_shadow,score_components,global_score,outcome,created_utc) VALUES(?,?,?,?,?,?,?,?,?)",
-                (eid, strategy_id, task_id, cluster_id, 1 if is_shadow else 0,
+                "INSERT INTO strategy_experiments(experiment_id,strategy_id,run_id,cluster_id,is_shadow,score_components,global_score,outcome,created_utc) VALUES(?,?,?,?,?,?,?,?,?)",
+                (eid, strategy_id, run_id, cluster_id, 1 if is_shadow else 0,
                  json.dumps(score_components, ensure_ascii=False), round(global_score, 4), outcome, now),
             )
             # Update aggregate on candidate.
@@ -782,12 +802,12 @@ class PlaybookFabric:
         self,
         strategy_id: str,
         decision: str,
-        prev_stage: str,
-        next_stage: str,
+        prev_strategy_stage: str,
+        next_strategy_stage: str,
         reason: str = "",
         decided_by: str = "auto",
     ) -> str:
-        """Record a promotion/rollback decision and update stage."""
+        """Record a promotion/rollback decision and update strategy_stage."""
         pid = _new_id("prom")
         now = _utc()
         retired_ids: list[str] = []
@@ -795,42 +815,42 @@ class PlaybookFabric:
         demoted_events: list[dict] = []
         retired_events: list[dict] = []
         cluster_id = ""
-        current_stage = str(prev_stage or "")
+        current_strategy_stage = str(prev_strategy_stage or "")
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT cluster_id, stage, sample_n FROM strategy_candidates WHERE strategy_id=?", (strategy_id,)
+                "SELECT cluster_id, strategy_stage, sample_n FROM strategy_candidates WHERE strategy_id=?", (strategy_id,)
             ).fetchone()
             if not row:
                 raise ValueError(f"Unknown strategy_id: {strategy_id}")
             cluster_id = row["cluster_id"]
-            current_stage = str(row["stage"] or "")
-            if current_stage != str(prev_stage or ""):
-                # Preserve caller-provided stage for audit, but enforce truth from DB.
-                prev_stage = current_stage
+            current_strategy_stage = str(row["strategy_stage"] or "")
+            if current_strategy_stage != str(prev_strategy_stage or ""):
+                # Preserve caller-provided strategy_stage for audit, but enforce truth from DB.
+                prev_strategy_stage = current_strategy_stage
 
-            if not self._is_transition_allowed(current_stage, next_stage):
-                raise ValueError(f"invalid_stage_transition:{current_stage}->{next_stage}")
+            if not self._is_transition_allowed(current_strategy_stage, next_strategy_stage):
+                raise ValueError(f"invalid_strategy_stage_transition:{current_strategy_stage}->{next_strategy_stage}")
 
             # Production cutover gate: champion promotion requires audit completeness
             # except explicit rollback decisions.
-            if next_stage == "champion" and decision not in {"rollback_manual", "rollback_auto"}:
+            if next_strategy_stage == "champion" and decision not in {"rollback_manual", "rollback_auto"}:
                 ok, reason_code = self._promotion_audit_ok(conn, strategy_id, cluster_id)
                 if not ok:
                     raise ValueError(f"promotion_audit_incomplete:{reason_code}")
 
             previous_champion_rows = conn.execute(
-                "SELECT strategy_id FROM strategy_candidates WHERE cluster_id=? AND stage='champion' AND strategy_id<>? ORDER BY updated_utc DESC",
+                "SELECT strategy_id FROM strategy_candidates WHERE cluster_id=? AND strategy_stage='champion' AND strategy_id<>? ORDER BY updated_utc DESC",
                 (cluster_id, strategy_id),
             ).fetchall()
             previous_champion = conn.execute(
-                "SELECT strategy_id FROM strategy_candidates WHERE cluster_id=? AND stage='champion' ORDER BY updated_utc DESC LIMIT 1",
+                "SELECT strategy_id FROM strategy_candidates WHERE cluster_id=? AND strategy_stage='champion' ORDER BY updated_utc DESC LIMIT 1",
                 (cluster_id,),
             ).fetchone()
             previous_champion_id = str(previous_champion["strategy_id"]) if previous_champion else ""
 
-            if next_stage == "champion":
+            if next_strategy_stage == "champion":
                 conn.execute(
-                    "UPDATE strategy_candidates SET stage='challenger', updated_utc=? WHERE cluster_id=? AND stage='champion' AND strategy_id<>?",
+                    "UPDATE strategy_candidates SET strategy_stage='challenger', updated_utc=? WHERE cluster_id=? AND strategy_stage='champion' AND strategy_id<>?",
                     (now, cluster_id, strategy_id),
                 )
                 for item in previous_champion_rows:
@@ -844,15 +864,15 @@ class PlaybookFabric:
                             "strategy_id": old_id,
                             "cluster_id": cluster_id,
                             "decision": "demote_auto",
-                            "prev_stage": "champion",
-                            "next_stage": "challenger",
+                            "prev_strategy_stage": "champion",
+                            "next_strategy_stage": "challenger",
                             "reason": f"champion_replaced_by:{strategy_id}",
                             "decided_by": decided_by,
                             "decided_utc": now,
                         }
                     )
                     conn.execute(
-                        "INSERT INTO strategy_promotions(promotion_id,strategy_id,cluster_id,decision,prev_stage,next_stage,reason,decided_by,decided_utc) VALUES(?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO strategy_promotions(promotion_id,strategy_id,cluster_id,decision,prev_strategy_stage,next_strategy_stage,reason,decided_by,decided_utc) VALUES(?,?,?,?,?,?,?,?,?)",
                         (
                             dem_pid,
                             old_id,
@@ -875,46 +895,46 @@ class PlaybookFabric:
                     "reason": reason or "",
                 }
 
-            retired_utc = now if next_stage == "retired" else None
+            retired_utc = now if next_strategy_stage == "retired" else None
             conn.execute(
-                "UPDATE strategy_candidates SET stage=?, updated_utc=?, promoted_utc=?, retired_utc=? WHERE strategy_id=?",
+                "UPDATE strategy_candidates SET strategy_stage=?, updated_utc=?, promoted_utc=?, retired_utc=? WHERE strategy_id=?",
                 (
-                    next_stage,
+                    next_strategy_stage,
                     now,
-                    now if next_stage in ("champion", "shadow", "challenger") else None,
+                    now if next_strategy_stage in ("champion", "shadow", "challenger") else None,
                     retired_utc,
                     strategy_id,
                 ),
             )
 
             # Enforce: each semantic cluster keeps at most 3 challengers.
-            if next_stage in {"challenger", "champion"}:
+            if next_strategy_stage in {"challenger", "champion"}:
                 retired_ids = self._trim_challengers(conn, cluster_id, keep_limit=3)
                 for rid in retired_ids:
                     retired_events.append(
                         {
                             "strategy_id": rid,
                             "cluster_id": cluster_id,
-                            "prev_stage": "challenger",
-                            "next_stage": "retired",
+                            "prev_strategy_stage": "challenger",
+                            "next_strategy_stage": "retired",
                             "reason": "challenger_cap_exceeded",
                         }
                     )
 
             conn.execute(
-                "INSERT INTO strategy_promotions(promotion_id,strategy_id,cluster_id,decision,prev_stage,next_stage,reason,decided_by,decided_utc) VALUES(?,?,?,?,?,?,?,?,?)",
-                (pid, strategy_id, cluster_id, decision, prev_stage, next_stage, reason, decided_by, now),
+                "INSERT INTO strategy_promotions(promotion_id,strategy_id,cluster_id,decision,prev_strategy_stage,next_strategy_stage,reason,decided_by,decided_utc) VALUES(?,?,?,?,?,?,?,?,?)",
+                (pid, strategy_id, cluster_id, decision, prev_strategy_stage, next_strategy_stage, reason, decided_by, now),
             )
         self._append_strategy_event("promotion_decision", {
             "promotion_id": pid, "strategy_id": strategy_id, "cluster_id": cluster_id,
-            "decision": decision, "prev_stage": prev_stage, "next_stage": next_stage,
+            "decision": decision, "prev_strategy_stage": prev_strategy_stage, "next_strategy_stage": next_strategy_stage,
             "reason": reason, "decided_by": decided_by,
         })
         self._append_release_transition(
             strategy_id=strategy_id,
             cluster_id=cluster_id,
-            prev_stage=prev_stage,
-            next_stage=next_stage,
+            prev_strategy_stage=prev_strategy_stage,
+            next_strategy_stage=next_strategy_stage,
             action=decision,
             actor=decided_by,
             reason=reason,
@@ -925,8 +945,8 @@ class PlaybookFabric:
             self._append_release_transition(
                 strategy_id=str(evt.get("strategy_id") or ""),
                 cluster_id=str(evt.get("cluster_id") or cluster_id),
-                prev_stage=str(evt.get("prev_stage") or "champion"),
-                next_stage=str(evt.get("next_stage") or "challenger"),
+                prev_strategy_stage=str(evt.get("prev_strategy_stage") or "champion"),
+                next_strategy_stage=str(evt.get("next_strategy_stage") or "challenger"),
                 action=str(evt.get("decision") or "demote_auto"),
                 actor=str(evt.get("decided_by") or decided_by),
                 reason=str(evt.get("reason") or ""),
@@ -941,8 +961,8 @@ class PlaybookFabric:
             self._append_release_transition(
                 strategy_id=str(evt.get("strategy_id") or ""),
                 cluster_id=str(evt.get("cluster_id") or cluster_id),
-                prev_stage=str(evt.get("prev_stage") or "challenger"),
-                next_stage=str(evt.get("next_stage") or "retired"),
+                prev_strategy_stage=str(evt.get("prev_strategy_stage") or "challenger"),
+                next_strategy_stage=str(evt.get("next_strategy_stage") or "retired"),
                 action="retire_auto",
                 actor=decided_by,
                 reason=str(evt.get("reason") or "challenger_cap_exceeded"),
@@ -952,7 +972,7 @@ class PlaybookFabric:
             self._append_strategy_event("rollback_point_created", rollback_point)
         return pid
 
-    def spawn_candidate_from_champion(self, cluster_id: str, stage: str = "candidate") -> dict | None:
+    def spawn_candidate_from_champion(self, cluster_id: str, strategy_stage: str = "candidate") -> dict | None:
         """Clone current champion as a new candidate/shadow strategy for exploration."""
         champion = self.get_champion(cluster_id)
         if not champion:
@@ -968,39 +988,39 @@ class PlaybookFabric:
         }
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO strategy_candidates(strategy_id,cluster_id,stage,spec_json,sample_n,created_utc,updated_utc) VALUES(?,?,?,?,?,?,?)",
-                (sid, cluster_id, stage, json.dumps(new_spec, ensure_ascii=False), 0, now, now),
+                "INSERT INTO strategy_candidates(strategy_id,cluster_id,strategy_stage,spec_json,sample_n,created_utc,updated_utc) VALUES(?,?,?,?,?,?,?)",
+                (sid, cluster_id, strategy_stage, json.dumps(new_spec, ensure_ascii=False), 0, now, now),
             )
         self._append_strategy_event(
             "candidate_spawned",
             {
                 "strategy_id": sid,
                 "cluster_id": cluster_id,
-                "stage": stage,
+                "strategy_stage": strategy_stage,
                 "parent_strategy_id": champion.get("strategy_id", ""),
             },
         )
         self._append_release_transition(
             strategy_id=sid,
             cluster_id=cluster_id,
-            prev_stage="none",
-            next_stage=stage,
+            prev_strategy_stage="none",
+            next_strategy_stage=strategy_stage,
             action="spawn_candidate",
             actor="playbook",
             reason=f"spawned_from:{champion.get('strategy_id', '')}",
         )
         return self.get_strategy(sid)
 
-    def list_strategies(self, cluster_id: str | None = None, stage: str | None = None) -> list[dict]:
+    def list_strategies(self, cluster_id: str | None = None, strategy_stage: str | None = None) -> list[dict]:
         """List strategy candidates, optionally filtered."""
         q = "SELECT * FROM strategy_candidates WHERE 1=1"
         params: list = []
         if cluster_id:
             q += " AND cluster_id=?"
             params.append(cluster_id)
-        if stage:
-            q += " AND stage=?"
-            params.append(stage)
+        if strategy_stage:
+            q += " AND strategy_stage=?"
+            params.append(strategy_stage)
         q += " ORDER BY updated_utc DESC"
         with self._conn() as conn:
             rows = conn.execute(q, params).fetchall()
@@ -1071,20 +1091,23 @@ class PlaybookFabric:
         comparison_count = self._shadow_comparison_count(strategy_id)
         release_events = self.list_release_transitions(strategy_id=strategy_id, limit=200)
         has_execution_event = any(str(e.get("action") or "").startswith("execute_") for e in release_events)
-        has_current_stage_transition = any(str(e.get("next_stage") or "") == str(row.get("stage") or "") for e in release_events)
+        has_current_strategy_stage_transition = any(
+            str(e.get("next_strategy_stage") or "") == str(row.get("strategy_stage") or "")
+            for e in release_events
+        )
         missing: list[str] = []
         if reason_code != "ok":
             missing.append(reason_code)
         if not release_events:
             missing.append("release_events_missing")
-        if str(row.get("stage") or "") in {"shadow", "challenger", "champion"} and not has_execution_event:
+        if str(row.get("strategy_stage") or "") in {"shadow", "challenger", "champion"} and not has_execution_event:
             missing.append("release_execution_missing")
-        if not has_current_stage_transition:
-            missing.append("stage_transition_missing")
+        if not has_current_strategy_stage_transition:
+            missing.append("strategy_stage_transition_missing")
         return {
             "strategy_id": strategy_id,
             "cluster_id": cluster_id,
-            "stage": str(row.get("stage") or ""),
+            "strategy_stage": str(row.get("strategy_stage") or ""),
             "sample_n": int(row.get("sample_n") or 0),
             "experiments_total": int(total_exp or 0),
             "experiments_shadow": int(shadow_exp or 0),
@@ -1187,9 +1210,9 @@ class PlaybookFabric:
         *,
         strategy_id: str,
         cluster_id: str,
-        stage: str,
+        strategy_stage: str,
         mode: str,
-        task_id: str,
+        run_id: str,
         actor: str,
         reason: str = "",
         shadow_of: str = "",
@@ -1197,9 +1220,9 @@ class PlaybookFabric:
         payload = {
             "strategy_id": strategy_id,
             "cluster_id": cluster_id,
-            "stage": stage,
+            "strategy_stage": strategy_stage,
             "mode": mode,
-            "task_id": task_id,
+            "run_id": run_id,
             "actor": actor,
             "reason": reason,
             "shadow_of": shadow_of,
@@ -1208,12 +1231,12 @@ class PlaybookFabric:
         self._append_release_transition(
             strategy_id=strategy_id,
             cluster_id=cluster_id,
-            prev_stage=stage,
-            next_stage=stage,
+            prev_strategy_stage=strategy_stage,
+            next_strategy_stage=strategy_stage,
             action=f"execute_{mode}",
             actor=actor,
             reason=reason,
-            task_id=task_id,
+            run_id=run_id,
             shadow_of=shadow_of,
         )
 
@@ -1235,31 +1258,31 @@ class PlaybookFabric:
         *,
         strategy_id: str,
         cluster_id: str,
-        prev_stage: str,
-        next_stage: str,
+        prev_strategy_stage: str,
+        next_strategy_stage: str,
         action: str,
         actor: str,
         reason: str = "",
         promotion_id: str = "",
-        task_id: str = "",
+        run_id: str = "",
         shadow_of: str = "",
     ) -> None:
         daemon_home = Path(os.environ.get("DAEMON_HOME", Path(__file__).parent.parent))
         telemetry_dir = daemon_home / "state" / "telemetry"
         telemetry_dir.mkdir(parents=True, exist_ok=True)
-        stage = next_stage or prev_stage
+        strategy_stage = next_strategy_stage or prev_strategy_stage
         entry = {
             "event_id": _new_id("rel"),
             "strategy_id": strategy_id,
             "cluster_id": cluster_id,
-            "prev_stage": prev_stage,
-            "next_stage": next_stage,
-            "phase": _STAGE_PHASE.get(stage, "unknown"),
+            "prev_strategy_stage": prev_strategy_stage,
+            "next_strategy_stage": next_strategy_stage,
+            "phase": _STRATEGY_STAGE_PHASE.get(strategy_stage, "unknown"),
             "action": action,
             "actor": actor,
             "reason": reason,
             "promotion_id": promotion_id,
-            "task_id": task_id,
+            "run_id": run_id,
             "shadow_of": shadow_of,
             "created_utc": _utc(),
         }
@@ -1282,24 +1305,24 @@ class PlaybookFabric:
             import logging
             logging.getLogger(__name__).warning("Failed to write rollback point: %s", exc)
 
-    def _is_transition_allowed(self, current_stage: str, next_stage: str) -> bool:
-        allowed = _STAGE_TRANSITIONS.get(current_stage)
+    def _is_transition_allowed(self, current_strategy_stage: str, next_strategy_stage: str) -> bool:
+        allowed = _STRATEGY_STAGE_TRANSITIONS.get(current_strategy_stage)
         if allowed is None:
             return False
-        return next_stage in allowed
+        return next_strategy_stage in allowed
 
     def _promotion_audit_ok(self, conn: sqlite3.Connection, strategy_id: str, cluster_id: str) -> tuple[bool, str]:
         row = conn.execute(
-            "SELECT sample_n, stage FROM strategy_candidates WHERE strategy_id=?",
+            "SELECT sample_n, strategy_stage FROM strategy_candidates WHERE strategy_id=?",
             (strategy_id,),
         ).fetchone()
         if not row:
             return False, "strategy_not_found"
         sample_n = int(row["sample_n"] or 0)
-        stage = str(row["stage"] or "")
+        strategy_stage = str(row["strategy_stage"] or "")
         if sample_n <= 0:
             return False, "sample_n_insufficient"
-        if stage not in {"challenger", "shadow"}:
+        if strategy_stage not in {"challenger", "shadow"}:
             return False, "stage_not_promotable"
         shadow_exp = conn.execute(
             "SELECT COUNT(*) as n FROM strategy_experiments WHERE strategy_id=? AND is_shadow=1",
@@ -1336,7 +1359,7 @@ class PlaybookFabric:
 
     def _trim_challengers(self, conn: sqlite3.Connection, cluster_id: str, keep_limit: int = 3) -> list[str]:
         rows = conn.execute(
-            "SELECT strategy_id FROM strategy_candidates WHERE cluster_id=? AND stage='challenger' ORDER BY updated_utc DESC",
+            "SELECT strategy_id FROM strategy_candidates WHERE cluster_id=? AND strategy_stage='challenger' ORDER BY updated_utc DESC",
             (cluster_id,),
         ).fetchall()
         if len(rows) <= keep_limit:
@@ -1346,7 +1369,7 @@ class PlaybookFabric:
         retired_ids = [str(r["strategy_id"]) for r in retire_rows]
         for rid in retired_ids:
             conn.execute(
-                "UPDATE strategy_candidates SET stage='retired', updated_utc=?, retired_utc=? WHERE strategy_id=?",
+                "UPDATE strategy_candidates SET strategy_stage='retired', updated_utc=?, retired_utc=? WHERE strategy_id=?",
                 (now, now, rid),
             )
         return retired_ids

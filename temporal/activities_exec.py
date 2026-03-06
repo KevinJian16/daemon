@@ -15,8 +15,8 @@ async def run_openclaw_step(self, run_root: str, plan: dict, step: dict) -> dict
 
     agent_id = str(step.get("agent") or "").strip()
     step_id = str(step.get("id") or "step").strip()
-    task_id = str(plan.get("task_id") or run_root.split("/")[-1] or uuid.uuid4().hex[:8])
-    session_key = self._openclaw.session_key(agent_id, task_id, step_id)
+    run_id = str(plan.get("run_id") or run_root.split("/")[-1] or uuid.uuid4().hex[:8])
+    session_key = self._openclaw.session_key(agent_id, run_id, step_id)
     instruction = str(step.get("instruction") or step.get("message") or "").strip()
     timeout_s = int(step.get("timeout_s") or plan.get("default_step_timeout_s") or 480)
 
@@ -76,7 +76,7 @@ async def run_openclaw_step(self, run_root: str, plan: dict, step: dict) -> dict
                 stop_reason = str(raw.get("stopReason") or "").strip().lower()
                 has_done_signal = any(
                     signal in content.lower()
-                    for signal in ["[done]", "[complete]", "task complete", "completed successfully"]
+                    for signal in ["[done]", "[complete]", "run complete", "completed successfully"]
                 )
                 if content != last_content:
                     last_content = content
@@ -131,8 +131,8 @@ async def run_spine_routine(self, run_root: str, plan: dict, routine_name: str) 
         daemon_home=home, openclaw_home=self._oc_home,
     )
 
-    method = getattr(routines, routine_name.replace("spine.", ""), None)
-    if not callable(method):
+    routine_method = getattr(routines, routine_name.replace("spine.", ""), None)
+    if not callable(routine_method):
         raise ValueError(f"Unknown spine routine: {routine_name}")
-    result = method()
+    result = routine_method()
     return {"status": "ok", "routine": routine_name, "result": result}

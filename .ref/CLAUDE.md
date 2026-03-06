@@ -88,11 +88,11 @@ headers = {"Authorization": f"Bearer {gateway_token}", "Content-Type": "applicat
 
 # 调用工具（发送消息给 Agent）
 POST {gateway_url}/tools/invoke
-Body: {"tool": "sessions_send", "args": {"session_key": "agent:collect:task:xxx", "message": "..."}}
+Body: {"tool": "sessions_send", "args": {"session_key": "agent:collect:run:xxx", "message": "..."}}
 
 # 读取 Agent 回复
 POST {gateway_url}/tools/invoke
-Body: {"tool": "sessions_history", "args": {"session_key": "agent:collect:task:xxx", "limit": 1}}
+Body: {"tool": "sessions_history", "args": {"session_key": "agent:collect:run:xxx", "limit": 1}}
 
 # Agent 异步调用（提交任务后轮询）
 openclaw gateway call --agent {agent_id} --session-key {key} --message {msg} --wait-ms {ms}
@@ -102,7 +102,7 @@ openclaw gateway call --agent {agent_id} --session-key {key} --message {msg} --w
 ### Session Key 格式
 
 ```
-agent:{agent_id}:task:{task_id}:{step_id}
+agent:{agent_id}:run:{run_id}:{step_id}
 ```
 
 ---

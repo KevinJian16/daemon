@@ -6,14 +6,19 @@ async function loadCampaigns() {
   _listState('campaigns', {size: sizeSel}).size = sizeSel;
   try {
     const rows = await api('/campaigns?limit=500');
-    const filtered = _applyListQuery(rows || [], q, ['campaign_id', 'task_id', 'status', 'current_phase', 'updated_utc']);
+    const normalized = (rows || []).map((r) => ({
+      ...r,
+      campaign_status: r.campaign_status || '',
+      campaign_phase: r.campaign_phase || '',
+    }));
+    const filtered = _applyListQuery(normalized, q, ['campaign_id', 'run_id', 'campaign_status', 'campaign_phase', 'updated_utc']);
     const pageRows = _paginate(filtered, 'campaigns', 'campaigns-pager', 'loadCampaigns');
     tbody.innerHTML = pageRows.map(r => `
       <tr>
         <td style="color:var(--muted);font-size:11px">${esc(r.campaign_id || '')}</td>
-        <td style="color:var(--muted);font-size:11px">${esc(r.task_id || '')}</td>
-        <td><span class="badge ${r.status==='completed' ? 'ok' : r.status==='running' ? 'hybrid' : r.status==='paused' ? 'degraded' : r.status==='cancelled' ? 'error' : 'deterministic'}">${esc(r.status || '')}</span></td>
-        <td>${esc(r.current_phase || '')}</td>
+        <td style="color:var(--muted);font-size:11px">${esc(r.run_id || '')}</td>
+        <td><span class="badge ${r.campaign_status==='completed' ? 'ok' : r.campaign_status==='running' ? 'hybrid' : r.campaign_status==='paused' ? 'degraded' : r.campaign_status==='cancelled' ? 'error' : 'deterministic'}">${esc(r.campaign_status || '')}</span></td>
+        <td>${esc(r.campaign_phase || '')}</td>
         <td>${Number(r.current_milestone_index || 0)} / ${Number(r.total_milestones || 0)}</td>
         <td style="color:var(--muted)">${fmtTime(r.updated_utc)}</td>
         <td>
@@ -54,7 +59,7 @@ async function resumeCampaign(campaignKey) {
     return;
   }
   const manifest = detail?.manifest || {};
-  const phase = String(manifest.current_phase || '');
+  const phase = String(manifest.campaign_phase || '');
   const payload = {};
   if (phase === 'phase0_waiting_confirmation') {
     payload.confirmed = true;

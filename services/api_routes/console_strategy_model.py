@@ -8,15 +8,27 @@ from fastapi import FastAPI, HTTPException, Request
 
 
 def register_console_strategy_model_routes(app: FastAPI, *, ctx: Any) -> None:
+    def _normalize_strategy_row(row: dict) -> dict:
+        out = dict(row or {})
+        if "strategy_stage" in out:
+            out["strategy_stage"] = str(out.get("strategy_stage") or "").strip()
+        if "prev_strategy_stage" in out:
+            out["prev_strategy_stage"] = str(out.get("prev_strategy_stage") or "").strip()
+        if "next_strategy_stage" in out:
+            out["next_strategy_stage"] = str(out.get("next_strategy_stage") or "").strip()
+        return out
+
     @app.get("/console/strategies")
-    def list_strategies(cluster_id: str | None = None, stage: str | None = None):
-        strategies = ctx.playbook.list_strategies(cluster_id=cluster_id, stage=stage)
+    def list_strategies(cluster_id: str | None = None, strategy_stage: str | None = None):
+        strategies = ctx.playbook.list_strategies(cluster_id=cluster_id, strategy_stage=strategy_stage)
         cluster_rows = {row.get("cluster_id", ""): row for row in ctx.playbook.list_clusters()}
-        for row in strategies:
+        for i, raw in enumerate(strategies):
+            row = _normalize_strategy_row(raw)
+            strategies[i] = row
             cid = str(row.get("cluster_id") or "")
             cluster = cluster_rows.get(cid) or {}
             row["cluster_display_name"] = cluster.get("display_name", cid)
-            row["task_type_compat"] = cluster.get("task_type_compat", "")
+            row["run_type_compat"] = cluster.get("run_type_compat", "")
             sid = str(row.get("strategy_id") or "")
             if not sid:
                 row["risk_level"] = "unknown"
@@ -71,28 +83,29 @@ def register_console_strategy_model_routes(app: FastAPI, *, ctx: Any) -> None:
     @app.post("/console/strategies/{strategy_id}/promote")
     async def promote_strategy(strategy_id: str, request: Request):
         body = await request.json()
-        next_stage = str(body.get("next_stage") or "champion")
+        next_strategy_stage = str(body.get("next_strategy_stage") or "champion")
         reason = str(body.get("reason") or "")
         decided_by = str(body.get("decided_by") or "console")
-        row = ctx.playbook.get_strategy(strategy_id)
-        if not row:
+        raw_row = ctx.playbook.get_strategy(strategy_id)
+        if not raw_row:
             raise HTTPException(status_code=404, detail="strategy not found")
-        prev_stage = str(row.get("stage") or "candidate")
+        row = _normalize_strategy_row(raw_row)
+        prev_strategy_stage = str(row.get("strategy_stage") or "candidate")
         try:
             promotion_id = ctx.playbook.promote_strategy(
                 strategy_id=strategy_id,
                 decision="promote_manual",
-                prev_stage=prev_stage,
-                next_stage=next_stage,
+                prev_strategy_stage=prev_strategy_stage,
+                next_strategy_stage=next_strategy_stage,
                 reason=reason,
                 decided_by=decided_by,
             )
         except ValueError as exc:
             msg = str(exc)
-            if msg.startswith("invalid_stage_transition:"):
+            if msg.startswith("invalid_strategy_stage_transition:"):
                 raise HTTPException(
                     status_code=409,
-                    detail={"ok": False, "error_code": "invalid_stage_transition", "error": msg},
+                    detail={"ok": False, "error_code": "invalid_strategy_stage_transition", "error": msg},
                 )
             if msg.startswith("promotion_audit_incomplete:"):
                 raise HTTPException(
@@ -102,17 +115,28 @@ def register_console_strategy_model_routes(app: FastAPI, *, ctx: Any) -> None:
             raise HTTPException(status_code=400, detail={"ok": False, "error": msg})
         ctx.nerve.emit(
             "strategy_promoted",
-            {"strategy_id": strategy_id, "prev_stage": prev_stage, "next_stage": next_stage, "promotion_id": promotion_id},
+            {
+                "strategy_id": strategy_id,
+                "prev_strategy_stage": prev_strategy_stage,
+                "next_strategy_stage": next_strategy_stage,
+                "promotion_id": promotion_id,
+            },
         )
-        return {"ok": True, "strategy_id": strategy_id, "promotion_id": promotion_id, "prev_stage": prev_stage, "next_stage": next_stage}
+        return {
+            "ok": True,
+            "strategy_id": strategy_id,
+            "promotion_id": promotion_id,
+            "prev_strategy_stage": prev_strategy_stage,
+            "next_strategy_stage": next_strategy_stage,
+        }
 
     @app.post("/console/strategies/{strategy_id}/rollback")
     async def rollback_strategy(strategy_id: str, request: Request):
         body = await request.json()
         reason = str(body.get("reason") or "manual_rollback")
         decided_by = str(body.get("decided_by") or "console")
-        row = ctx.playbook.get_strategy(strategy_id)
-        if not row:
+        raw_row = ctx.playbook.get_strategy(strategy_id)
+        if not raw_row:
             raise HTTPException(status_code=404, detail="strategy not found")
         target = ctx.playbook.resolve_latest_rollback_target(strategy_id)
         if not target:
@@ -124,15 +148,16 @@ def register_console_strategy_model_routes(app: FastAPI, *, ctx: Any) -> None:
                     "error": "rollback_point_missing_or_previous_champion_unavailable",
                 },
             )
-        prev = target.get("previous_strategy") if isinstance(target.get("previous_strategy"), dict) else {}
+        prev_raw = target.get("previous_strategy") if isinstance(target.get("previous_strategy"), dict) else {}
+        prev = _normalize_strategy_row(prev_raw)
         rollback_to_strategy_id = str(target.get("previous_champion_strategy_id") or "")
-        prev_stage = str(prev.get("stage") or "unknown")
+        prev_strategy_stage = str(prev.get("strategy_stage") or "unknown")
         if not rollback_to_strategy_id:
             raise HTTPException(
                 status_code=409,
                 detail={"ok": False, "error_code": "strategy_guard_blocked", "error": "rollback_target_missing"},
             )
-        if prev_stage == "retired":
+        if prev_strategy_stage == "retired":
             raise HTTPException(
                 status_code=409,
                 detail={"ok": False, "error_code": "strategy_guard_blocked", "error": "rollback_target_retired"},
@@ -141,17 +166,17 @@ def register_console_strategy_model_routes(app: FastAPI, *, ctx: Any) -> None:
             promotion_id = ctx.playbook.promote_strategy(
                 strategy_id=rollback_to_strategy_id,
                 decision="rollback_manual",
-                prev_stage=prev_stage,
-                next_stage="champion",
+                prev_strategy_stage=prev_strategy_stage,
+                next_strategy_stage="champion",
                 reason=f"{reason};rollback_from:{strategy_id}",
                 decided_by=decided_by,
             )
         except ValueError as exc:
             msg = str(exc)
-            if msg.startswith("invalid_stage_transition:"):
+            if msg.startswith("invalid_strategy_stage_transition:"):
                 raise HTTPException(
                     status_code=409,
-                    detail={"ok": False, "error_code": "invalid_stage_transition", "error": msg},
+                    detail={"ok": False, "error_code": "invalid_strategy_stage_transition", "error": msg},
                 )
             raise HTTPException(status_code=400, detail={"ok": False, "error": msg})
         ctx.nerve.emit(
@@ -159,8 +184,8 @@ def register_console_strategy_model_routes(app: FastAPI, *, ctx: Any) -> None:
             {
                 "from_strategy_id": strategy_id,
                 "to_strategy_id": rollback_to_strategy_id,
-                "prev_stage": prev_stage,
-                "next_stage": "champion",
+                "prev_strategy_stage": prev_strategy_stage,
+                "next_strategy_stage": "champion",
                 "promotion_id": promotion_id,
             },
         )
@@ -169,8 +194,8 @@ def register_console_strategy_model_routes(app: FastAPI, *, ctx: Any) -> None:
             "strategy_id": strategy_id,
             "rollback_to_strategy_id": rollback_to_strategy_id,
             "promotion_id": promotion_id,
-            "prev_stage": prev_stage,
-            "next_stage": "champion",
+            "prev_strategy_stage": prev_strategy_stage,
+            "next_strategy_stage": "champion",
         }
 
     @app.get("/console/strategies/{strategy_id}/experiments")
@@ -178,29 +203,31 @@ def register_console_strategy_model_routes(app: FastAPI, *, ctx: Any) -> None:
         row = ctx.playbook.get_strategy(strategy_id)
         if not row:
             raise HTTPException(status_code=404, detail="strategy not found")
-        return ctx.playbook.list_experiments(strategy_id=strategy_id, limit=limit)
+        return [_normalize_strategy_row(r) for r in ctx.playbook.list_experiments(strategy_id=strategy_id, limit=limit)]
 
     @app.get("/console/strategies/{strategy_id}/promotions")
     def strategy_promotions(strategy_id: str, limit: int = 200):
         row = ctx.playbook.get_strategy(strategy_id)
         if not row:
             raise HTTPException(status_code=404, detail="strategy not found")
-        return ctx.playbook.list_promotions(strategy_id=strategy_id, limit=limit)
+        return [_normalize_strategy_row(r) for r in ctx.playbook.list_promotions(strategy_id=strategy_id, limit=limit)]
 
     @app.get("/console/strategies/{strategy_id}/audit")
     def strategy_audit(strategy_id: str):
         try:
-            return ctx.playbook.strategy_audit_status(strategy_id)
+            return _normalize_strategy_row(ctx.playbook.strategy_audit_status(strategy_id))
         except ValueError:
             raise HTTPException(status_code=404, detail="strategy not found")
 
     @app.get("/console/strategies/release-events")
     def strategy_release_events(strategy_id: str | None = None, cluster_id: str | None = None, limit: int = 500):
-        return ctx.playbook.list_release_transitions(strategy_id=strategy_id, cluster_id=cluster_id, limit=limit)
+        rows = ctx.playbook.list_release_transitions(strategy_id=strategy_id, cluster_id=cluster_id, limit=limit)
+        return [_normalize_strategy_row(r) for r in rows]
 
     @app.get("/console/strategies/rollback-points")
     def strategy_rollback_points(cluster_id: str | None = None, limit: int = 200):
-        return ctx.playbook.list_rollback_points(cluster_id=cluster_id, limit=limit)
+        rows = ctx.playbook.list_rollback_points(cluster_id=cluster_id, limit=limit)
+        return [_normalize_strategy_row(r) for r in rows]
 
     @app.post("/console/strategies/{strategy_id}/sandbox-submit")
     async def strategy_sandbox_submit(strategy_id: str, request: Request):
@@ -454,7 +481,7 @@ def register_console_strategy_model_routes(app: FastAPI, *, ctx: Any) -> None:
         by_provider: dict[str, dict[str, int]] = {}
         by_model: dict[str, dict[str, int]] = {}
         by_routine: dict[str, dict[str, int]] = {}
-        fallback_chain_hits: dict[str, int] = {}
+        provider_route_hits: dict[str, int] = {}
 
         for row in records:
             provider = str(row.get("provider") or "unknown")
@@ -484,17 +511,17 @@ def register_console_strategy_model_routes(app: FastAPI, *, ctx: Any) -> None:
             r["out_tokens"] += out_t
             if not success:
                 r["errors"] += 1
-            chain = row.get("fallback_chain")
-            if isinstance(chain, list) and chain:
-                key = "->".join(str(x) for x in chain if str(x))
+            route = row.get("provider_route")
+            if isinstance(route, list) and route:
+                key = "->".join(str(x) for x in route if str(x))
                 if key:
-                    fallback_chain_hits[key] = fallback_chain_hits.get(key, 0) + 1
+                    provider_route_hits[key] = provider_route_hits.get(key, 0) + 1
 
-        task_rows = ctx.store.load_tasks()
+        run_rows = ctx.store.load_runs()
         by_semantic_cluster: dict[str, int] = {}
         by_capability: dict[str, int] = {}
         by_risk_level: dict[str, int] = {}
-        for row in task_rows if isinstance(task_rows, list) else []:
+        for row in run_rows if isinstance(run_rows, list) else []:
             plan_row = row.get("plan") if isinstance(row.get("plan"), dict) else {}
             cluster = str(
                 row.get("semantic_cluster")
@@ -503,7 +530,7 @@ def register_console_strategy_model_routes(app: FastAPI, *, ctx: Any) -> None:
             )
             if cluster:
                 by_semantic_cluster[cluster] = by_semantic_cluster.get(cluster, 0) + 1
-            fp = plan_row.get("semantic_fingerprint") if isinstance(plan_row.get("semantic_fingerprint"), dict) else {}
+            fp = plan_row.get("semantic_spec") if isinstance(plan_row.get("semantic_spec"), dict) else {}
             risk = str(fp.get("risk_level") or "").strip().lower()
             if risk:
                 by_risk_level[risk] = by_risk_level.get(risk, 0) + 1
@@ -525,6 +552,6 @@ def register_console_strategy_model_routes(app: FastAPI, *, ctx: Any) -> None:
                 "by_semantic_cluster": by_semantic_cluster,
                 "by_capability": by_capability,
                 "by_risk_level": by_risk_level,
-                "fallback_chain_hits": fallback_chain_hits,
+                "provider_route_hits": provider_route_hits,
             },
         }

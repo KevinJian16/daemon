@@ -11,7 +11,7 @@
   <h1 id="h-title">Daemon Console</h1>
   <span id="gate-badge" class="GREEN" title="Gate = 系统接单状态。GREEN：正常接单；YELLOW：降级运行；RED：暂停接单">GREEN</span>
   <span id="gate-label" style="color:var(--muted);font-size:11px" title="Gate = 系统接单状态">接单中</span>
-  <span id="running-tasks" style="color:var(--muted);font-size:11px;margin-left:auto"></span>
+  <span id="running-runs" style="color:var(--muted);font-size:11px;margin-left:auto"></span>
   <button onclick="toggleConsoleLang()" id="c-lang-btn" style="color:var(--muted);font-size:12px;padding:4px 8px;border-radius:6px;transition:background .12s">EN</button>
   <a href="/portal/" data-zh="Portal" data-en="Portal" style="color:var(--muted);font-size:12px;padding:4px 8px;border-radius:6px;text-decoration:none;transition:background .12s" onmouseover="this.style.background='var(--hover)'" onmouseout="this.style.background=''">Portal</a>
   <button onclick="refreshAll()" data-zh="↻ 刷新" data-en="↻ Refresh" style="color:var(--muted);font-size:12px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);transition:background .12s" onmouseover="this.style.background='var(--hover)'" onmouseout="this.style.background=''">↻ 刷新</button>
@@ -19,9 +19,10 @@
 
 <nav>
   <button class="active" onclick="show('overview', this)" data-zh="概览" data-en="Overview">概览</button>
+  <button onclick="show('lexicon', this)" data-zh="术语词典" data-en="Lexicon">术语词典</button>
   <button onclick="show('spine', this)" data-zh="Spine" data-en="Spine">Spine</button>
   <button onclick="show('fabric', this)" data-zh="Fabric" data-en="Fabric">Fabric</button>
-  <button onclick="show('policy', this)" data-zh="Policy 策略" data-en="Policy">Policy</button>
+  <button onclick="show('norm', this)" data-zh="Norm 基准" data-en="Norm">Norm</button>
   <button onclick="show('traces', this)" data-zh="追踪" data-en="Traces">追踪</button>
   <button onclick="show('strategies', this)" data-zh="Strategy 发布" data-en="Strategy">Strategy</button>
   <button onclick="show('model', this)" data-zh="模型与用量" data-en="Model & Usage">模型与用量</button>
@@ -38,13 +39,36 @@
 <div id="panel-overview" class="panel active">
   <div class="grid-4" id="stat-cards">
     <div class="stat"><div class="val" id="stat-memory">—</div><div class="lbl">Memory Units</div></div>
-    <div class="stat"><div class="val" id="stat-methods">—</div><div class="lbl">Active Methods</div></div>
+    <div class="stat"><div class="val" id="stat-methods">—</div><div class="lbl">Active Recipes</div></div>
     <div class="stat"><div class="val" id="stat-signals">—</div><div class="lbl">Attention Signals</div></div>
-    <div class="stat"><div class="val" id="stat-tasks">—</div><div class="lbl">Running Tasks</div></div>
+    <div class="stat"><div class="val" id="stat-runs">—</div><div class="lbl">Running Runs</div></div>
   </div>
   <div class="card">
     <h3>Cortex Usage Today</h3>
     <div id="cortex-table">Loading…</div>
+  </div>
+</div>
+
+<!-- LEXICON -->
+<div id="panel-lexicon" class="panel">
+  <div class="card">
+    <h3 data-zh="系统术语词典" data-en="System Lexicon">系统术语词典</h3>
+    <div class="search-row">
+      <input id="lexicon-q" placeholder="term / definition" style="width:280px">
+      <button class="action" onclick="loadLexicon()" data-zh="筛选" data-en="Filter">筛选</button>
+    </div>
+    <div style="color:var(--muted);font-size:11px;line-height:1.6;margin-bottom:10px" data-zh="定义基于当前 Daemon 实现，作为 Console 内部统一语义。新增概念必须先补词典。" data-en="Definitions reflect the current Daemon implementation and are the Console single vocabulary source. Add new concepts here before rollout.">定义基于当前 Daemon 实现，作为 Console 内部统一语义。新增概念必须先补词典。</div>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:18%">Term</th>
+          <th style="width:12%" data-zh="类别" data-en="Type">类别</th>
+          <th style="width:42%" data-zh="定义" data-en="Definition">定义</th>
+          <th style="width:28%" data-zh="示例" data-en="Example">示例</th>
+        </tr>
+      </thead>
+      <tbody id="lexicon-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
+    </table>
   </div>
 </div>
 
@@ -77,39 +101,39 @@
   <div id="fabric-content"></div>
 </div>
 
-<!-- POLICY -->
-<div id="panel-policy" class="panel">
+<!-- NORM -->
+<div id="panel-norm" class="panel">
   <div class="card">
-    <h3 id="policy-heading-priorities">领域优先级</h3>
+    <h3 id="norm-heading-priorities">领域优先级</h3>
     <table id="priority-table">
       <thead><tr><th>Domain</th><th>Weight</th><th>Source</th><th>Updated</th></tr></thead>
       <tbody id="priority-tbody"></tbody>
     </table>
   </div>
   <div class="card">
-    <h3 id="policy-heading-editor">Policy 编辑器</h3>
-    <div class="search-row policy-toolbar">
-      <select id="policy-scope" onchange="onPolicyScopeChange(true, false)" style="width:160px">
+    <h3 id="norm-heading-editor">Norm 编辑器</h3>
+    <div class="search-row norm-toolbar">
+      <select id="norm-scope" onchange="onNormScopeChange(true, false)" style="width:160px">
         <option value="quality">quality</option>
         <option value="preference">preference</option>
         <option value="budget">budget</option>
       </select>
-      <select id="policy-key-select" onchange="onPolicyKeyPresetChange()" style="width:240px">
+      <select id="norm-key-select" onchange="onNormKeyPresetChange()" style="width:240px">
         <option value="default">default</option>
       </select>
-      <button class="action" onclick="loadPolicyEditor()" data-zh="编辑 Policy" data-en="Edit Policy">Edit Policy</button>
-      <button class="action secondary" onclick="cancelPolicyEditor()" data-zh="关闭 Policy Editor" data-en="Close Editor">关闭 Policy Editor</button>
+      <button class="action" onclick="loadNormEditor()" data-zh="编辑 Norm" data-en="Edit Norm">Edit Norm</button>
+      <button class="action secondary" onclick="cancelNormEditor()" data-zh="关闭 Norm Editor" data-en="Close Editor">关闭 Norm Editor</button>
     </div>
-    <div class="policy-note-row">
-      <span id="policy-editor-meta">编辑器空闲</span>
+    <div class="norm-note-row">
+      <span id="norm-editor-meta">编辑器空闲</span>
     </div>
   </div>
   <div class="card">
-    <div class="search-row policy-toolbar" style="margin-bottom:8px">
-      <button class="action" onclick="loadPolicyCatalog()" data-zh="刷新目录" data-en="Refresh Catalog">刷新目录</button>
+    <div class="search-row norm-toolbar" style="margin-bottom:8px">
+      <button class="action" onclick="loadNormCatalog()" data-zh="刷新目录" data-en="Refresh Catalog">刷新目录</button>
     </div>
-    <div class="policy-catalog-block" style="margin-bottom:10px">
-      <h3 id="policy-heading-quality">Policy 质量键</h3>
+    <div class="norm-catalog-block" style="margin-bottom:10px">
+      <h3 id="norm-heading-quality">Norm 质量键</h3>
       <div class="table-shell">
         <table>
           <colgroup>
@@ -119,12 +143,12 @@
             <col style="width:25%">
           </colgroup>
           <thead><tr><th>Quality Key</th><th>Profile</th><th>Usage</th><th class="col-action-head">Action</th></tr></thead>
-          <tbody id="policy-quality-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
+          <tbody id="norm-quality-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
         </table>
       </div>
     </div>
-    <div class="policy-catalog-block" style="margin-bottom:10px">
-      <h3 id="policy-heading-preferences">Policy 偏好</h3>
+    <div class="norm-catalog-block" style="margin-bottom:10px">
+      <h3 id="norm-heading-preferences">Norm 偏好</h3>
       <div class="table-shell">
         <table>
           <colgroup>
@@ -134,12 +158,12 @@
             <col style="width:25%">
           </colgroup>
           <thead><tr><th>Preference Key</th><th>Value</th><th>Scope</th><th class="col-action-head">Action</th></tr></thead>
-          <tbody id="policy-pref-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
+          <tbody id="norm-pref-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
         </table>
       </div>
     </div>
-    <div class="policy-catalog-block">
-      <h3 id="policy-heading-budgets">Policy 预算</h3>
+    <div class="norm-catalog-block">
+      <h3 id="norm-heading-budgets">Norm 预算</h3>
       <div class="table-shell">
         <table>
           <colgroup>
@@ -149,18 +173,18 @@
             <col style="width:25%">
           </colgroup>
           <thead><tr><th>Budget Type</th><th>Daily Limit</th><th>Current Usage</th><th class="col-action-head">Action</th></tr></thead>
-          <tbody id="policy-budget-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
+          <tbody id="norm-budget-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
         </table>
       </div>
     </div>
   </div>
   <div class="card">
-    <h3 id="policy-heading-versions">Policy 版本</h3>
-    <div class="search-row policy-toolbar">
-      <button class="action" onclick="loadPolicyVersions()" data-zh="加载版本" data-en="Load Versions">加载版本</button>
-      <select id="policy-version-select"><option value="">选择版本</option></select>
-      <button class="action" style="background:#334155" onclick="viewSelectedPolicyVersion()" data-zh="查看版本" data-en="View Version">查看版本</button>
-      <button class="action" style="background:#7f1d1d" onclick="rollbackSelectedPolicyVersion()" data-zh="回滚版本" data-en="Rollback Version">回滚版本</button>
+    <h3 id="norm-heading-versions">Norm 版本</h3>
+    <div class="search-row norm-toolbar">
+      <button class="action" onclick="loadNormVersions()" data-zh="加载版本" data-en="Load Versions">加载版本</button>
+      <select id="norm-version-select"><option value="">选择版本</option></select>
+      <button class="action" style="background:#334155" onclick="viewSelectedNormVersion()" data-zh="查看版本" data-en="View Version">查看版本</button>
+      <button class="action" style="background:#7f1d1d" onclick="rollbackSelectedNormVersion()" data-zh="回滚版本" data-en="Rollback Version">回滚版本</button>
     </div>
     <div class="table-shell">
       <table>
@@ -172,10 +196,10 @@
           <col style="width:20%">
         </colgroup>
         <thead><tr><th>Version</th><th>Changed</th><th>By</th><th>Reason</th><th>Action</th></tr></thead>
-        <tbody id="policy-versions-tbody"><tr><td colspan="5" style="color:var(--muted)">请先选择 Policy key 再查看版本</td></tr></tbody>
+        <tbody id="norm-versions-tbody"><tr><td colspan="5" style="color:var(--muted)">请先选择 Norm key 再查看版本</td></tr></tbody>
       </table>
     </div>
-    <pre id="policy-version-preview" style="margin-top:10px">请选择一个版本进行预览。</pre>
+    <pre id="norm-version-preview" style="margin-top:10px">请选择一个版本进行预览。</pre>
   </div>
 </div>
 
@@ -229,7 +253,7 @@
         <option value="candidate">candidate</option>
         <option value="retired">retired</option>
       </select>
-      <input id="strategy-q" placeholder="strategy / cluster / stage" style="width:220px">
+      <input id="strategy-q" placeholder="strategy / cluster / strategy_stage" style="width:220px">
       <select id="strategy-page-size" onchange="setPageSizeAndReload('strategies', this.value, loadStrategies)">
         <option value="20" selected>20 / page</option>
         <option value="50">50 / page</option>
@@ -246,7 +270,7 @@
   <div class="card">
     <h3 id="strategy-heading-shadow-report">Shadow 对比报告</h3>
     <div class="search-row">
-      <input id="shadow-q" placeholder="task / cluster / strategy" style="width:220px">
+      <input id="shadow-q" placeholder="run / cluster / strategy" style="width:220px">
       <select id="shadow-page-size" onchange="setPageSizeAndReload('shadow', this.value, loadStrategies)">
         <option value="20" selected>20 / page</option>
         <option value="50">50 / page</option>
@@ -254,7 +278,7 @@
       </select>
     </div>
     <table>
-      <thead><tr><th>Task</th><th>Shadow Of</th><th>Cluster</th><th>Shadow</th><th>Champion</th><th>Delta</th><th>UTC</th></tr></thead>
+      <thead><tr><th>Run</th><th>Shadow Of</th><th>Cluster</th><th>Shadow</th><th>Champion</th><th>Delta</th><th>UTC</th></tr></thead>
       <tbody id="shadow-report-tbody"><tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr></tbody>
     </table>
     <div class="list-foot"><div id="shadow-pager" class="pager"></div></div>
@@ -298,7 +322,7 @@
       <button class="action" style="background:#14532d" onclick="openModelRegistryEditor()" data-zh="编辑注册表" data-en="Edit Registry">编辑注册表</button>
     </div>
     <div id="model-config-status" class="mini-stats">
-      <div class="mini-stat"><div class="k">Policy Keys</div><div class="v" id="model-policy-count">—</div></div>
+      <div class="mini-stat"><div class="k">Model Policy Keys</div><div class="v" id="model-policy-count">—</div></div>
       <div class="mini-stat"><div class="k">Registry Models</div><div class="v" id="model-registry-count">—</div></div>
       <div class="mini-stat"><div class="k">Default Provider</div><div class="v" id="model-default-provider">—</div></div>
       <div class="mini-stat"><div class="k">Default Model</div><div class="v" id="model-default-model">—</div></div>
@@ -463,6 +487,17 @@
     </table>
     <div class="list-foot"><div id="schedule-history-pager" class="pager"></div></div>
   </div>
+  <div class="card">
+    <div class="search-row">
+      <h3 style="margin:0" data-zh="周期 Circuit" data-en="User Circuits">周期 Circuit</h3>
+      <button class="action" onclick="loadCircuits()" data-zh="刷新" data-en="Refresh">刷新</button>
+      <button class="action" style="background:#14532d" onclick="openCreateCircuitModal()" data-zh="新建 Circuit" data-en="New Circuit">新建 Circuit</button>
+    </div>
+    <table>
+      <thead><tr><th>名称</th><th>Cron</th><th>类型</th><th>状态</th><th>上次触发</th><th>次数</th><th>Action</th></tr></thead>
+      <tbody id="circuits-tbody"><tr><td colspan="7" style="color:var(--muted)">加载中…</td></tr></tbody>
+    </table>
+  </div>
 </div>
 
 <!-- CAMPAIGNS -->
@@ -470,7 +505,7 @@
   <div class="card">
     <h3>Campaign List</h3>
     <div class="search-row">
-      <input id="campaign-q" placeholder="campaign / task / status / phase" style="width:240px">
+      <input id="campaign-q" placeholder="campaign / run / campaign_status / campaign_phase" style="width:240px">
       <select id="campaign-page-size" onchange="setPageSizeAndReload('campaigns', this.value, loadCampaigns)">
         <option value="20" selected>20 / page</option>
         <option value="50">50 / page</option>
@@ -479,7 +514,7 @@
       <button class="action" onclick="loadCampaigns()" data-zh="刷新" data-en="Refresh">刷新</button>
     </div>
     <table>
-      <thead><tr><th>Campaign</th><th>Task</th><th>Status</th><th>Phase</th><th>Milestone</th><th>Updated</th><th>Action</th></tr></thead>
+      <thead><tr><th>Campaign</th><th>Run</th><th>Campaign Status</th><th>Campaign Phase</th><th>Milestone</th><th>Updated</th><th>Action</th></tr></thead>
       <tbody id="campaigns-tbody"><tr><td colspan="7" style="color:var(--muted)">加载中…</td></tr></tbody>
     </table>
     <div class="list-foot"><div id="campaigns-pager" class="pager"></div></div>
@@ -560,8 +595,9 @@
 
 <script src="./js/core.js"></script>
 <script src="./js/panels/overview_spine.js"></script>
+<script src="./js/panels/lexicon.js"></script>
 <script src="./js/panels/fabric.js"></script>
-<script src="./js/panels/policy.js"></script>
+<script src="./js/panels/norm.js"></script>
 <script src="./js/panels/traces.js"></script>
 <script src="./js/panels/strategies.js"></script>
 <script src="./js/panels/model.js"></script>

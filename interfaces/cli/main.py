@@ -66,9 +66,9 @@ Usage: daemon <command> [options]
 
 Commands:
   health                    Show system health and gate status
-  submit <plan.json>        Submit a task plan from file
-  tasks [--status STATUS]   List tasks
-  task <task_id>            Show task details
+  submit <plan.json>        Submit a run plan from file
+  runs [--run-status STATUS] List runs
+  run <run_id>              Show run details
   outcomes [--limit N]      List recent outcomes
   chat                      Start interactive chat session
   spine status              Show Spine routine status
@@ -76,19 +76,19 @@ Commands:
   fabric memory             Show Memory Fabric stats
   fabric playbook           Show active Playbook methods
   fabric compass            Show Compass priorities + budgets
-  policy get <name>         Show a quality profile
-  policy set <name>         Set quality profile (reads JSON from stdin)
+  norm get <name>           Show a quality profile
+  norm set <name>           Set quality profile (reads JSON from stdin)
   traces [--routine R]      Show recent traces
 
 Examples:
   daemon health
   daemon submit plan.json
-  daemon tasks --status running
-  daemon task task_20260304_a1b2c3
+  daemon runs --run-status running
+  daemon run run_20260304_a1b2c3
   daemon outcomes --limit 10
   daemon chat
   daemon spine trigger pulse
-  daemon policy get research_report
+  daemon norm get research_report
 """.strip())
 
 
@@ -116,45 +116,45 @@ def cmd_submit(args: list[str]) -> None:
 
     result = _post("/submit", plan)
     if result.get("ok"):
-        print(f"✓ Submitted: {result.get('task_id')}")
-        if result.get("status") == "queued":
+        print(f"✓ Submitted: {result.get('run_id')}")
+        if result.get("run_status") == "queued":
             print("  (queued — Gate is not GREEN)")
     else:
         _die(result.get("error") or "submission failed")
 
 
-def cmd_tasks(args: list[str]) -> None:
-    status = ""
+def cmd_runs(args: list[str]) -> None:
+    run_status = ""
     limit = 50
     i = 0
     while i < len(args):
-        if args[i] == "--status" and i + 1 < len(args):
-            status = args[i + 1]; i += 2
+        if args[i] == "--run-status" and i + 1 < len(args):
+            run_status = args[i + 1]; i += 2
         elif args[i] == "--limit" and i + 1 < len(args):
             limit = int(args[i + 1]); i += 2
         else:
             i += 1
 
-    url = f"/tasks?limit={limit}"
-    if status:
-        url += f"&status={status}"
-    tasks = _get(url)
-    if not tasks:
-        print("No tasks found.")
+    url = f"/runs?limit={limit}"
+    if run_status:
+        url += f"&run_status={run_status}"
+    runs = _get(url)
+    if not runs:
+        print("No runs found.")
         return
     rows = [
-        [t.get("task_id", ""), t.get("task_type", ""), t.get("title", "")[:40],
-         _fmt_status(t.get("status", "")), str(t.get("priority", ""))]
-        for t in reversed(tasks)
+        [t.get("run_id", ""), t.get("run_type", ""), t.get("title", "")[:40],
+         _fmt_status(t.get("run_status", "")), str(t.get("priority", ""))]
+        for t in reversed(runs)
     ]
-    _table(rows, ["Task ID", "Type", "Title", "Status", "Pri"])
+    _table(rows, ["Run ID", "Type", "Title", "Status", "Pri"])
 
 
-def cmd_task(args: list[str]) -> None:
+def cmd_run(args: list[str]) -> None:
     if not args:
-        _die("Usage: daemon task <task_id>")
-    task = _get(f"/tasks/{args[0]}")
-    for k, v in task.items():
+        _die("Usage: daemon run <run_id>")
+    run = _get(f"/runs/{args[0]}")
+    for k, v in run.items():
         print(f"  {k}: {v}")
 
 
@@ -172,11 +172,11 @@ def cmd_outcomes(args: list[str]) -> None:
         print("No outcomes found.")
         return
     rows = [
-        [o.get("task_id", ""), o.get("title", "")[:50],
-         o.get("task_type", ""), (o.get("delivered_utc") or o.get("archived_utc") or "")[:19]]
+        [o.get("run_id", ""), o.get("title", "")[:50],
+         o.get("run_type", ""), str(o.get("delivered_utc") or "")[:19]]
         for o in items
     ]
-    _table(rows, ["Task ID", "Title", "Type", "Delivered"])
+    _table(rows, ["Run ID", "Title", "Type", "Delivered"])
 
 
 def cmd_chat(args: list[str]) -> None:
@@ -213,7 +213,7 @@ def cmd_chat(args: list[str]) -> None:
                 if ans == "y":
                     sub = _post("/submit", plan)
                     if sub.get("ok"):
-                        print(f"✓ Submitted: {sub.get('task_id')}\n")
+                        print(f"✓ Submitted: {sub.get('run_id')}\n")
                     else:
                         print(f"✗ Submit failed: {sub.get('error')}\n")
         except Exception as e:
@@ -287,12 +287,12 @@ def cmd_fabric(args: list[str]) -> None:
         _die(f"Unknown fabric subcommand: {sub}")
 
 
-def cmd_policy(args: list[str]) -> None:
+def cmd_norm(args: list[str]) -> None:
     if len(args) < 2:
-        _die("Usage: daemon policy <get|set> <name>")
+        _die("Usage: daemon norm <get|set> <name>")
     sub, name = args[0], args[1]
     if sub == "get":
-        d = _get(f"/console/policy/{name}")
+        d = _get(f"/console/norm/{name}")
         print(json.dumps(d.get("rules") or d, indent=2, ensure_ascii=False))
     elif sub == "set":
         print(f"Enter JSON rules for '{name}' (then Ctrl+D):")
@@ -301,10 +301,10 @@ def cmd_policy(args: list[str]) -> None:
             rules = json.loads(raw)
         except json.JSONDecodeError as e:
             _die(f"Invalid JSON: {e}")
-        result = _put(f"/console/policy/{name}", {"rules": rules})
+        result = _put(f"/console/norm/{name}", {"rules": rules})
         print(f"✓ Policy '{name}' updated" if result.get("ok") else f"✗ {result}")
     else:
-        _die(f"Unknown policy subcommand: {sub}")
+        _die(f"Unknown norm subcommand: {sub}")
 
 
 def cmd_traces(args: list[str]) -> None:
@@ -346,13 +346,13 @@ def cmd_traces(args: list[str]) -> None:
 COMMANDS = {
     "health": (cmd_health, 0),
     "submit": (cmd_submit, 1),
-    "tasks": (cmd_tasks, 0),
-    "task": (cmd_task, 1),
+    "runs": (cmd_runs, 0),
+    "run": (cmd_run, 1),
     "outcomes": (cmd_outcomes, 0),
     "chat": (cmd_chat, 0),
     "spine": (cmd_spine, 1),
     "fabric": (cmd_fabric, 1),
-    "policy": (cmd_policy, 2),
+    "norm": (cmd_norm, 2),
     "traces": (cmd_traces, 0),
 }
 

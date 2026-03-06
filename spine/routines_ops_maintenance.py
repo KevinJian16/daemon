@@ -101,7 +101,7 @@ def run_tend(self) -> dict:
         gate = self._read_gate()
         replayed = 0
         if gate.get("status") == "GREEN":
-            replayed = self._replay_queued_tasks()
+            replayed = self._replay_queued_runs()
         ctx.step("replay", replayed)
 
         cleaned = self._clean_old_traces(max_age_days=7)
@@ -119,7 +119,7 @@ def run_tend(self) -> dict:
             "memory_total_active": total_units,
             "memory_total_cap": total_units_cap,
             "signals_removed": signals_removed,
-            "tasks_replayed": replayed,
+            "runs_replayed": replayed,
             "traces_cleaned": cleaned,
             "weave_pattern_count": weave_count,
         }

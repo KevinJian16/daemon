@@ -1,4 +1,4 @@
-"""CampaignWorkflow — multi-milestone orchestration for task_scale=campaign."""
+"""CampaignWorkflow — multi-milestone orchestration for work_scale=campaign."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,7 +13,7 @@ from temporalio.exceptions import ApplicationError
 class CampaignInput:
     plan: dict
     run_root: str
-    task_id: str = ""
+    run_id: str = ""
 
 
 @workflow.defn(name="CampaignWorkflow")
@@ -36,7 +36,7 @@ class CampaignWorkflow:
         milestones = bootstrap.get("milestones") if isinstance(bootstrap.get("milestones"), list) else []
         start_idx = int(bootstrap.get("next_milestone_index") or 0)
         if not milestones:
-            await self._mark_task_status(run_root, plan, "failed", "campaign_milestones_missing")
+            await self._mark_run_status(run_root, plan, "failed", "campaign_milestones_missing")
             raise ApplicationError("campaign_milestones_missing", non_retryable=True)
 
         # Phase0 gate: campaign must be explicitly confirmed before execution.
@@ -54,11 +54,11 @@ class CampaignWorkflow:
                 schedule_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(maximum_attempts=1),
             )
-            await self._mark_task_status(run_root, plan, "paused", "campaign_waiting_user_confirmation")
+            await self._mark_run_status(run_root, plan, "paused", "campaign_waiting_user_confirmation")
             return {
                 "ok": False,
                 "campaign_id": campaign_id,
-                "status": "paused",
+                "campaign_status": "paused",
                 "wait_type": "phase0_confirmation_required",
                 "current_milestone_index": start_idx,
             }
@@ -86,7 +86,7 @@ class CampaignWorkflow:
                         {
                             "milestone_id": milestone_id,
                             "title": str(milestone.get("title") or ""),
-                            "status": "skipped",
+                            "milestone_status": "skipped",
                             "objective_pass": True,
                             "objective_score": 1.0,
                             "attempts": 0,
@@ -155,13 +155,13 @@ class CampaignWorkflow:
                 args=[
                     campaign_id,
                     idx,
-                    {
-                        "milestone_id": milestone_id,
-                        "title": str(milestone.get("title") or f"Milestone {idx + 1}"),
-                        "status": "passed" if objective_pass else "failed",
-                        "objective_pass": objective_pass,
-                        "objective_score": objective_score,
-                        "attempts": attempts,
+                        {
+                            "milestone_id": milestone_id,
+                            "title": str(milestone.get("title") or f"Milestone {idx + 1}"),
+                            "milestone_status": "passed" if objective_pass else "failed",
+                            "objective_pass": objective_pass,
+                            "objective_score": objective_score,
+                            "attempts": attempts,
                         "objective_rework_budget": max_rework,
                         "step_results": last_attempt_results,
                         "expected_output": str(milestone.get("expected_output") or ""),
@@ -189,11 +189,11 @@ class CampaignWorkflow:
                     schedule_to_close_timeout=timedelta(seconds=30),
                     retry_policy=RetryPolicy(maximum_attempts=1),
                 )
-                await self._mark_task_status(run_root, plan, "paused", f"campaign_milestone_failed:{milestone_id}")
+                await self._mark_run_status(run_root, plan, "paused", f"campaign_milestone_failed:{milestone_id}")
                 return {
                     "ok": False,
                     "campaign_id": campaign_id,
-                    "status": "paused",
+                    "campaign_status": "paused",
                     "failed_milestone": milestone_id,
                     "milestone_index": idx,
                 }
@@ -216,11 +216,11 @@ class CampaignWorkflow:
                 schedule_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(maximum_attempts=1),
             )
-            await self._mark_task_status(run_root, plan, "paused", f"campaign_waiting_feedback:{milestone_id}")
+            await self._mark_run_status(run_root, plan, "paused", f"campaign_waiting_feedback:{milestone_id}")
             return {
                 "ok": False,
                 "campaign_id": campaign_id,
-                "status": "paused",
+                "campaign_status": "paused",
                 "wait_type": "milestone_feedback_required",
                 "milestone_id": milestone_id,
                 "milestone_index": idx,
@@ -251,8 +251,13 @@ class CampaignWorkflow:
                 schedule_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(maximum_attempts=1),
             )
-            await self._mark_task_status(run_root, plan, "completed", "")
-            return {"ok": True, "campaign_id": campaign_id, "status": "completed", "delivery": delivery}
+            await self._mark_run_status(run_root, plan, "completed", "")
+            return {
+                "ok": True,
+                "campaign_id": campaign_id,
+                "campaign_status": "completed",
+                "delivery": delivery,
+            }
 
         error_code = str((delivery or {}).get("error_code") or "campaign_delivery_failed")
         await workflow.execute_activity(
@@ -262,11 +267,11 @@ class CampaignWorkflow:
             schedule_to_close_timeout=timedelta(seconds=30),
             retry_policy=RetryPolicy(maximum_attempts=1),
         )
-        await self._mark_task_status(run_root, plan, "failed", error_code[:200])
+        await self._mark_run_status(run_root, plan, "failed", error_code[:200])
         return {
             "ok": False,
             "campaign_id": campaign_id,
-            "status": "failed",
+            "campaign_status": "failed",
             "error_code": error_code,
             "delivery": delivery,
         }
@@ -298,14 +303,14 @@ class CampaignWorkflow:
         ).strip()
         return out
 
-    async def _mark_task_status(self, run_root: str, plan: dict, status: str, error: str) -> None:
+    async def _mark_run_status(self, run_root: str, plan: dict, run_status: str, error: str) -> None:
         try:
             await workflow.execute_activity(
-                "activity_update_task_status",
-                args=[run_root, {**plan, "last_error": error}, status],
+                "activity_update_run_status",
+                args=[run_root, {**plan, "last_error": error}, run_status],
                 start_to_close_timeout=timedelta(seconds=20),
                 schedule_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(maximum_attempts=1),
             )
         except Exception as exc:
-            workflow.logger.warning("Failed to update task status for campaign run %s: %s", run_root, exc)
+            workflow.logger.warning("Failed to update run status for campaign run %s: %s", run_root, exc)

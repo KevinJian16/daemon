@@ -1,4 +1,4 @@
-"""Portal feedback routes."""
+"""Portal/Telegram feedback routes."""
 from __future__ import annotations
 
 from typing import Any
@@ -11,41 +11,41 @@ def register_feedback_routes(app: FastAPI, *, ctx: Any) -> None:
     def list_pending_feedback(limit: int = 100):
         return ctx.pending_feedback_surveys(limit=limit)
 
-    @app.get("/feedback/{task_id}/state")
-    def get_feedback_state(task_id: str):
-        return ctx.feedback_state(task_id)
+    @app.get("/feedback/{run_id}/state")
+    def get_feedback_state(run_id: str):
+        return ctx.feedback_state(run_id)
 
-    @app.get("/feedback/{task_id}/questions")
-    async def get_feedback_questions(task_id: str):
-        return await ctx.get_feedback_questions(task_id)
+    @app.get("/feedback/{run_id}/questions")
+    async def get_feedback_questions(run_id: str):
+        return await ctx.get_feedback_questions(run_id)
 
     @app.post("/feedback/submit")
-    async def submit_feedback_compat(request: Request):
+    async def submit_feedback_from_body(request: Request):
         body = await request.json()
         if not isinstance(body, dict):
             body = {}
-        task_id = str(body.get("task_id") or "").strip()
-        if not task_id:
-            raise HTTPException(status_code=400, detail="task_id_required")
-        return await ctx.submit_feedback_internal(task_id, body, request=request)
+        run_id = str(body.get("run_id") or "").strip()
+        if not run_id:
+            raise HTTPException(status_code=400, detail="run_id_required")
+        return await ctx.submit_feedback_internal(run_id, body, request=request)
 
-    @app.post("/feedback/{task_id}")
-    async def submit_feedback(task_id: str, request: Request):
+    @app.post("/feedback/{run_id}")
+    async def submit_feedback(run_id: str, request: Request):
         body = await request.json()
         if not isinstance(body, dict):
             body = {}
-        return await ctx.submit_feedback_internal(task_id, body, request=request)
+        return await ctx.submit_feedback_internal(run_id, body, request=request)
 
-    @app.post("/feedback/{task_id}/append")
-    async def append_feedback(task_id: str, request: Request):
+    @app.post("/feedback/{run_id}/append")
+    async def append_feedback(run_id: str, request: Request):
         body = await request.json()
         if not isinstance(body, dict):
             body = {}
         body["type"] = "append"
-        return await ctx.submit_feedback_internal(task_id, body, request=request)
+        return await ctx.submit_feedback_internal(run_id, body, request=request)
 
-    @app.post("/tasks/{task_id}/feedback")
-    async def submit_task_feedback_compat(task_id: str, request: Request):
+    @app.post("/runs/{run_id}/feedback")
+    async def submit_run_feedback(run_id: str, request: Request):
         body = await request.json()
         if not isinstance(body, dict):
             body = {}
@@ -55,4 +55,4 @@ def register_feedback_routes(app: FastAPI, *, ctx: Any) -> None:
             body["type"] = "quick" if body.get("rating") is not None else "append"
         if not str(body.get("source") or "").strip():
             body["source"] = "telegram"
-        return await ctx.submit_feedback_internal(task_id, body, request=None)
+        return await ctx.submit_feedback_internal(run_id, body, request=request)

@@ -83,7 +83,7 @@ async function loadModelControl() {
     }
     if (versionsBody) {
       const rows = [];
-      for (const v of (policyVersions || [])) rows.push({target: 'policy', ...v});
+      for (const v of (policyVersions || [])) rows.push({target: 'model_policy', ...v});
       for (const v of (registryVersions || [])) rows.push({target: 'registry', ...v});
       rows.sort((a, b) => String(b.changed_utc || '').localeCompare(String(a.changed_utc || '')));
       currentModelVersions = rows;
@@ -200,7 +200,7 @@ async function saveModelRegistry(rawText = '{}') {
 
 async function openModelPolicyEditor() {
   await openUnifiedEditor({
-    key: 'model:policy',
+    key: 'model:model_policy',
     title: tx('Model Policy 配置', 'Model Policy'),
     subtitle: 'config/model_policy.json',
     hint: tx('保存后自动刷新模型用量与版本列表。', 'Save refreshes model usage and version list.'),

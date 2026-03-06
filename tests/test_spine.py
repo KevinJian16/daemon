@@ -203,12 +203,12 @@ class TestSpineRoutines:
 
     def test_record(self, spine_ctx):
         result = spine_ctx.record(
-            task_id="task_001",
+            run_id="run_001",
             plan={"method": "research_report", "title": "Test"},
             step_results=[{"status": "ok"}],
             outcome={"ok": True, "score": 0.9},
         )
-        assert result["task_id"] == "task_001"
+        assert result["run_id"] == "run_001"
         assert result["outcome"] == "success"
 
     def test_witness_insufficient_data(self, spine_ctx):
@@ -255,7 +255,7 @@ class TestSpineRoutines:
     def test_tend(self, spine_ctx):
         result = spine_ctx.tend()
         assert "memory_archived" in result
-        assert "tasks_replayed" in result
+        assert "runs_replayed" in result
 
     def test_nerve_integration(self, spine_ctx):
         events = []

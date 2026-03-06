@@ -12,10 +12,10 @@ async def run_finalize_delivery(self, run_root: str, plan: dict, step_results: l
     compass = CompassFabric(state / "compass.db")
     is_shadow = bool(plan.get("is_shadow", False))
 
-    task_type = str(plan.get("task_type") or "default").strip()
+    run_type = str(plan.get("run_type") or "default").strip()
     cluster_id = str(plan.get("cluster_id") or "").strip()
-    profile = compass.get_quality_profile(task_type)
-    contract = self._load_quality_contract(cluster_id, task_type)
+    profile = compass.get_quality_profile(run_type)
+    contract = self._load_quality_contract(cluster_id, run_type)
 
     render_path = self._find_render_output(run_root, step_results)
     if not render_path:
@@ -70,7 +70,7 @@ async def run_finalize_delivery(self, run_root: str, plan: dict, step_results: l
         outcome_path = self._archive_outcome(run_root, plan, render_path, step_results, outcome_root=outcome_root)
         self._update_outcome_index(outcome_path, plan, outcome_root=outcome_root)
 
-    self._update_task_status(
+    self._update_run_status(
         run_root,
         plan,
         "completed_shadow" if is_shadow else "completed",
@@ -85,11 +85,11 @@ async def run_finalize_delivery(self, run_root: str, plan: dict, step_results: l
             self._event_bridge.emit("feedback_survey_generated", feedback_survey)
         except Exception as exc:
             from temporalio import activity
-            activity.logger.warning("Failed to generate feedback survey for task %s: %s", plan.get("task_id", ""), exc)
+            activity.logger.warning("Failed to generate feedback survey for run %s: %s", plan.get("run_id", ""), exc)
 
-    task_id = str(plan.get("task_id") or "")
+    run_id = str(plan.get("run_id") or "")
     delivery_payload = {
-        "task_id": task_id,
+        "run_id": run_id,
         "plan": plan,
         "step_results": step_results,
         "outcome": {
@@ -104,14 +104,14 @@ async def run_finalize_delivery(self, run_root: str, plan: dict, step_results: l
         delivery_payload["feedback_survey"] = feedback_survey
     if not is_shadow:
         self._event_bridge.emit("delivery_completed", delivery_payload)
-    self._event_bridge.emit("task_completed", delivery_payload)
+    self._event_bridge.emit("run_completed", delivery_payload)
     from temporalio import activity
-    activity.logger.info("Delivery completed for task %s; bridge events emitted", task_id)
+    activity.logger.info("Delivery completed for run %s; bridge events emitted", run_id)
 
     return {
         "ok": True,
         "outcome_path": str(outcome_path),
-        "task_id": task_id,
+        "run_id": run_id,
         "delivered_utc": __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime()),
         "is_shadow": is_shadow,
         "quality_score": round(quality_score, 4),
@@ -120,23 +120,24 @@ async def run_finalize_delivery(self, run_root: str, plan: dict, step_results: l
     }
 
 
-async def run_update_task_status(self, run_root: str, plan: dict, status: str) -> dict:
-    self._update_task_status(run_root, plan, status)
-    if status in {"failed", "cancelled"}:
-        task_id = str(plan.get("task_id") or "")
+async def run_update_run_status(self, run_root: str, plan: dict, run_status: str) -> dict:
+    run_status = str(run_status or "")
+    self._update_run_status(run_root, plan, run_status)
+    if run_status in {"failed", "cancelled"}:
+        run_id = str(plan.get("run_id") or "")
         self._event_bridge.emit(
-            "task_completed",
+            "run_completed",
             {
-                "task_id": task_id,
+                "run_id": run_id,
                 "plan": plan,
                 "step_results": [],
                 "outcome": {
                     "ok": False,
                     "score": 0.0,
-                    "status": status,
+                    "run_status": run_status,
                     "error": plan.get("last_error", ""),
                     **self._failure_meta(plan),
                 },
             },
         )
-    return {"ok": True, "status": status}
+    return {"ok": True, "run_status": run_status}

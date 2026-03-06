@@ -22,7 +22,7 @@
 
 ### 1.2 架构级风险
 
-1. 状态文件多点读写：`tasks.json`、`gate.json` 在 API/Dispatch/Spine/Temporal/Scheduler 分散访问，存在状态漂移风险。  
+1. 状态文件多点读写：`runs.json`、`gate.json` 在 API/Dispatch/Spine/Temporal/Scheduler 分散访问，存在状态漂移风险。  
 2. API 单体化：路由数量高（约 99），变更容易产生连带回归。  
 3. Console 单页脚本过大：同屏承担交互、渲染、翻译、网络调用，难以维护。  
 4. 异常处理粒度不统一：大量宽泛 `except Exception`，错误语义与可追踪性不稳定。  
@@ -181,7 +181,7 @@ interfaces/portal/
 2. API/Dispatch/Spine/Temporal/Scheduler 改为调用 StateStore。  
 
 完成定义：
-1. 代码库中不再散落直接操作 `tasks.json`/`gate.json` 的业务逻辑。  
+1. 代码库中不再散落直接操作 `runs.json`/`gate.json` 的业务逻辑。  
 2. 状态读写路径统一且可追踪。  
 
 ## Phase 2：API Router 拆分（P0）
@@ -248,8 +248,8 @@ interfaces/portal/
 
 ### 5.1 行为等价验收
 
-1. `/submit`、`/tasks`、`/outcome`、`/campaigns`、`/console/*` 协议字段不回退。  
-2. `task_completed -> spine.record -> learn/judge/relay` 闭环保持可用。  
+1. `/submit`、`/runs`、`/outcome`、`/campaigns`、`/console/*` 协议字段不回退。  
+2. `run_completed -> spine.record -> learn/judge/relay` 闭环保持可用。  
 3. Portal/Console/Telegram 反馈去重规则保持一致。  
 
 ### 5.2 结构验收
@@ -284,7 +284,7 @@ interfaces/portal/
 
 ## 7. 第一批可执行任务（立即开工）
 
-1. 落地 `StateStore`，替换 `tasks.json/gate.json` 访问。  
+1. 落地 `StateStore`，替换 `runs.json/gate.json` 访问。  
 2. 拆 API 为多 router，保留旧接口不变。  
 3. 拆 Dispatch 为语义/策略/模型/预算/replay 子模块。  
 4. 拆 Console JS 为 `app + panels`，先保持行为等价再做细化优化。  

@@ -11,15 +11,15 @@ function fmtTime(utcStr) {
 let activeAgentId = '';
 let activeAgentSkills = [];
 let activePlaybookMethod = null;
-let currentPolicyScope = 'quality';
-let currentPolicyType = 'default';
-let currentPolicyVersions = [];
-let currentPolicyKeys = [];
+let currentNormScope = 'quality';
+let currentNormType = 'default';
+let currentNormVersions = [];
+let currentNormKeys = [];
 let currentSemanticVersions = [];
 let currentModelVersions = [];
 let currentModelPolicy = {};
 let resetChallenge = null;
-let runningTasksCount = 0;
+let runningRunsCount = 0;
 let unifiedEditorState = {
   open: false,
   dirty: false,
@@ -42,7 +42,7 @@ function _readConsolePanelState() {
     if (!raw) return 'overview';
     const parsed = JSON.parse(raw);
     const panel = String(parsed?.panel || '').trim();
-    const allow = new Set(['overview', 'spine', 'fabric', 'policy', 'traces', 'strategies', 'model', 'agents', 'skill-evolution', 'schedules', 'campaigns', 'system']);
+    const allow = new Set(['overview', 'lexicon', 'spine', 'fabric', 'norm', 'traces', 'strategies', 'model', 'agents', 'skill-evolution', 'schedules', 'campaigns', 'system']);
     return allow.has(panel) ? panel : 'overview';
   } catch (_) {
     return 'overview';
@@ -80,19 +80,19 @@ function tx(zh, en) { return cLang === 'zh' ? zh : en; }
 let currentFabricView = 'memory';
 const CONSOLE_STATIC_TEXT = [
   {sel:'#panel-overview .stat:nth-child(1) .lbl', zh:'Memory 单元', en:'Memory Units'},
-  {sel:'#panel-overview .stat:nth-child(2) .lbl', zh:'活跃 Methods', en:'Active Methods'},
+  {sel:'#panel-overview .stat:nth-child(2) .lbl', zh:'活跃 Recipes', en:'Active Recipes'},
   {sel:'#panel-overview .stat:nth-child(3) .lbl', zh:'Attention 信号', en:'Attention Signals'},
-  {sel:'#panel-overview .stat:nth-child(4) .lbl', zh:'运行中任务', en:'Running Tasks'},
+  {sel:'#panel-overview .stat:nth-child(4) .lbl', zh:'运行中执行', en:'Running Runs'},
   {sel:'#panel-overview .card h3', zh:'今日 Cortex 用量', en:'Cortex Usage Today'},
   {sel:'#panel-spine .card:nth-of-type(1) h3', zh:'Spine 运行态', en:'Spine Runtime'},
   {sel:'#panel-spine .card:nth-of-type(2) h3', zh:'Nerve 事件流', en:'Nerve Event Feed'},
   {sel:'#panel-spine .card:nth-of-type(3) h3', zh:'依赖图', en:'Dependency Graph'},
-  {sel:'#policy-heading-priorities', zh:'领域优先级', en:'Domain Priorities'},
-  {sel:'#policy-heading-editor', zh:'Policy 编辑器', en:'Policy Editor'},
-  {sel:'#policy-heading-quality', zh:'Policy 质量键', en:'Policy Quality Keys'},
-  {sel:'#policy-heading-preferences', zh:'Policy 偏好', en:'Policy Preferences'},
-  {sel:'#policy-heading-budgets', zh:'Policy 预算', en:'Policy Budgets'},
-  {sel:'#policy-heading-versions', zh:'Policy 版本', en:'Policy Versions'},
+  {sel:'#norm-heading-priorities', zh:'领域优先级', en:'Domain Priorities'},
+  {sel:'#norm-heading-editor', zh:'Norm 编辑器', en:'Norm Editor'},
+  {sel:'#norm-heading-quality', zh:'Norm 质量键', en:'Norm Quality Keys'},
+  {sel:'#norm-heading-preferences', zh:'Norm 偏好', en:'Norm Preferences'},
+  {sel:'#norm-heading-budgets', zh:'Norm 预算', en:'Norm Budgets'},
+  {sel:'#norm-heading-versions', zh:'Norm 版本', en:'Norm Versions'},
   {sel:'#panel-traces .card h3', zh:'Trace 详情', en:'Trace Detail'},
   {sel:'#strategy-heading-shadow-report', zh:'Shadow 对比报告', en:'Shadow Comparison Report'},
   {sel:'#strategy-heading-detail', zh:'Strategy 详情', en:'Strategy Detail'},
@@ -114,19 +114,20 @@ const CONSOLE_STATIC_TEXT = [
   {sel:'#panel-system .card:nth-of-type(1) h3', zh:'托管 Drive 存储', en:'Managed Drive Storage'},
   {sel:'#panel-system .card:nth-of-type(2) h3', zh:'系统重置（challenge/confirm 仅本机）', en:'System Reset (Challenge/Confirm = Localhost Only)'},
   {sel:'#panel-system .card:nth-of-type(3) h3', zh:'最近重置报告', en:'Last Reset Report'},
-  {sel:'#policy-editor-meta', zh:'编辑器空闲', en:'Editor idle'},
+  {sel:'#norm-editor-meta', zh:'编辑器空闲', en:'Editor idle'},
 ];
 const CONSOLE_INPUT_PLACEHOLDERS = [
+  {sel:'#lexicon-q', zh:'term / definition', en:'term / definition'},
   {sel:'#trace-since', zh:'起始 UTC（可选）', en:'since UTC (optional)'},
   {sel:'#trace-q', zh:'trace_id / routine', en:'trace_id / routine'},
   {sel:'#cortex-q', zh:'provider / model / trace', en:'provider / model / trace'},
   {sel:'#strategy-cluster-filter', zh:'cluster_id（可选）', en:'cluster_id (optional)'},
-  {sel:'#strategy-q', zh:'strategy / cluster / stage', en:'strategy / cluster / stage'},
-  {sel:'#shadow-q', zh:'task / cluster / strategy', en:'task / cluster / strategy'},
+  {sel:'#strategy-q', zh:'strategy / cluster / strategy_stage', en:'strategy / cluster / strategy_stage'},
+  {sel:'#shadow-q', zh:'run / cluster / strategy', en:'run / cluster / strategy'},
   {sel:'#sev-q', zh:'proposal / skill / status', en:'proposal / skill / status'},
   {sel:'#schedules-q', zh:'routine / mode / schedule', en:'routine / mode / schedule'},
   {sel:'#schedule-history-q', zh:'routine / status / detail', en:'routine / status / detail'},
-  {sel:'#campaign-q', zh:'campaign / task / status / phase', en:'campaign / task / status / phase'},
+  {sel:'#campaign-q', zh:'campaign / run / campaign_status / campaign_phase', en:'campaign / run / campaign_status / campaign_phase'},
   {sel:'#agents-q', zh:'agent / workspace status', en:'agent / workspace status'},
   {sel:'#agent-skills-q', zh:'skill / path / status', en:'skill / path / status'},
   {sel:'#storage-daemon-dir-name', zh:'daemon 目录名（例：daemon）', en:'daemon directory name (e.g. daemon)'},
@@ -149,7 +150,7 @@ function applyConsoleLang() {
     const el = document.querySelector(row.sel);
     if (el) el.placeholder = zh ? row.zh : row.en;
   });
-  document.getElementById('running-tasks').textContent = tx(`${runningTasksCount} 运行中`, `${runningTasksCount} running`);
+  document.getElementById('running-runs').textContent = tx(`${runningRunsCount} 运行中`, `${runningRunsCount} running`);
   const storageNote = document.getElementById('system-storage-note');
   if (storageNote) {
     storageNote.innerHTML = zh
@@ -162,7 +163,7 @@ function applyConsoleLang() {
       ? '重置需要 challenge + confirm；confirm 为一次性动作，过期后自动失效。'
       : 'Reset requires challenge + confirm. Confirm action is one-time and expires automatically.';
   }
-  _translateDefaultText('#policy-version-preview', '请选择一个版本进行预览。', 'Select one version to preview.');
+  _translateDefaultText('#norm-version-preview', '请选择一个版本进行预览。', 'Select one version to preview.');
   _translateDefaultText('#trace-detail', '请选择一条 Trace 记录查看详情。', 'Select a trace row to inspect details.');
   _translateDefaultText('#strategy-detail', '请选择一条 Strategy 记录查看实验与晋升信息。', 'Select a strategy row to inspect experiments/promotions.');
   _translateDefaultText('#semantics-detail', '加载中…', 'Loading…');
@@ -172,11 +173,11 @@ function applyConsoleLang() {
   _translateDefaultText('#storage-status-body', '加载中…', 'Loading…');
   _translateDefaultText('#system-reset-state', '尚未生成重置挑战码。', 'No reset challenge issued.');
   _translateDefaultText('#system-reset-report', '暂无报告。', 'No report.');
-  const policyScope = document.getElementById('policy-scope');
-  if (policyScope && policyScope.options.length >= 3) {
-    policyScope.options[0].text = 'quality';
-    policyScope.options[1].text = 'preference';
-    policyScope.options[2].text = 'budget';
+  const normScope = document.getElementById('norm-scope');
+  if (normScope && normScope.options.length >= 3) {
+    normScope.options[0].text = 'quality';
+    normScope.options[1].text = 'preference';
+    normScope.options[2].text = 'budget';
   }
   const traceRoutine = document.getElementById('trace-routine');
   if (traceRoutine && traceRoutine.options.length > 0) {
@@ -194,9 +195,9 @@ function applyConsoleLang() {
   if (sev && sev.options.length > 0) {
     sev.options[0].text = zh ? '全部状态' : 'All status';
   }
-  const policyVersionSel = document.getElementById('policy-version-select');
-  if (policyVersionSel && policyVersionSel.options.length > 0 && policyVersionSel.options[0].value === '') {
-    policyVersionSel.options[0].text = zh ? '选择版本' : 'Select version';
+  const normVersionSel = document.getElementById('norm-version-select');
+  if (normVersionSel && normVersionSel.options.length > 0 && normVersionSel.options[0].value === '') {
+    normVersionSel.options[0].text = zh ? '选择版本' : 'Select version';
   }
   const semanticVersionSel = document.getElementById('semantic-version-select');
   if (semanticVersionSel && semanticVersionSel.options.length > 0 && semanticVersionSel.options[0].value === '') {
@@ -398,15 +399,16 @@ async function _runPanelLoader(panel, opts = {}) {
   if (!force && st.loaded) return;
   let loader = null;
   if (panel === 'overview') loader = loadOverview;
+  else if (panel === 'lexicon') loader = loadLexicon;
   else if (panel === 'spine') loader = loadSpine;
   else if (panel === 'fabric') loader = () => showFabric(currentFabricView || 'memory');
-  else if (panel === 'policy') loader = loadPolicy;
+  else if (panel === 'norm') loader = loadNorm;
   else if (panel === 'traces') loader = loadTraces;
   else if (panel === 'strategies') loader = async () => { await loadStrategies(); await loadSemantics(); };
   else if (panel === 'model') loader = loadModelControl;
   else if (panel === 'agents') loader = loadAgents;
   else if (panel === 'skill-evolution') loader = loadSkillEvolution;
-  else if (panel === 'schedules') loader = loadSchedules;
+  else if (panel === 'schedules') loader = async () => { await loadSchedules(); await loadCircuits(); };
   else if (panel === 'campaigns') loader = loadCampaigns;
   else if (panel === 'system') loader = loadSystemResetPanel;
   if (!loader) return;
@@ -510,10 +512,11 @@ async function api(path) {
 }
 
 async function apiWrite(path, method, body) {
+  const hasBody = body !== null && body !== undefined;
   const r = await fetch(API + path, {
     method,
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body || {}),
+    headers: hasBody ? {'Content-Type': 'application/json'} : {},
+    body: hasBody ? JSON.stringify(body) : undefined,
   });
   const text = await r.text();
   let data = {};

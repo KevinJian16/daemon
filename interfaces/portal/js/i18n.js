@@ -2,9 +2,9 @@
 const D = {
   zh:{
     pending:'待处理',running:'进行中',history:'历史',none:'暂无',
-    composeTitle:'需要做什么？',composeHint:'描述你的任务，系统自动判断规模和分配 agent。',
-    planDetected:'检测到任务计划',submitPlan:'确认提交',rewrite:'重新描述',
-    send:'发送',pause:'暂停',redirect:'调整方向',cancel:'取消任务',
+    composeTitle:'需要做什么？',composeHint:'描述你的目标，系统自动判断为 Pulse/Thread/Campaign 并分配 agent。',
+    planDetected:'检测到运行计划',submitPlan:'确认提交',rewrite:'重新描述',
+    send:'发送',pause:'暂停',redirect:'调整方向',cancel:'取消运行',
     milestones:'Milestone 进度',
     rateTitle:'这个结果怎么样？',submitRating:'提交评价',deepFeedback:'详细评价',
     appendTitle:'追加评价',appendSubmit:'提交追加评价',
@@ -17,14 +17,14 @@ const D = {
     submitting:'提交中…',submitOk:'已记录 ✓',cancellingMsg:'取消中…',cancelOk:'已取消',
     s_running:'进行中',s_queued:'排队中',s_completed:'已完成',s_done:'已完成',
     s_failed:'失败',s_cancelled:'已取消',s_pending_review:'待评价',
-    hideDeep:'收起详细评价',attachTip:'添加附件',composeTip:'新建任务',
-    cancelConfirm:'确认取消这个任务？',redirectPrompt:'新的方向或补充说明：',
+    hideDeep:'收起详细评价',attachTip:'添加附件',composeTip:'新建运行',
+    cancelConfirm:'确认取消这次运行？',redirectPrompt:'新的方向或补充说明：',
   },
   en:{
     pending:'Pending',running:'Running',history:'History',none:'None',
-    composeTitle:'What do you need?',composeHint:'Describe your task. Daemon will choose scale and assign agents.',
-    planDetected:'Task plan detected',submitPlan:'Submit',rewrite:'Rewrite',
-    send:'Send',pause:'Pause',redirect:'Redirect',cancel:'Cancel Task',
+    composeTitle:'What do you need?',composeHint:'Describe your objective. Daemon will classify Pulse/Thread/Campaign and assign agents.',
+    planDetected:'Run plan detected',submitPlan:'Submit',rewrite:'Rewrite',
+    send:'Send',pause:'Pause',redirect:'Redirect',cancel:'Cancel Run',
     milestones:'Milestone Progress',
     rateTitle:'How was this result?',submitRating:'Submit Rating',deepFeedback:'Detailed Feedback',
     appendTitle:'Additional Feedback',appendSubmit:'Submit Follow-up',
@@ -37,8 +37,8 @@ const D = {
     submitting:'Submitting…',submitOk:'Recorded ✓',cancellingMsg:'Cancelling…',cancelOk:'Cancelled',
     s_running:'Running',s_queued:'Queued',s_completed:'Completed',s_done:'Completed',
     s_failed:'Failed',s_cancelled:'Cancelled',s_pending_review:'Pending Review',
-    hideDeep:'Hide detailed feedback',attachTip:'Attach file',composeTip:'New task',
-    cancelConfirm:'Cancel this task?',redirectPrompt:'New direction or instruction:',
+    hideDeep:'Hide detailed feedback',attachTip:'Attach file',composeTip:'New run',
+    cancelConfirm:'Cancel this run?',redirectPrompt:'New direction or instruction:',
   },
 };
 const SHARED_LANG_KEY = 'd_lang';
@@ -87,4 +87,3 @@ window.addEventListener('storage', (event) => {
   applyI18n();
   renderNav();
 });
-

@@ -15,18 +15,18 @@ def apply_strategy(dispatch, plan: dict) -> dict:
     if not cluster_id:
         raise ValueError("missing_cluster_id")
 
-    champion = dispatch._playbook.get_champion(cluster_id)
+    champion = dispatch._playbook.get_champion(cluster_id) or {}
     if not champion:
         try:
             dispatch._playbook.seed_clusters([{"cluster_id": cluster_id, "display_name": cluster_id}])
-            champion = dispatch._playbook.get_champion(cluster_id)
+            champion = dispatch._playbook.get_champion(cluster_id) or {}
         except Exception as exc:
             logger.warning("Failed to auto-seed champion for cluster=%s: %s", cluster_id, exc)
     if not champion:
         raise ValueError(f"no_champion_strategy_for_cluster:{cluster_id}")
 
     plan["strategy_id"] = champion.get("strategy_id", "")
-    plan["strategy_stage"] = champion.get("stage", "champion")
+    plan["strategy_stage"] = champion.get("strategy_stage", "champion")
     if isinstance(champion.get("score_components"), dict):
         plan.setdefault("global_score_components", champion.get("score_components") or {})
 
@@ -71,17 +71,17 @@ def pick_shadow_candidate(dispatch, cluster_id: str, champion_strategy_id: str) 
         r
         for r in all_rows
         if str(r.get("strategy_id") or "") != champion_strategy_id
-        and str(r.get("stage") or "") in {"shadow", "challenger"}
+        and str(r.get("strategy_stage") or "") in {"shadow", "challenger"}
     ]
     fallback = [
         r
         for r in all_rows
         if str(r.get("strategy_id") or "") != champion_strategy_id
-        and str(r.get("stage") or "") in {"candidate"}
+        and str(r.get("strategy_stage") or "") in {"candidate"}
     ]
     candidates = preferred or fallback
     if not candidates:
-        seeded = dispatch._playbook.spawn_candidate_from_champion(cluster_id=cluster_id, stage="candidate")
+        seeded = dispatch._playbook.spawn_candidate_from_champion(cluster_id=cluster_id, strategy_stage="candidate")
         if not seeded:
             return None
         return seeded
@@ -90,13 +90,13 @@ def pick_shadow_candidate(dispatch, cluster_id: str, champion_strategy_id: str) 
         key=lambda x: (float(x.get("global_score") or 0.0), int(x.get("sample_n") or 0)),
         reverse=True,
     )[0]
-    if str(best.get("stage") or "") == "candidate":
+    if str(best.get("strategy_stage") or "") == "candidate":
         try:
             dispatch._playbook.promote_strategy(
                 strategy_id=str(best.get("strategy_id") or ""),
                 decision="enter_shadow_auto",
-                prev_stage="candidate",
-                next_stage="shadow",
+                prev_strategy_stage="candidate",
+                next_strategy_stage="shadow",
                 reason="selected_for_shadow_execution",
                 decided_by="dispatch",
             )
@@ -108,7 +108,7 @@ def pick_shadow_candidate(dispatch, cluster_id: str, champion_strategy_id: str) 
     return best
 
 
-async def maybe_submit_shadow(dispatch, plan: dict, parent_task_id: str) -> None:
+async def maybe_submit_shadow(dispatch, plan: dict, parent_run_id: str) -> None:
     if plan.get("is_shadow"):
         return
     if not dispatch._temporal:
@@ -125,11 +125,11 @@ async def maybe_submit_shadow(dispatch, plan: dict, parent_task_id: str) -> None
     if not candidate:
         return
 
-    shadow_task_id = f"{parent_task_id}_shadow_{uuid.uuid4().hex[:6]}"
+    shadow_run_id = f"{parent_run_id}_shadow_{uuid.uuid4().hex[:6]}"
     shadow_plan = dict(plan)
-    shadow_plan["task_id"] = shadow_task_id
+    shadow_plan["run_id"] = shadow_run_id
     shadow_plan["is_shadow"] = True
-    shadow_plan["shadow_of"] = parent_task_id
+    shadow_plan["shadow_of"] = parent_run_id
     shadow_plan["strategy_id"] = candidate.get("strategy_id", "")
     shadow_plan["strategy_stage"] = "shadow"
     shadow_plan["shadow_champion_strategy_id"] = champion_strategy_id
@@ -144,35 +144,36 @@ async def maybe_submit_shadow(dispatch, plan: dict, parent_task_id: str) -> None
             current_hints = shadow_plan.get("timeout_hints") if isinstance(shadow_plan.get("timeout_hints"), dict) else {}
             shadow_plan["timeout_hints"] = {**spec.get("timeout_hints", {}), **current_hints}
 
-    run_root = dispatch._make_run_root(shadow_task_id, is_shadow=True)
-    dispatch._record_task(shadow_plan, "running_shadow", run_root)
+    run_root = dispatch._make_run_root(shadow_run_id, is_shadow=True)
+    dispatch._record_run(shadow_plan, "running_shadow", run_root)
     try:
-        workflow_id = f"daemon-shadow-{shadow_task_id}"
+        workflow_id = f"daemon-shadow-{shadow_run_id}"
         await dispatch._temporal.submit(workflow_id, shadow_plan, run_root)
     except Exception as exc:
-        logger.warning("Shadow submit failed for %s: %s", shadow_task_id, exc)
-        dispatch._record_task({**shadow_plan, "last_error": str(exc)[:300]}, "failed_submission", run_root)
+        logger.warning("Shadow submit failed for %s: %s", shadow_run_id, exc)
+        dispatch._record_run({**shadow_plan, "last_error": str(exc)[:300]}, "failed_submission", run_root)
         return
 
     dispatch._nerve.emit(
         "shadow_submitted",
         {
-            "task_id": shadow_task_id,
-            "shadow_of": parent_task_id,
+            "run_id": shadow_run_id,
+            "shadow_of": parent_run_id,
             "strategy_id": shadow_plan.get("strategy_id", ""),
             "cluster_id": cluster_id,
         },
     )
+    strategy_stage = str(shadow_plan.get("strategy_stage") or "shadow")
     try:
         dispatch._playbook.record_release_execution(
             strategy_id=str(shadow_plan.get("strategy_id") or ""),
             cluster_id=cluster_id,
-            stage=str(shadow_plan.get("strategy_stage") or "shadow"),
+            strategy_stage=strategy_stage,
             mode="shadow",
-            task_id=shadow_task_id,
+            run_id=shadow_run_id,
             actor="dispatch",
             reason="shadow_submission",
-            shadow_of=str(parent_task_id or ""),
+            shadow_of=str(parent_run_id or ""),
         )
     except Exception as exc:
-        logger.warning("Failed to record shadow release execution for %s: %s", shadow_task_id, exc)
+        logger.warning("Failed to record shadow release execution for %s: %s", shadow_run_id, exc)

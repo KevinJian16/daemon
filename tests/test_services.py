@@ -13,7 +13,7 @@ from spine.trace import Tracer
 from spine.registry import SpineRegistry
 from spine.routines import SpineRoutines
 from runtime.cortex import Cortex
-from services.dispatch import Dispatch, _new_task_id
+from services.dispatch import Dispatch, _new_run_id
 from services.delivery import DeliveryService
 from services.scheduler import Scheduler
 
@@ -40,7 +40,7 @@ def compass(tmp_path):
     for p in BOOTSTRAP_PRIORITIES:
         cp.set_priority(p["domain"], p["weight"], source="bootstrap")
     for q in BOOTSTRAP_QUALITY_PROFILES:
-        cp.set_quality_profile(q["task_type"], q["rules"])
+        cp.set_quality_profile(q["run_type"], q["rules"])
     return cp
 
 
@@ -81,16 +81,16 @@ class TestDispatch:
         assert ok is False
         assert "unknown" in err
 
-    def test_enrich_assigns_task_id(self, playbook, compass, nerve, state_dir):
+    def test_enrich_assigns_run_id(self, playbook, compass, nerve, state_dir):
         d = self._make_dispatch(playbook, compass, nerve, state_dir)
-        plan = {"steps": [{"id": "s1"}], "task_type": "research_report"}
+        plan = {"steps": [{"id": "s1"}], "run_type": "research_report"}
         enriched = d.enrich(plan)
-        assert "task_id" in enriched
-        assert enriched["task_id"].startswith("task_")
+        assert "run_id" in enriched
+        assert enriched["run_id"].startswith("run_")
 
     def test_enrich_applies_quality_profile(self, playbook, compass, nerve, state_dir):
         d = self._make_dispatch(playbook, compass, nerve, state_dir)
-        plan = {"steps": [{"id": "s1"}], "task_type": "research_report"}
+        plan = {"steps": [{"id": "s1"}], "run_type": "research_report"}
         enriched = d.enrich(plan)
         assert "quality_profile" in enriched
 
@@ -118,15 +118,15 @@ class TestDispatch:
     async def test_submit_valid_plan_no_temporal(self, playbook, compass, nerve, state_dir, tmp_path):
         os.environ["DAEMON_HOME"] = str(tmp_path)
         d = self._make_dispatch(playbook, compass, nerve, state_dir)
-        plan = {"steps": [{"id": "collect", "agent": "collect", "depends_on": []}], "task_type": "research_report"}
+        plan = {"steps": [{"id": "collect", "agent": "collect", "depends_on": []}], "run_type": "research_report"}
         result = await d.submit(plan)
         assert result["ok"] is False
         assert result["error_code"] == "temporal_unavailable"
-        assert "task_id" in result
+        assert "run_id" in result
 
-    def test_new_task_id_format(self):
-        tid = _new_task_id()
-        assert tid.startswith("task_")
+    def test_new_run_id_format(self):
+        tid = _new_run_id()
+        assert tid.startswith("run_")
         parts = tid.split("_")
         assert len(parts) == 3
 
@@ -169,7 +169,7 @@ class TestDeliveryService:
         d = self._make_delivery(compass, nerve, tmp_path)
         render_file = tmp_path / "report.md"
         render_file.write_text("# Report\n\nContent here.")
-        plan = {"task_id": "t1", "title": "Test Report", "task_type": "manual"}
+        plan = {"run_id": "t1", "title": "Test Report", "run_type": "manual"}
         dest = d._archive("run_001", plan, render_file)
         assert (dest / "report.md").exists()
         assert (dest / "manifest.json").exists()
@@ -178,14 +178,14 @@ class TestDeliveryService:
         d = self._make_delivery(compass, nerve, tmp_path)
         dest = tmp_path / "outcome" / "manual" / "test"
         dest.mkdir(parents=True)
-        plan = {"task_id": "t1", "title": "T", "task_type": "manual"}
+        plan = {"run_id": "t1", "title": "T", "run_type": "manual"}
         d._update_index(dest, plan)
         index = json.loads((tmp_path / "outcome" / "index.json").read_text())
         assert len(index) == 1
 
     def test_deliver_no_render_output(self, compass, nerve, tmp_path):
         d = self._make_delivery(compass, nerve, tmp_path)
-        result = d.deliver("run_999", {"task_type": "manual"}, [])
+        result = d.deliver("run_999", {"run_type": "manual"}, [])
         assert result["ok"] is False
         assert result["error_code"] == "render_output_missing"
 
@@ -196,7 +196,7 @@ class TestDeliveryService:
         render_dir = run_root / "steps" / "render_1" / "output"
         render_dir.mkdir(parents=True)
         (render_dir / "output.md").write_text("# Report\n\n" + "Content word. " * 120)
-        plan = {"task_id": "t1", "title": "Test", "task_type": "manual"}
+        plan = {"run_id": "t1", "title": "Test", "run_type": "manual"}
         result = d.deliver(str(run_root), plan, [{"step_id": "render_1", "status": "ok"}])
         assert result["ok"] is True
         assert "outcome_path" in result

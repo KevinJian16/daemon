@@ -1,12 +1,12 @@
-"""Semantic Layer — SemanticFingerprint generation and intent contract parsing.
+"""Semantic Layer — SemanticSpec generation and intent contract parsing.
 
 Generation order (decision §4.1):
 1. Deterministic parsing (keywords, artifact types, risk words, temporality).
 2. Cortex structured completion for any unfilled slots.
 3. Cortex unavailable → retain deterministic result, mark confidence=low.
 
-Mapping failure (no cluster match + no task_type compat) → raises SemanticMappingError.
-Callers must NOT fall back to a fake task_type.
+Mapping failure (no cluster match + no run_type compat) → raises SemanticMappingError.
+Callers must NOT fall back to a fake run_type.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class SemanticMappingError(Exception):
 
 
 @dataclass
-class SemanticFingerprint:
+class SemanticSpec:
     cluster_id: str
     objective: str
     artifact_types: list[str] = field(default_factory=list)
@@ -46,7 +46,7 @@ class SemanticFingerprint:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "SemanticFingerprint":
+    def from_dict(cls, d: dict) -> "SemanticSpec":
         return cls(
             cluster_id=str(d.get("cluster_id") or ""),
             objective=str(d.get("objective") or ""),
@@ -98,7 +98,7 @@ def _utc() -> str:
 
 
 class SemanticGenerator:
-    """Generates SemanticFingerprint from raw request input."""
+    """Generates SemanticSpec from raw request input."""
 
     def __init__(self, cortex: "Cortex | None" = None) -> None:
         self._cortex = cortex
@@ -125,35 +125,35 @@ class SemanticGenerator:
                 return c
         return None
 
-    def _cluster_by_task_type(self, task_type: str) -> dict | None:
+    def _cluster_by_run_type(self, run_type: str) -> dict | None:
         for c in self._clusters():
-            if c.get("task_type_compat") == task_type:
+            if c.get("run_type_compat") == run_type:
                 return c
         return None
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-    def from_fingerprint_dict(self, fp: dict) -> SemanticFingerprint:
-        """Direct fingerprint path — caller provides pre-formed fingerprint."""
+    def from_spec_dict(self, fp: dict) -> SemanticSpec:
+        """Direct spec path — caller provides pre-formed spec."""
         cluster_id = str(fp.get("cluster_id") or "")
         if not cluster_id or not self._cluster_by_id(cluster_id):
-            raise SemanticMappingError(f"Unknown cluster_id in provided fingerprint: {cluster_id!r}")
-        return SemanticFingerprint.from_dict(fp)
+            raise SemanticMappingError(f"Unknown cluster_id in provided spec: {cluster_id!r}")
+        return SemanticSpec.from_dict(fp)
 
-    def from_intent_contract(self, contract: dict, cortex: "Cortex | None" = None) -> SemanticFingerprint:
-        """Intent contract path — generate fingerprint from objective + constraints."""
+    def from_intent_contract(self, contract: dict, cortex: "Cortex | None" = None) -> SemanticSpec:
+        """Intent contract path — generate spec from objective + constraints."""
         ic = IntentContract.from_dict(contract)
         if not ic.objective:
             raise SemanticMappingError("intent_contract.objective is required")
         return self._generate(ic.objective, cortex=cortex or self._cortex)
 
-    def from_task_type(self, task_type: str, title: str = "") -> SemanticFingerprint:
-        """task_type compat path — map legacy task_type to cluster."""
-        cluster = self._cluster_by_task_type(task_type)
+    def from_run_type(self, run_type: str, title: str = "") -> SemanticSpec:
+        """run_type compat path — map legacy run_type to cluster."""
+        cluster = self._cluster_by_run_type(run_type)
         if not cluster:
-            raise SemanticMappingError(f"task_type {task_type!r} has no cluster mapping in capability_catalog.json")
-        objective = title or task_type.replace("_", " ")
-        return SemanticFingerprint(
+            raise SemanticMappingError(f"run_type {run_type!r} has no cluster mapping in capability_catalog.json")
+        objective = title or run_type.replace("_", " ")
+        return SemanticSpec(
             cluster_id=cluster["cluster_id"],
             objective=objective,
             artifact_types=list(cluster.get("artifact_types", [])),
@@ -163,16 +163,16 @@ class SemanticGenerator:
 
     # ── Internal ───────────────────────────────────────────────────────────────
 
-    def _generate(self, text: str, cortex: "Cortex | None" = None) -> SemanticFingerprint:
+    def _generate(self, text: str, cortex: "Cortex | None" = None) -> SemanticSpec:
         """Deterministic first, Cortex fill-in second."""
         det = self._deterministic_parse(text)
         if det and det.get("confidence") == "high":
-            return SemanticFingerprint.from_dict(det)
+            return SemanticSpec.from_dict(det)
 
         if cortex and cortex.is_available():
             try:
                 llm_result = cortex.structured(
-                    f"Analyze this task request and classify it:\n\n{text}\n\n"
+                    f"Analyze this run request and classify it:\n\n{text}\n\n"
                     "Match to one of these cluster IDs: "
                     + ", ".join(c["cluster_id"] for c in self._clusters()),
                     schema={
@@ -186,15 +186,15 @@ class SemanticGenerator:
                 )
                 cluster_id = str(llm_result.get("cluster_id") or "")
                 if cluster_id and self._cluster_by_id(cluster_id):
-                    fp = SemanticFingerprint.from_dict(llm_result)
+                    fp = SemanticSpec.from_dict(llm_result)
                     fp.semantic_confidence = "medium"
                     return fp
             except Exception as exc:
-                logger.warning("Cortex fingerprint generation failed: %s", exc)
+                logger.warning("Cortex spec generation failed: %s", exc)
 
         # Fall back to deterministic result (even if low confidence) or fail.
         if det:
-            fp = SemanticFingerprint.from_dict(det)
+            fp = SemanticSpec.from_dict(det)
             fp.semantic_confidence = "low"
             return fp
 

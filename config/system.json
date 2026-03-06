@@ -3,7 +3,7 @@
   "canonical_agents": ["router", "collect", "analyze", "build", "review", "render", "apply"],
   "temporal": {
     "namespace": "default",
-    "task_queue": "daemon-queue"
+    "queue": "daemon-queue"
   },
   "agent_concurrency_defaults": {
     "collect": 8,

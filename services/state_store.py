@@ -25,7 +25,7 @@ class StateStore:
     def __init__(self, state_dir: Path) -> None:
         self.state_dir = state_dir
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        self.tasks_path = self.state_dir / "tasks.json"
+        self.runs_path = self.state_dir / "runs.json"
         self.gate_path = self.state_dir / "gate.json"
         self.schedule_history_path = self.state_dir / "schedule_history.json"
 
@@ -57,52 +57,60 @@ class StateStore:
             tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(path)
 
-    # ── Tasks ──────────────────────────────────────────────────────────────
+    # ── Runs ───────────────────────────────────────────────────────────────
 
-    def load_tasks(self) -> list[dict]:
-        data = self._read_json(self.tasks_path, [])
+    @staticmethod
+    def _normalize_run_row(row: dict) -> dict:
+        out = dict(row)
+        run_status = str(out.get("run_status") or "").strip()
+        if run_status:
+            out["run_status"] = run_status
+        return out
+
+    def load_runs(self) -> list[dict]:
+        data = self._read_json(self.runs_path, [])
         if not isinstance(data, list):
             return []
-        return [row for row in data if isinstance(row, dict)]
+        return [self._normalize_run_row(row) for row in data if isinstance(row, dict)]
 
-    def save_tasks(self, tasks: list[dict]) -> None:
-        clean = [row for row in tasks if isinstance(row, dict)]
-        self._write_json(self.tasks_path, clean)
+    def save_runs(self, runs: list[dict]) -> None:
+        clean = [self._normalize_run_row(row) for row in runs if isinstance(row, dict)]
+        self._write_json(self.runs_path, clean)
 
-    def mutate_tasks(self, mutator: Callable[[list[dict]], None]) -> list[dict]:
-        tasks = self.load_tasks()
-        mutator(tasks)
-        self.save_tasks(tasks)
-        return tasks
+    def mutate_runs(self, mutator: Callable[[list[dict]], None]) -> list[dict]:
+        runs = self.load_runs()
+        mutator(runs)
+        self.save_runs(runs)
+        return runs
 
-    def get_task(self, task_id: str) -> dict | None:
-        key = str(task_id or "")
+    def get_run(self, run_id: str) -> dict | None:
+        key = str(run_id or "")
         if not key:
             return None
-        for row in self.load_tasks():
-            if str(row.get("task_id") or "") == key:
+        for row in self.load_runs():
+            if str(row.get("run_id") or "") == key:
                 return row
         return None
 
-    def upsert_task(self, task_id: str, default_row: dict | None = None, *, updated_utc: str | None = None) -> dict:
-        key = str(task_id or "")
+    def upsert_run(self, run_id: str, default_row: dict | None = None, *, updated_utc: str | None = None) -> dict:
+        key = str(run_id or "")
         if not key:
-            raise ValueError("task_id_required")
+            raise ValueError("run_id_required")
         row_out: dict[str, Any] = {}
 
-        def _mutate(tasks: list[dict]) -> None:
+        def _mutate(runs: list[dict]) -> None:
             nonlocal row_out
-            for row in tasks:
-                if str(row.get("task_id") or "") == key:
+            for row in runs:
+                if str(row.get("run_id") or "") == key:
                     row_out = row
                     break
             else:
                 row_out = dict(default_row or {})
-                row_out.setdefault("task_id", key)
-                tasks.append(row_out)
+                row_out.setdefault("run_id", key)
+                runs.append(row_out)
             row_out["updated_utc"] = str(updated_utc or _utc())
 
-        self.mutate_tasks(_mutate)
+        self.mutate_runs(_mutate)
         return row_out
 
     # ── Gate ───────────────────────────────────────────────────────────────

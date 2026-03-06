@@ -15,8 +15,8 @@
     <span id="brand">Daemon</span>
     <span id="gate-dot" title="Gate: GREEN"></span>
     <button class="icon-btn" id="lang-btn" onclick="toggleLang()">EN</button>
-    <a class="icon-btn" href="/console/" id="console-link" onclick="try{const raw=localStorage.getItem('d_console_view_state');const panel=String((raw?JSON.parse(raw):{}).panel||'').trim();const allow=['overview','spine','fabric','policy','traces','strategies','model','agents','skill-evolution','schedules','campaigns','system'];this.href=allow.includes(panel)?('/console/?panel='+encodeURIComponent(panel)):'/console/';}catch(_){this.href='/console/';}">Console</a>
-    <button class="icon-btn" id="compose-btn" onclick="showCompose()" title="新建任务">✏</button>
+    <a class="icon-btn" href="/console/" id="console-link" onclick="try{const raw=localStorage.getItem('d_console_view_state');const panel=String((raw?JSON.parse(raw):{}).panel||'').trim();const allow=['overview','lexicon','spine','fabric','norm','traces','strategies','model','agents','skill-evolution','schedules','campaigns','system'];this.href=allow.includes(panel)?('/console/?panel='+encodeURIComponent(panel)):'/console/';}catch(_){this.href='/console/';}">Console</a>
+    <button class="icon-btn" id="compose-btn" onclick="showCompose()" title="新建运行">✏</button>
   </div>
 
   <nav id="sb-nav">
@@ -59,13 +59,13 @@
         <div style="height:15vh"></div>
         <div style="text-align:center;pointer-events:none">
           <div style="font-size:24px;font-weight:600;letter-spacing:-.3px;margin-bottom:6px" data-i18n="composeTitle">需要做什么？</div>
-          <div style="font-size:14px;color:var(--muted);max-width:560px;line-height:1.6;margin:0 auto;text-wrap:balance" data-i18n="composeHint">描述你的任务，系统自动判断规模和分配 agent。</div>
+          <div style="font-size:14px;color:var(--muted);max-width:560px;line-height:1.6;margin:0 auto;text-wrap:balance" data-i18n="composeHint">描述你的目标，系统自动判断为 Pulse/Thread/Campaign 并分配 agent。</div>
         </div>
       </div>
       <div id="chat-history" style="width:100%;max-width:680px;padding:16px 20px 0;display:flex;flex-direction:column;gap:10px"></div>
       <div id="plan-card" style="width:100%;max-width:680px;margin:8px 20px 0;border:1px solid var(--border);border-radius:var(--r);overflow:hidden;display:none">
         <div id="plan-card-hdr" style="padding:8px 14px;background:var(--hover);border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--muted);display:flex;align-items:center;gap:6px">
-          <span>⚡</span><span data-i18n="planDetected">检测到任务计划</span>
+          <span>⚡</span><span data-i18n="planDetected">检测到运行计划</span>
         </div>
         <div style="padding:12px 14px">
           <div id="plan-summary" style="font-size:13px;line-height:1.5"></div>
@@ -83,8 +83,8 @@
       <div id="compose-box">
         <div id="compose-file-chips"></div>
         <textarea id="compose-textarea" rows="1"
-          placeholder="描述你的任务…"
-          data-ph-zh="描述你的任务…" data-ph-en="Describe your task…"
+          placeholder="描述你的目标…"
+          data-ph-zh="描述你的目标…" data-ph-en="Describe your objective…"
           onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();composeSend()}"
           oninput="autoResize(this)"></textarea>
         <div id="compose-actions">
@@ -107,9 +107,9 @@
       </div>
     </div>
     <div id="det-controls" class="hidden">
-      <button class="btn btn-ghost btn-sm" id="btn-pause" onclick="taskPause()" style="display:none" data-i18n="pause">暂停</button>
-      <button class="btn btn-ghost btn-sm" id="btn-redirect" onclick="taskRedirect()" style="display:none" data-i18n="redirect">调整方向</button>
-      <button class="btn btn-danger btn-sm" id="btn-cancel" onclick="taskCancel()" style="display:none" data-i18n="cancel">取消</button>
+      <button class="btn btn-ghost btn-sm" id="btn-pause" onclick="runPause()" style="display:none" data-i18n="pause">暂停</button>
+      <button class="btn btn-ghost btn-sm" id="btn-redirect" onclick="runRedirect()" style="display:none" data-i18n="redirect">调整方向</button>
+      <button class="btn btn-danger btn-sm" id="btn-cancel" onclick="runCancel()" style="display:none" data-i18n="cancel">取消</button>
     </div>
     <div id="det-body">
       <div id="ms-timeline" style="display:none">
@@ -165,7 +165,7 @@
 <script src="./js/api.js"></script>
 <script src="./js/views.js"></script>
 <script src="./js/sync.js"></script>
-<script src="./js/task_list.js"></script>
+<script src="./js/run_list.js"></script>
 <script src="./js/review.js"></script>
 <script src="./js/controls.js"></script>
 <script src="./js/compose.js"></script>

@@ -123,23 +123,24 @@ class TestDaemonActivities:
         assert result["ok"] is False
         assert result["error_code"] == "word_count_too_low"
 
-    def test_update_task_status_creates_file(self, tmp_path):
+    def test_update_run_status_creates_file(self, tmp_path):
         from temporal.activities import DaemonActivities
         import os, json
         os.environ["DAEMON_HOME"] = str(tmp_path)
         acts = DaemonActivities()
-        acts._update_task_status("run_001", {"task_id": "t1"}, "completed")
-        tasks = json.loads((tmp_path / "state" / "tasks.json").read_text())
-        assert any(t["task_id"] == "t1" and t["status"] == "completed" for t in tasks)
+        acts._update_run_status("run_001", {"run_id": "t1"}, "completed")
+        recent_runs = json.loads((tmp_path / "state" / "runs.json").read_text())
+        assert any(t["run_id"] == "t1" and t["status"] == "completed" for t in recent_runs)
 
-    def test_update_task_status_atomic(self, tmp_path):
+    def test_update_run_status_atomic(self, tmp_path):
         """Verify no partial write: .tmp file cleaned up."""
         from temporal.activities import DaemonActivities
         import os
         os.environ["DAEMON_HOME"] = str(tmp_path)
         acts = DaemonActivities()
-        acts._update_task_status("run_001", {"task_id": "t1"}, "completed")
-        assert not (tmp_path / "state" / "tasks.tmp").exists()
+        acts._update_run_status("run_001", {"run_id": "t1"}, "completed")
+        tmp_candidates = list((tmp_path / "state").glob("runs.json.tmp*"))
+        assert len(tmp_candidates) == 0
 
     def test_update_outcome_index(self, tmp_path):
         from temporal.activities import DaemonActivities
@@ -148,7 +149,7 @@ class TestDaemonActivities:
         (tmp_path / "outcome").mkdir()
         (tmp_path / "outcome" / "index.json").write_text("[]")
         acts = DaemonActivities()
-        acts._update_outcome_index(tmp_path / "outcome" / "manual" / "task1", {"title": "T", "task_type": "manual", "task_id": "t1"})
+        acts._update_outcome_index(tmp_path / "outcome" / "manual" / "run1", {"title": "T", "run_type": "manual", "run_id": "t1"})
         index = json.loads((tmp_path / "outcome" / "index.json").read_text())
         assert len(index) == 1
-        assert index[0]["task_id"] == "t1"
+        assert index[0]["run_id"] == "t1"

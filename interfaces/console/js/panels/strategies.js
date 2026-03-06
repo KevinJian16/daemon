@@ -2,7 +2,7 @@ async function loadStrategies() {
   const tbody = document.getElementById('strategies-tbody');
   const shadowBody = document.getElementById('shadow-report-tbody');
   const cluster = document.getElementById('strategy-cluster-filter')?.value?.trim() || '';
-  const stage = document.getElementById('strategy-stage-filter')?.value || '';
+  const strategyStage = document.getElementById('strategy-stage-filter')?.value || '';
   const q = document.getElementById('strategy-q')?.value?.trim() || '';
   const shadowQ = document.getElementById('shadow-q')?.value?.trim() || '';
   const strategySize = Number(document.getElementById('strategy-page-size')?.value || 20);
@@ -12,43 +12,47 @@ async function loadStrategies() {
   let url = '/console/strategies';
   const qs = [];
   if (cluster) qs.push('cluster_id=' + encodeURIComponent(cluster));
-  if (stage) qs.push('stage=' + encodeURIComponent(stage));
+  if (strategyStage) qs.push('strategy_stage=' + encodeURIComponent(strategyStage));
   if (qs.length) url += '?' + qs.join('&');
   try {
     const [rows, shadowRows] = await Promise.all([
       api(url),
       api('/console/strategies/shadow-report?limit=1000'),
     ]);
-    const strategyFiltered = _applyListQuery(rows || [], q, ['strategy_id', 'cluster_id', 'cluster_display_name', 'stage', 'risk_level']);
+    const normalized = (rows || []).map((r) => ({
+      ...r,
+      strategy_stage: r.strategy_stage || '',
+    }));
+    const strategyFiltered = _applyListQuery(normalized, q, ['strategy_id', 'cluster_id', 'cluster_display_name', 'strategy_stage', 'risk_level']);
     const strategyPageRows = _paginate(strategyFiltered, 'strategies', 'strategies-pager', 'loadStrategies');
     tbody.innerHTML = strategyPageRows.map(r => {
       const sid = String(r.strategy_id || '');
-      const stageBadge = esc(r.stage || '');
-      const rollbackBtn = r.stage === 'champion'
+      const stageBadge = esc(r.strategy_stage || '');
+      const rollbackBtn = r.strategy_stage === 'champion'
         ? `<button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="rollbackStrategy('${encodeURIComponent(sid)}')">${tx('回滚', 'Rollback')}</button>`
         : `<span style="color:var(--muted);font-size:10px">${tx('仅冠军可回滚', 'Rollback only for champion')}</span>`;
       return `<tr>
         <td style="color:var(--muted);font-size:11px">${esc(sid)}</td>
         <td>${esc(r.cluster_display_name || r.cluster_id || '')}<br><span style="color:var(--muted);font-size:10px">${esc(r.cluster_id || '')}</span></td>
-        <td><span class="badge ${r.stage === 'champion' ? 'ok' : r.stage === 'challenger' ? 'degraded' : 'hybrid'}">${stageBadge}</span></td>
+        <td><span class="badge ${r.strategy_stage === 'champion' ? 'ok' : r.strategy_stage === 'challenger' ? 'degraded' : 'hybrid'}">${stageBadge}</span></td>
         <td><span class="badge ${(r.risk_level || '') === 'low' ? 'ok' : (r.risk_level || '') === 'medium' ? 'degraded' : 'error'}">${esc(r.risk_level || 'unknown')}</span></td>
         <td>${r.global_score != null ? Number(r.global_score).toFixed(4) : '—'}</td>
         <td>${Number(r.sample_n || 0)}</td>
         <td style="color:var(--muted)">${fmtTime(r.updated_utc)}</td>
         <td>
           <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewStrategyDetail('${encodeURIComponent(sid)}')">${tx('查看', 'View')}</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#0f766e" onclick="sandboxStrategy('${encodeURIComponent(sid)}','${encodeURIComponent(r.cluster_id || '')}','${encodeURIComponent(r.task_type_compat || '')}')">${tx('沙箱', 'Sandbox')}</button>
+          <button class="action" style="font-size:11px;padding:3px 8px;background:#0f766e" onclick="sandboxStrategy('${encodeURIComponent(sid)}','${encodeURIComponent(r.cluster_id || '')}','${encodeURIComponent(r.run_type_compat || '')}')">${tx('沙箱', 'Sandbox')}</button>
           <button class="action" style="font-size:11px;padding:3px 8px;background:#14532d" onclick="promoteStrategy('${encodeURIComponent(sid)}')">${tx('晋升', 'Promote')}</button>
           ${rollbackBtn}
         </td>
       </tr>`;
     }).join('') || `<tr><td colspan="8" style="color:var(--muted)">${tx('暂无 Strategy 记录', 'No Strategy records')}</td></tr>`;
 
-    const shadowFiltered = _applyListQuery(shadowRows || [], shadowQ, ['task_id', 'shadow_of', 'cluster_id', 'created_utc']);
+    const shadowFiltered = _applyListQuery(shadowRows || [], shadowQ, ['run_id', 'shadow_of', 'cluster_id', 'created_utc']);
     const shadowPageRows = _paginate(shadowFiltered, 'shadow', 'shadow-pager', 'loadStrategies');
     shadowBody.innerHTML = shadowPageRows.map(r => `
       <tr>
-        <td style="color:var(--muted);font-size:11px">${esc(r.task_id || '')}</td>
+        <td style="color:var(--muted);font-size:11px">${esc(r.run_id || '')}</td>
         <td style="color:var(--muted);font-size:11px">${esc(r.shadow_of || '')}</td>
         <td>${esc(r.cluster_id || '')}</td>
         <td>${Number(r.shadow_global_score || 0).toFixed(4)}</td>
@@ -102,11 +106,14 @@ async function viewStrategyDetail(sidKey) {
 async function promoteStrategy(sidKey) {
   const strategyId = decodeURIComponent(sidKey || '');
   if (!strategyId) return;
-  const nextStage = prompt(tx(`将 ${strategyId} 晋升到哪个 stage（默认 champion）：`, `Promote ${strategyId} to stage (default champion):`), 'champion') || 'champion';
+  const nextStage = prompt(
+    tx(`将 ${strategyId} 晋升到哪个 strategy_stage（默认 champion）：`, `Promote ${strategyId} to strategy_stage (default champion):`),
+    'champion'
+  ) || 'champion';
   const reason = prompt(tx('晋升原因：', 'Promotion reason:'), 'manual_promotion') || 'manual_promotion';
   try {
     await apiWrite('/console/strategies/' + encodeURIComponent(strategyId) + '/promote', 'POST', {
-      next_stage: nextStage,
+      next_strategy_stage: nextStage,
       reason,
       decided_by: 'console',
     });
@@ -131,18 +138,18 @@ async function rollbackStrategy(sidKey) {
   }
 }
 
-async function sandboxStrategy(sidKey, clusterKey, taskTypeKey) {
+async function sandboxStrategy(sidKey, clusterKey, runTypeKey) {
   const strategyId = decodeURIComponent(sidKey || '');
   const clusterId = decodeURIComponent(clusterKey || '');
-  const taskTypeCompat = decodeURIComponent(taskTypeKey || '');
+  const runTypeCompat = decodeURIComponent(runTypeKey || '');
   if (!strategyId) return;
-  const title = prompt(tx('Sandbox 任务标题：', 'Sandbox task title:'), tx('Sandbox 验证运行', 'Sandbox validation run'));
+  const title = prompt(tx('Sandbox 运行标题：', 'Sandbox run title:'), tx('Sandbox 验证运行', 'Sandbox validation run'));
   if (!title) return;
-  const taskType = taskTypeCompat || 'research_report';
+  const runType = runTypeCompat || 'research_report';
   const plan = {
     title: title,
-    task_type: taskType,
-    semantic_fingerprint: {
+    run_type: runType,
+    semantic_spec: {
       cluster_id: clusterId || 'clst_research_report',
       objective: title,
       risk_level: 'medium'
@@ -157,7 +164,7 @@ async function sandboxStrategy(sidKey, clusterKey, taskTypeKey) {
   };
   try {
     const result = await apiWrite('/console/strategies/' + encodeURIComponent(strategyId) + '/sandbox-submit', 'POST', plan);
-    alert(tx('Sandbox 已提交：', 'Sandbox submitted: ') + (result.task_id || ''));
+    alert(tx('Sandbox 已提交：', 'Sandbox submitted: ') + (result.run_id || ''));
     await loadStrategies();
   } catch (e) {
     alert(tx('Sandbox 提交失败：', 'Sandbox submit failed: ') + e.message);

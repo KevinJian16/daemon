@@ -34,9 +34,10 @@ from services.api_routes.campaigns import register_campaign_routes
 from services.api_routes.chat import register_chat_routes
 from services.api_routes.console_agents_skill import register_console_agents_skill_routes
 from services.api_routes.console_observe import register_console_observe_routes
-from services.api_routes.console_policy import register_console_policy_routes
+from services.api_routes.console_norm import register_console_norm_routes
 from services.api_routes.console_spine_fabric import register_console_spine_fabric_routes
 from services.api_routes.console_strategy_model import register_console_strategy_model_routes
+from services.api_routes.circuits import register_circuit_routes
 from services.api_routes.feedback import register_feedback_routes
 from services.api_routes.submit import register_submit_route
 from services.api_routes.system import register_system_routes
@@ -69,8 +70,8 @@ def _temporal_config() -> dict[str, Any]:
     host = os.environ.get("TEMPORAL_HOST", "127.0.0.1")
     port = int(os.environ.get("TEMPORAL_PORT", "7233"))
     namespace = os.environ.get("TEMPORAL_NAMESPACE") or cfg.get("temporal", {}).get("namespace", "default")
-    task_queue = os.environ.get("TEMPORAL_TASK_QUEUE") or cfg.get("temporal", {}).get("task_queue", "daemon-queue")
-    return {"host": host, "port": port, "namespace": namespace, "task_queue": task_queue}
+    queue = os.environ.get("TEMPORAL_QUEUE") or cfg.get("temporal", {}).get("queue", "daemon-queue")
+    return {"host": host, "port": port, "namespace": namespace, "queue": queue}
 
 
 def _validate_semantic_config(home: Path) -> None:
@@ -294,12 +295,12 @@ p{
                     host=tc["host"],
                     port=tc["port"],
                     namespace=tc["namespace"],
-                    task_queue=tc["task_queue"],
+                    queue=tc["queue"],
                 )
                 dispatch.set_temporal_client(temporal_client)
                 logger.info(
                     "Temporal client connected host=%s port=%s namespace=%s queue=%s",
-                    tc["host"], tc["port"], tc["namespace"], tc["task_queue"],
+                    tc["host"], tc["port"], tc["namespace"], tc["queue"],
                 )
                 return True
             except Exception as exc:
@@ -351,22 +352,22 @@ p{
                         payload = evt.get("payload") if isinstance(evt.get("payload"), dict) else {}
                         event_name = str(evt.get("event") or "")
                         if event_name == "feedback_survey_generated":
-                            task_id = str(payload.get("task_id") or "")
-                            if task_id:
+                            run_id = str(payload.get("run_id") or "")
+                            if run_id:
                                 survey = dict(payload)
                                 survey.setdefault("status", "pending")
                                 survey.setdefault("created_utc", _utc())
-                                _save_feedback_survey(task_id, survey)
+                                _save_feedback_survey(run_id, survey)
                                 _append_jsonl(
                                     telemetry_dir / "feedback_surveys.jsonl",
-                                    {"task_id": task_id, "event": "generated", "payload": survey, "created_utc": _utc()},
+                                    {"run_id": run_id, "event": "generated", "payload": survey, "created_utc": _utc()},
                                 )
                                 try:
                                     notify_result = await _notify_feedback_survey_telegram(survey)
                                     _append_jsonl(
                                         telemetry_dir / "feedback_surveys.jsonl",
                                         {
-                                            "task_id": task_id,
+                                            "run_id": run_id,
                                             "event": "telegram_notified",
                                             "result": notify_result,
                                             "created_utc": _utc(),
@@ -397,8 +398,8 @@ p{
                                 telemetry_dir / "campaign_progress.jsonl",
                                 {"event": event_name, "payload": payload, "created_utc": _utc()},
                             )
-                            phase = str(payload.get("phase") or "")
-                            if phase in {"phase0_waiting_confirmation", "milestone_waiting_feedback", "delivery_failed"}:
+                            campaign_phase = str(payload.get("campaign_phase") or "")
+                            if campaign_phase in {"phase0_waiting_confirmation", "milestone_waiting_feedback", "delivery_failed"}:
                                 try:
                                     notify = await _notify_campaign_status_telegram(payload)
                                     _append_jsonl(
@@ -465,9 +466,20 @@ p{
             logger.warning("Failed to read %s: %s", path, exc)
         return []
 
-    def _task_view(task: dict) -> dict:
-        out = dict(task)
+    def _run_view(run: dict) -> dict:
+        out = dict(run)
         plan = out.get("plan") if isinstance(out.get("plan"), dict) else {}
+        run_id = str(out.get("run_id") or "")
+        run_status = str(out.get("run_status") or "")
+        work_scale = str(out.get("work_scale") or plan.get("work_scale") or "")
+        campaign_id = str(out.get("campaign_id") or plan.get("campaign_id") or "")
+        out.setdefault("run_id", run_id)
+        if run_status:
+            out["run_status"] = run_status
+        if work_scale:
+            out.setdefault("work_scale", work_scale)
+        if campaign_id:
+            out.setdefault("campaign_id", campaign_id)
         out.setdefault("semantic_cluster", plan.get("cluster_id", ""))
         out.setdefault("strategy_id", plan.get("strategy_id", ""))
         out.setdefault("strategy_stage", plan.get("strategy_stage", ""))
@@ -490,11 +502,11 @@ p{
             p.mkdir(parents=True, exist_ok=True)
         return p
 
-    def _feedback_survey_path(task_id: str) -> Path:
-        return feedback_surveys_dir / f"{task_id}.json"
+    def _feedback_survey_path(run_id: str) -> Path:
+        return feedback_surveys_dir / f"{run_id}.json"
 
-    def _load_feedback_survey(task_id: str) -> dict | None:
-        path = _feedback_survey_path(task_id)
+    def _load_feedback_survey(run_id: str) -> dict | None:
+        path = _feedback_survey_path(run_id)
         if not path.exists():
             return None
         try:
@@ -503,8 +515,8 @@ p{
             return None
         return data if isinstance(data, dict) else None
 
-    def _save_feedback_survey(task_id: str, payload: dict) -> None:
-        path = _feedback_survey_path(task_id)
+    def _save_feedback_survey(run_id: str, payload: dict) -> None:
+        path = _feedback_survey_path(run_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -516,12 +528,12 @@ p{
             return []
         return [r for r in rows if isinstance(r, dict)]
 
-    def _feedback_state(task_id: str) -> dict:
-        survey = _load_feedback_survey(task_id) or {}
+    def _feedback_state(run_id: str) -> dict:
+        survey = _load_feedback_survey(run_id) or {}
         history = _feedback_history(survey)
         response = survey.get("response") if isinstance(survey.get("response"), dict) else {}
         return {
-            "task_id": task_id,
+            "run_id": str(survey.get("run_id") or run_id),
             "status": str(survey.get("status") or ""),
             "submitted_utc": str(survey.get("submitted_utc") or ""),
             "handled_channel": str(survey.get("handled_channel") or ""),
@@ -559,22 +571,22 @@ p{
         users = _telegram_user_ids()
         if not token or not users:
             return {"sent": 0, "skipped": True}
-        task_id = str(payload.get("task_id") or "")
-        if task_id:
-            survey = _load_feedback_survey(task_id)
+        run_id = str(payload.get("run_id") or "")
+        if run_id:
+            survey = _load_feedback_survey(run_id)
             if isinstance(survey, dict):
                 if str(survey.get("status") or "") == "submitted" and str(survey.get("handled_channel") or "") == "portal":
                     return {"sent": 0, "skipped": True, "reason": "handled_by_portal"}
-        title = str(payload.get("title") or task_id)
+        title = str(payload.get("title") or run_id)
         prompt = str(payload.get("prompt") or "请反馈本次交付质量。")
-        task_scale = str(payload.get("task_scale") or "")
+        work_scale = str(payload.get("work_scale") or "")
         message = (
             "📝 Daemon Feedback Survey\n\n"
-            f"任务: `{task_id}`\n"
-            f"规模: `{task_scale}`\n"
+            f"运行: `{run_id}`\n"
+            f"规模: `{work_scale}`\n"
             f"标题: {title}\n\n"
             f"{prompt}\n"
-            "请在 Portal 打开该任务并提交反馈。"
+            "请在 Portal 打开该运行并提交反馈。"
         )
         sent = 0
         import httpx
@@ -598,7 +610,7 @@ p{
             return {"sent": 0, "skipped": True}
         campaign_id = str(payload.get("campaign_id") or "")
         milestone_index = int(payload.get("milestone_index") or 0)
-        status = str(payload.get("status") or "")
+        milestone_status = str(payload.get("milestone_status") or "")
         score = payload.get("objective_score")
         attempts = int(payload.get("attempts") or 0)
         title = str(payload.get("title") or "")
@@ -606,7 +618,7 @@ p{
             "📈 Campaign Progress\n\n"
             f"campaign: `{campaign_id}`\n"
             f"milestone: `{milestone_index + 1}` {title}\n"
-            f"status: `{status}`\n"
+            f"milestone_status: `{milestone_status}`\n"
             f"objective_score: `{score}`\n"
             f"attempts: `{attempts}`"
         )
@@ -631,14 +643,14 @@ p{
         if not token or not users:
             return {"sent": 0, "skipped": True}
         campaign_id = str(payload.get("campaign_id") or "")
-        status = str(payload.get("status") or "")
-        phase = str(payload.get("phase") or "")
+        campaign_status = str(payload.get("campaign_status") or "")
+        campaign_phase = str(payload.get("campaign_phase") or "")
         cur = int(payload.get("current_milestone_index") or 0)
         msg = (
             "📌 Campaign Status Update\n\n"
             f"campaign: `{campaign_id}`\n"
-            f"status: `{status}`\n"
-            f"phase: `{phase}`\n"
+            f"campaign_status: `{campaign_status}`\n"
+            f"campaign_phase: `{campaign_phase}`\n"
             f"milestone_index: `{cur}`"
         )
         sent = 0
@@ -660,6 +672,31 @@ p{
         root = state / "campaigns"
         return root / campaign_id if campaign_id else root
 
+    def _normalize_campaign_milestone_row(row: dict) -> dict:
+        item = dict(row or {})
+        milestone_status = str(item.get("milestone_status") or "").strip()
+        if milestone_status:
+            item["milestone_status"] = milestone_status
+        return item
+
+    def _normalize_campaign_manifest(manifest: dict) -> dict:
+        out = dict(manifest or {})
+        campaign_status = str(out.get("campaign_status") or "").strip()
+        campaign_phase = str(out.get("campaign_phase") or "").strip()
+        if campaign_status:
+            out["campaign_status"] = campaign_status
+        if campaign_phase:
+            out["campaign_phase"] = campaign_phase
+        milestones = out.get("milestones")
+        if isinstance(milestones, list):
+            normalized: list[dict] = []
+            for row in milestones:
+                if not isinstance(row, dict):
+                    continue
+                normalized.append(_normalize_campaign_milestone_row(row))
+            out["milestones"] = normalized
+        return out
+
     def _load_campaign_manifest(campaign_id: str) -> dict | None:
         path = _campaign_root(campaign_id) / "manifest.json"
         if not path.exists():
@@ -668,12 +705,13 @@ p{
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return None
-        return data if isinstance(data, dict) else None
+        return _normalize_campaign_manifest(data) if isinstance(data, dict) else None
 
     def _save_campaign_manifest(campaign_id: str, manifest: dict) -> None:
         path = _campaign_root(campaign_id) / "manifest.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = _normalize_campaign_manifest(manifest if isinstance(manifest, dict) else {})
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _campaign_summaries(limit: int = 200) -> list[dict]:
         root = _campaign_root()
@@ -687,17 +725,20 @@ p{
                 continue
             if not isinstance(data, dict):
                 continue
+            normalized = _normalize_campaign_manifest(data)
+            campaign_status = str(normalized.get("campaign_status") or "")
+            campaign_phase = str(normalized.get("campaign_phase") or "")
             rows.append(
                 {
-                    "campaign_id": str(data.get("campaign_id") or p.parent.name),
-                    "task_id": str(data.get("task_id") or ""),
-                    "title": str(data.get("title") or ""),
-                    "status": str(data.get("status") or ""),
-                    "current_phase": str(data.get("current_phase") or ""),
-                    "current_milestone_index": int(data.get("current_milestone_index") or 0),
-                    "total_milestones": int(data.get("total_milestones") or len(data.get("milestones") or [])),
-                    "updated_utc": str(data.get("updated_utc") or ""),
-                    "workflow_id": str(data.get("workflow_id") or ""),
+                    "campaign_id": str(normalized.get("campaign_id") or p.parent.name),
+                    "run_id": str(normalized.get("run_id") or ""),
+                    "title": str(normalized.get("title") or ""),
+                    "campaign_status": campaign_status,
+                    "campaign_phase": campaign_phase,
+                    "current_milestone_index": int(normalized.get("current_milestone_index") or 0),
+                    "total_milestones": int(normalized.get("total_milestones") or len(normalized.get("milestones") or [])),
+                    "updated_utc": str(normalized.get("updated_utc") or ""),
+                    "workflow_id": str(normalized.get("workflow_id") or ""),
                 }
             )
         rows.sort(key=lambda x: str(x.get("updated_utc") or ""), reverse=True)
@@ -714,7 +755,7 @@ p{
             except Exception:
                 continue
             if isinstance(data, dict):
-                rows.append(data)
+                rows.append(_normalize_campaign_milestone_row(data))
         return rows[: max(1, min(limit, 2000))]
 
     def _append_campaign_feedback(campaign_id: str, milestone_index: int, feedback: dict) -> None:
@@ -741,7 +782,9 @@ p{
             data = json.loads(result_path.read_text(encoding="utf-8"))
         except Exception:
             return {}
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        return _normalize_campaign_milestone_row(data)
 
     def _feedback_satisfied(feedback: dict) -> bool:
         if not isinstance(feedback, dict):
@@ -855,7 +898,7 @@ p{
 
     def _model_target_spec(target: str) -> tuple[str, Path]:
         t = str(target or "").strip().lower()
-        if t in {"policy", "model-policy", "model_policy"}:
+        if t in {"model-policy", "model_policy"}:
             return "model_policy", model_policy_path
         if t in {"registry", "model-registry", "model_registry"}:
             return "model_registry", model_registry_path
@@ -1039,7 +1082,7 @@ p{
             if target_norm in {"mapping_rules", "rules", "semantics.mapping_rules"}:
                 _write_semantic_target("mapping_rules", payload, changed_by="skill_evolution", reason="auto_adopt_config_proposal")
                 return True, ""
-            if target_norm in {"model_policy", "policy", "model-policy"}:
+            if target_norm in {"model_policy", "model-policy"}:
                 aliases = _model_registry_aliases(json.loads(model_registry_path.read_text(encoding="utf-8")) if model_registry_path.exists() else {})
                 _validate_model_policy(payload, aliases)
                 payload["_updated"] = _utc()[:10]
@@ -1068,13 +1111,15 @@ p{
         app,
         app_started_utc=app_started_utc,
         ensure_temporal_client=_ensure_temporal_client,
+        get_temporal_client=lambda: temporal_client,
         store=store,
+        dispatch=dispatch,
         cortex=cortex,
         model_policy_path=model_policy_path,
         model_registry_path=model_registry_path,
         openclaw_home=oc_home,
         validate_model_registry=_validate_model_registry,
-        task_view=_task_view,
+        run_view=_run_view,
         log_portal_event=_log_portal_event,
         require_outcome_root=_require_outcome_root,
         memory=memory,
@@ -1136,7 +1181,7 @@ p{
 
     register_console_spine_fabric_routes(app, ctx=console_ctx)
     register_console_strategy_model_routes(app, ctx=console_ctx)
-    register_console_policy_routes(app, ctx=console_ctx)
+    register_console_norm_routes(app, ctx=console_ctx)
     register_console_observe_routes(app, ctx=console_ctx)
     register_console_agents_skill_routes(app, ctx=console_ctx)
 
@@ -1161,31 +1206,32 @@ p{
 
     register_campaign_routes(app, ctx=campaign_ctx)
     register_chat_routes(app, dialog=dialog, log_portal_event=_log_portal_event)
+    register_circuit_routes(app, ctx=console_ctx)
 
     # ── User feedback (Portal) ────────────────────────────────────────────────
 
-    async def _get_feedback_questions(task_id: str):
-        """Generate task-specific feedback questions via Cortex (LLM).
+    async def _get_feedback_questions(run_id: str):
+        """Generate run-specific feedback questions via Cortex (LLM).
         Falls back to a minimal default set if Cortex is unavailable.
         """
-        # Load task context.
-        task_record: dict = {}
+        # Load run context.
+        run_record: dict = {}
         try:
-            tasks = store.load_tasks()
-            task_record = next((t for t in tasks if t.get("task_id") == task_id), {})
+            runs = store.load_runs()
+            run_record = next((r for r in runs if r.get("run_id") == run_id), {})
         except Exception:
             pass
 
-        plan = task_record.get("plan") or {}
-        title = str(plan.get("title") or task_id)
-        task_type = str(plan.get("task_type") or "general")
+        plan = run_record.get("plan") or {}
+        title = str(plan.get("title") or run_id)
+        run_type = str(plan.get("run_type") or "general")
 
         # Load outcome content snippet.
         content_snippet = ""
         try:
             outcome_root = _require_outcome_root()
             index = store.load_outcome_index(outcome_root)
-            entry = next((e for e in reversed(index) if e.get("task_id") == task_id), None)
+            entry = next((e for e in reversed(index) if e.get("run_id") == run_id), None)
             if entry:
                 out_path = outcome_root / str(entry["path"])
                 for fname in ("report.md", "report.html"):
@@ -1236,16 +1282,16 @@ p{
             return _DEFAULT_QUESTIONS
 
         prompt = (
-            "你是一个AI产出评估专家。根据以下任务信息，生成3-4个针对性反馈问题。\n\n"
-            f"任务类型: {task_type}\n"
-            f"任务标题: {title}\n"
+            "你是一个AI产出评估专家。根据以下运行信息，生成3-4个针对性反馈问题。\n\n"
+            f"运行类型: {run_type}\n"
+            f"运行标题: {title}\n"
         )
         if content_snippet:
             prompt += f"内容摘要（前800字）:\n{content_snippet}\n\n"
         prompt += (
             "要求：\n"
             "1. 第一个问题必须是整体满意度（key=\"overall\", isRating=true），选项val为整数1-5\n"
-            "2. 其余2-3个问题根据这份产出的具体内容和任务类型量身定制，不要用泛泛的通用问题\n"
+            "2. 其余2-3个问题根据这份产出的具体内容和运行类型量身定制，不要用泛泛的通用问题\n"
             "3. 每个问题3-4个选项，其余问题val为0.0-1.0的小数\n"
             "4. 所有问题和选项必须用中文\n"
             "5. 仅返回JSON数组，不要解释或其他内容\n\n"
@@ -1269,7 +1315,7 @@ p{
 
         return _DEFAULT_QUESTIONS
 
-    async def _submit_feedback_internal(task_id: str, body: dict, request: Request | None = None) -> dict:
+    async def _submit_feedback_internal(run_id: str, body: dict, request: Request | None = None) -> dict:
         source = str(body.get("source") or "portal")
         fb_type = str(body.get("type") or "quick").strip().lower()
         if fb_type not in {"quick", "deep", "append"}:
@@ -1295,20 +1341,20 @@ p{
             if fb_type == "deep" and rating is None and not comment:
                 raise HTTPException(status_code=400, detail="deep_feedback_requires_comment_or_rating")
 
-        # Find task record to get method_id and task_type.
-        tasks = store.load_tasks()
-        task_record = next((t for t in tasks if t.get("task_id") == task_id), None)
+        # Find run record to get method_id and run_type.
+        runs = store.load_runs()
+        run_record = next((r for r in runs if r.get("run_id") == run_id), None)
 
-        task_type = ""
-        task_scale = ""
+        run_type = ""
+        work_scale = ""
         method_id = ""
-        if task_record:
-            plan = task_record.get("plan") if isinstance(task_record.get("plan"), dict) else {}
-            task_type = str(plan.get("task_type") or "")
-            task_scale = str(plan.get("task_scale") or "")
+        if run_record:
+            plan = run_record.get("plan") if isinstance(run_record.get("plan"), dict) else {}
+            run_type = str(plan.get("run_type") or "")
+            work_scale = str(plan.get("work_scale") or "")
             method_id = str(plan.get("method_id") or "")
 
-        survey = _load_feedback_survey(task_id) or {"task_id": task_id}
+        survey = _load_feedback_survey(run_id) or {"run_id": run_id}
         prev_response = survey.get("response") if isinstance(survey.get("response"), dict) else {}
         prev_rating = prev_response.get("rating")
         first_scored_feedback = bool(rating is not None and prev_rating in (None, ""))
@@ -1327,12 +1373,12 @@ p{
             except (TypeError, ValueError):
                 main_rating = None
 
-        # Primary score feedback contributes to playbook exactly once per task.
+        # Primary score feedback contributes to playbook exactly once per run.
         if first_scored_feedback and method_id:
             outcome = "success" if int(rating or 0) >= 3 else "failure"
             playbook.evaluate(
                 method_id=method_id,
-                task_id=task_id,
+                run_id=run_id,
                 outcome=outcome,
                 score=score,
                 detail={
@@ -1344,9 +1390,9 @@ p{
                 },
             )
 
-        if first_scored_feedback and task_scale == "campaign":
+        if first_scored_feedback and work_scale == "campaign":
             summary_zh = (
-                f"Campaign任务用户反馈：rating={rating}/5；comment={comment or '无'}；"
+                f"Campaign运行用户反馈：rating={rating}/5；comment={comment or '无'}；"
                 f"aspects={json.dumps(aspects, ensure_ascii=False)}"
             )
             summary_en = (
@@ -1357,7 +1403,7 @@ p{
                 memory.intake(
                     [
                         {
-                            "title": f"Campaign feedback {task_id}",
+                            "title": f"Campaign feedback {run_id}",
                             "domain": "user_feedback",
                             "tier": "deep",
                             "confidence": 1.0,
@@ -1376,13 +1422,13 @@ p{
                 logger.warning("Failed to store campaign feedback into memory: %s", exc)
 
         # Persist feedback aspects as Compass prefs for the learning system.
-        if aspects and task_type:
+        if aspects and run_type:
             for aspect_key, aspect_val in aspects.items():
                 try:
                     v = float(aspect_val)
                     if 0.0 <= v <= 1.0:
                         compass.set_pref(
-                            f"feedback.{task_type}.{aspect_key}",
+                            f"feedback.{run_type}.{aspect_key}",
                             str(round(v, 4)),
                             source="user_feedback",
                             changed_by="user",
@@ -1414,40 +1460,41 @@ p{
             }
         survey["status"] = "submitted"
         survey["submitted_utc"] = now
+        survey["run_id"] = str(survey.get("run_id") or run_id)
         if source == "portal":
             survey["handled_channel"] = "portal"
             survey["telegram_reminder_suppressed"] = True
-        _save_feedback_survey(task_id, survey)
+        _save_feedback_survey(run_id, survey)
 
         # Write to feedback JSONL.
         feedback_path = telemetry_dir / "outcome_feedback.jsonl"
         _append_jsonl(
             feedback_path,
             {
-                "task_id": task_id,
+                "run_id": run_id,
                 "type": "append" if is_append else fb_type,
                 "source": source,
                 "rating": rating,
                 "score": score,
                 "comment": comment,
                 "aspects": aspects,
-                "task_type": task_type,
-                "task_scale": task_scale,
+                "run_type": run_type,
+                "work_scale": work_scale,
                 "created_utc": now,
             },
         )
 
         if rating is not None:
-            nerve.emit("user_feedback_received", {"task_id": task_id, "rating": rating, "score": score})
+            nerve.emit("user_feedback_received", {"run_id": run_id, "rating": rating, "score": score})
         if request is not None:
             _log_portal_event(
                 "feedback_submitted" if not is_append else "feedback_appended",
-                {"task_id": task_id, "rating": rating, "source": source},
+                {"run_id": run_id, "rating": rating, "source": source},
                 request,
             )
         return {
             "ok": True,
-            "task_id": task_id,
+            "run_id": run_id,
             "score": score,
             "status": str(survey.get("status") or ""),
             "type": "append" if is_append else fb_type,

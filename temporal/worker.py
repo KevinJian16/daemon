@@ -27,7 +27,7 @@ async def start_worker(
     host: str = "127.0.0.1",
     port: int = 7233,
     namespace: str = "default",
-    task_queue: str = "daemon-queue",
+    queue: str = "daemon-queue",
     max_concurrent_activities: int = 10,
 ) -> None:
     client = await Client.connect(f"{host}:{port}", namespace=namespace)
@@ -35,13 +35,13 @@ async def start_worker(
 
     worker = Worker(
         client,
-        task_queue=task_queue,
+        task_queue=queue,
         workflows=[GraphDispatchWorkflow, CampaignWorkflow],
         activities=[
             activities.activity_openclaw_step,
             activities.activity_spine_routine,
             activities.activity_finalize_delivery,
-            activities.activity_update_task_status,
+            activities.activity_update_run_status,
             activities.activity_campaign_bootstrap,
             activities.activity_campaign_record_milestone,
             activities.activity_campaign_set_status,
@@ -49,7 +49,7 @@ async def start_worker(
         max_concurrent_activities=max_concurrent_activities,
     )
 
-    logger.info(f"Daemon Worker started — task_queue={task_queue} host={host}:{port}")
+    logger.info(f"Daemon Worker started — queue={queue} host={host}:{port}")
 
     loop = asyncio.get_event_loop()
     stop = asyncio.Event()
@@ -73,5 +73,5 @@ if __name__ == "__main__":
     host = os.environ.get("TEMPORAL_HOST", "127.0.0.1")
     port = int(os.environ.get("TEMPORAL_PORT", "7233"))
     namespace = os.environ.get("TEMPORAL_NAMESPACE", "default")
-    task_queue = os.environ.get("TEMPORAL_TASK_QUEUE", "daemon-queue")
-    asyncio.run(start_worker(host=host, port=port, namespace=namespace, task_queue=task_queue))
+    queue = os.environ.get("TEMPORAL_QUEUE", "daemon-queue")
+    asyncio.run(start_worker(host=host, port=port, namespace=namespace, queue=queue))

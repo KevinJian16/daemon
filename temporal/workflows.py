@@ -1,4 +1,4 @@
-"""GraphDispatchWorkflow — DAG-based multi-agent task orchestration."""
+"""GraphDispatchWorkflow — DAG-based multi-agent run orchestration."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,7 +14,7 @@ from temporalio.exceptions import ApplicationError
 class RunInput:
     plan: dict
     run_root: str
-    task_id: str = ""
+    run_id: str = ""
 
 
 @workflow.defn(name="GraphDispatchWorkflow")
@@ -26,7 +26,7 @@ class GraphDispatchWorkflow:
         plan = inp.plan or {}
         steps = plan.get("steps") or plan.get("graph", {}).get("steps") or []
         if not isinstance(steps, list) or not steps:
-            await self._mark_task_status(inp.run_root, plan, "failed", "missing steps")
+            await self._mark_run_status(inp.run_root, plan, "failed", "missing steps")
             raise ApplicationError("missing steps", non_retryable=True)
 
         concurrency = plan.get("concurrency") or {}
@@ -38,11 +38,11 @@ class GraphDispatchWorkflow:
         id_set: set[str] = set()
         for i, st in enumerate(steps):
             if not isinstance(st, dict):
-                await self._mark_task_status(inp.run_root, plan, "failed", f"invalid step at index {i}")
+                await self._mark_run_status(inp.run_root, plan, "failed", f"invalid step at index {i}")
                 raise ApplicationError(f"invalid step at index {i}", non_retryable=True)
             sid = self._step_id(st, i)
             if sid in id_set:
-                await self._mark_task_status(inp.run_root, plan, "failed", f"duplicate step id: {sid}")
+                await self._mark_run_status(inp.run_root, plan, "failed", f"duplicate step id: {sid}")
                 raise ApplicationError(f"duplicate step id: {sid}", non_retryable=True)
             id_set.add(sid)
             step_list.append({**st, "id": sid})
@@ -56,11 +56,11 @@ class GraphDispatchWorkflow:
         for sid, st in step_by_id.items():
             ds = set(self._deps(st))
             if sid in ds:
-                await self._mark_task_status(inp.run_root, plan, "failed", f"step {sid} depends on itself")
+                await self._mark_run_status(inp.run_root, plan, "failed", f"step {sid} depends on itself")
                 raise ApplicationError(f"step {sid} depends on itself", non_retryable=True)
             unknown = [d for d in ds if d not in step_by_id]
             if unknown:
-                await self._mark_task_status(inp.run_root, plan, "failed", f"step {sid}: unknown deps {unknown}")
+                await self._mark_run_status(inp.run_root, plan, "failed", f"step {sid}: unknown deps {unknown}")
                 raise ApplicationError(f"step {sid}: unknown deps {unknown}", non_retryable=True)
             deps[sid] = ds
             for d in ds:
@@ -80,7 +80,7 @@ class GraphDispatchWorkflow:
                 if indeg[nxt] == 0:
                     q.append(nxt)
         if seen != len(step_by_id):
-            await self._mark_task_status(inp.run_root, plan, "failed", "cycle detected in DAG")
+            await self._mark_run_status(inp.run_root, plan, "failed", "cycle detected in DAG")
             raise ApplicationError("cycle detected in DAG", non_retryable=True)
 
         # Execution loop.
@@ -137,10 +137,10 @@ class GraphDispatchWorkflow:
                     completed.add(sid)
 
         except ApplicationError as e:
-            await self._mark_task_status(inp.run_root, plan, "failed", str(e)[:200])
+            await self._mark_run_status(inp.run_root, plan, "failed", str(e)[:200])
             raise
         except Exception as e:
-            await self._mark_task_status(inp.run_root, plan, "failed", str(e)[:200])
+            await self._mark_run_status(inp.run_root, plan, "failed", str(e)[:200])
             raise ApplicationError(f"workflow_exception: {str(e)[:200]}", non_retryable=True) from e
 
         ordered: list[dict] = [
@@ -149,7 +149,7 @@ class GraphDispatchWorkflow:
         ]
 
         if errors:
-            await self._mark_task_status(inp.run_root, plan, "failed", f"{len(errors)} step(s) failed")
+            await self._mark_run_status(inp.run_root, plan, "failed", f"{len(errors)} step(s) failed")
             raise ApplicationError(f"{len(errors)} step(s) failed", non_retryable=True)
 
         # Delivery handoff.
@@ -193,7 +193,7 @@ class GraphDispatchWorkflow:
 
         if not (isinstance(delivery, dict) and delivery.get("ok")):
             err_msg = str((delivery or {}).get("error_code") or (delivery or {}).get("detail") or "delivery_failed")
-            await self._mark_task_status(inp.run_root, plan, "failed", err_msg[:200])
+            await self._mark_run_status(inp.run_root, plan, "failed", err_msg[:200])
 
         return delivery or {}
 
@@ -287,18 +287,18 @@ class GraphDispatchWorkflow:
                 st["instruction"] = (
                     f"{base_ins}\n\nRework: quality gate failed ({error_code}). "
                     "Rewrite to professional standard; no internal system markers; "
-                    "bilingual tasks must output separate _zh and _en documents."
+                    "bilingual runs must output separate _zh and _en documents."
                 )
         return selected
 
-    async def _mark_task_status(self, run_root: str, plan: dict, status: str, error: str) -> None:
+    async def _mark_run_status(self, run_root: str, plan: dict, run_status: str, error: str) -> None:
         try:
             await workflow.execute_activity(
-                "activity_update_task_status",
-                args=[run_root, {**plan, "last_error": error}, status],
+                "activity_update_run_status",
+                args=[run_root, {**plan, "last_error": error}, run_status],
                 start_to_close_timeout=timedelta(seconds=20),
                 schedule_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(maximum_attempts=1),
             )
         except Exception as exc:
-            workflow.logger.warning("Failed to update task status for %s: %s", run_root, exc)
+            workflow.logger.warning("Failed to update run status for %s: %s", run_root, exc)

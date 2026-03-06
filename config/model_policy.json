@@ -46,5 +46,5 @@
     "qwen_tokens_per_day":      10000000,
     "zhipu_tokens_per_day":     5000000
   },
-  "fallback_chain": ["minimax", "qwen", "zhipu", "deepseek"]
+  "provider_route": ["minimax", "qwen", "zhipu", "deepseek"]
 }

@@ -80,8 +80,8 @@ class OpenClawAdapter:
             return []
         return [self._normalize_message(m) for m in rows if isinstance(m, dict)]
 
-    def session_key(self, agent_id: str, task_id: str, step_id: str) -> str:
-        return f"agent:{agent_id}:task:{task_id}:{step_id}"
+    def session_key(self, agent_id: str, run_id: str, step_id: str) -> str:
+        return f"agent:{agent_id}:run:{run_id}:{step_id}"
 
     def _invoke(self, tool: str, args: dict) -> dict:
         resp = httpx.post(

@@ -19,7 +19,7 @@ function bindConsoleLink() {
     const raw = localStorage.getItem('d_console_view_state');
     const parsed = raw ? JSON.parse(raw) : {};
     const candidate = String(parsed?.panel || '').trim();
-    const allow = new Set(['overview', 'spine', 'fabric', 'policy', 'traces', 'strategies', 'model', 'agents', 'skill-evolution', 'schedules', 'campaigns', 'system']);
+    const allow = new Set(['overview', 'lexicon', 'spine', 'fabric', 'norm', 'traces', 'strategies', 'model', 'agents', 'skill-evolution', 'schedules', 'campaigns', 'system']);
     panel = allow.has(candidate) ? candidate : '';
   } catch (_) {
     panel = '';

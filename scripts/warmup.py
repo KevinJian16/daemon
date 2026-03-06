@@ -55,9 +55,9 @@ def warmup_compass(compass: CompassFabric) -> None:
     print("  [1] Compass — domain priorities + preferences")
 
     priorities = [
-        ("technology",   1.5, "Core domain for dev and research tasks"),
-        ("development",  1.4, "Software development and coding tasks"),
-        ("research",     1.3, "Research, analysis, and synthesis tasks"),
+        ("technology",   1.5, "Core domain for dev and research runs"),
+        ("development",  1.4, "Software development and coding runs"),
+        ("research",     1.3, "Research, analysis, and synthesis runs"),
         ("knowledge",    1.2, "Knowledge consolidation and learning"),
         ("system",       1.0, "System health and operations monitoring"),
         ("productivity", 1.0, "Personal productivity and planning"),
@@ -70,7 +70,7 @@ def warmup_compass(compass: CompassFabric) -> None:
         "default_step_timeout_s": "480",
         "model_primary":          "deepseek-reasoner",
         "quality_min_score":      "0.65",
-        "max_concurrent_tasks":   "3",
+        "max_concurrent_runs":   "3",
     }
     for k, v in prefs.items():
         compass.set_pref(k, v, source="warmup", changed_by="warmup")
@@ -88,7 +88,7 @@ def warmup_memory(memory: MemoryFabric) -> list[str]:
             "title": "Daemon System Architecture",
             "domain": "system", "tier": "permanent",
             "summary_zh": "Daemon是基于Temporal工作流、OpenClaw智能体、FastAPI的自主任务执行系统。核心层：Fabric（Memory/Playbook/Compass）存储持久知识；Spine（10个治理例程）驱动自主学习；Runtime（Cortex/Nerve/EventBridge）提供模型调用和事件总线；Services（Dispatch/Delivery/Dialog/Scheduler）处理任务全生命周期。",
-            "summary_en": "Daemon is an autonomous task execution system on Temporal + OpenClaw + FastAPI. Layers: Fabric (Memory/Playbook/Compass), Spine (10 governance routines), Runtime (Cortex/Nerve/EventBridge), Services (Dispatch/Delivery/Dialog/Scheduler).",
+            "summary_en": "Daemon is an autonomous run execution system on Temporal + OpenClaw + FastAPI. Layers: Fabric (Memory/Playbook/Compass), Spine (10 governance routines), Runtime (Cortex/Nerve/EventBridge), Services (Dispatch/Delivery/Dialog/Scheduler).",
             "confidence": 1.0, "provider": "warmup", "url": "",
         },
         {
@@ -123,13 +123,13 @@ def warmup_memory(memory: MemoryFabric) -> list[str]:
             "title": "DeepSeek Reasoner (deepseek-reasoner) Usage",
             "domain": "technology", "tier": "deep",
             "summary_zh": "deepseek-reasoner使用规范：①temperature必须=1.0，不可修改；②最终答案从choices[0].message.content读取，reasoning_content是推理链不作为输出；③适合需要深度分析的analytical任务；④成本较高，避免用于简单对话。",
-            "summary_en": "deepseek-reasoner rules: ①temperature=1.0 required; ②answer from choices[0].message.content, reasoning_content is chain-of-thought only; ③best for analytical tasks; ④higher cost, avoid for simple chat.",
+            "summary_en": "deepseek-reasoner rules: ①temperature=1.0 required; ②answer from choices[0].message.content, reasoning_content is circuit-of-thought only; ③best for analytical runs; ④higher cost, avoid for simple chat.",
             "confidence": 0.95, "provider": "warmup", "url": "",
         },
         {
             "title": "MiniMax M2.5 Anthropic-Compatible API",
             "domain": "technology", "tier": "deep",
-            "summary_zh": "MiniMax M2.5接入方式：endpoint=api.minimaxi.com/anthropic（Anthropic兼容），无需GROUP_ID，使用MINIMAX_API_KEY，适合内容审阅和对话任务，作为DeepSeek的备用方案（model_policy fallback_chain）。",
+            "summary_zh": "MiniMax M2.5接入方式：endpoint=api.minimaxi.com/anthropic（Anthropic兼容），无需GROUP_ID，使用MINIMAX_API_KEY，适合内容审阅和对话任务，作为DeepSeek的备用方案（model_policy provider_route）。",
             "summary_en": "MiniMax M2.5 via Anthropic-compatible API at api.minimaxi.com/anthropic. No GROUP_ID needed. Use MINIMAX_API_KEY. Good for content review, chat. Fallback for DeepSeek per model_policy.",
             "confidence": 0.92, "provider": "warmup", "url": "",
         },
@@ -141,10 +141,10 @@ def warmup_memory(memory: MemoryFabric) -> list[str]:
             "confidence": 1.0, "provider": "warmup", "url": "",
         },
         {
-            "title": "Replay Backoff and Task Queue Management",
+            "title": "Replay Backoff and Run Queue Management",
             "domain": "system", "tier": "deep",
             "summary_zh": "任务排队重播机制：最大5次，退避[60s,300s,900s,3600s,14400s]。replay_token保证幂等。超限→replay_exhausted终态。spine.tend在gate=GREEN且next_replay_utc已过时自动触发重播。",
-            "summary_en": "Replay backoff: max 5 attempts, delays [60s,300s,900s,1h,4h]. replay_token for idempotency. Exceeded→replay_exhausted. spine.tend auto-triggers eligible tasks when gate=GREEN.",
+            "summary_en": "Replay backoff: max 5 attempts, delays [60s,300s,900s,1h,4h]. replay_token for idempotency. Exceeded→replay_exhausted. spine.tend auto-triggers eligible runs when gate=GREEN.",
             "confidence": 1.0, "provider": "warmup", "url": "",
         },
         {
@@ -255,7 +255,7 @@ def warmup_playbook(playbook: PlaybookFabric, unit_ids: list[str]) -> dict[str, 
             continue
         eid = playbook.evaluate(
             method_id=mid,
-            task_id=f"warmup_{name}_{i:02d}",
+            run_id=f"warmup_{name}_{i:02d}",
             outcome=outcome,
             score=score,
             detail={"source": "warmup_simulation", "evidence_unit_ids": unit_ids[:3]},

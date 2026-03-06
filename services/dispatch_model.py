@@ -58,7 +58,7 @@ def apply_model_routing(dispatch, plan: dict, strategy_spec: dict) -> None:
     if not policy or not registry:
         return
 
-    fp = plan.get("semantic_fingerprint") if isinstance(plan.get("semantic_fingerprint"), dict) else {}
+    fp = plan.get("semantic_spec") if isinstance(plan.get("semantic_spec"), dict) else {}
     risk = str(fp.get("risk_level") or "").strip().lower()
     cluster_id = str(plan.get("cluster_id") or "").strip()
 

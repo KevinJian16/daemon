@@ -12,14 +12,14 @@ from temporalio.common import RetryPolicy
 class TemporalClient:
     """Thin facade over temporalio.client.Client for workflow submission and querying."""
 
-    def __init__(self, client: Client, task_queue: str) -> None:
+    def __init__(self, client: Client, queue: str) -> None:
         self._client = client
-        self._task_queue = task_queue
+        self._queue = queue
 
     @classmethod
-    async def connect(cls, host: str = "127.0.0.1", port: int = 7233, namespace: str = "default", task_queue: str = "daemon-queue") -> "TemporalClient":
+    async def connect(cls, host: str = "127.0.0.1", port: int = 7233, namespace: str = "default", queue: str = "daemon-queue") -> "TemporalClient":
         client = await Client.connect(f"{host}:{port}", namespace=namespace)
-        return cls(client, task_queue)
+        return cls(client, queue)
 
     async def submit(
         self,
@@ -40,7 +40,7 @@ class TemporalClient:
                     workflow_name,
                     args=[{"plan": plan, "run_root": run_root}],
                     id=workflow_id,
-                    task_queue=self._task_queue,
+                    task_queue=self._queue,
                 )
                 return handle.result_run_id or workflow_id
             except Exception as exc:

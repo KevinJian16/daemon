@@ -39,7 +39,7 @@
       "alias": "qwen",
       "provider": "qwen",
       "model_id": "qwen-max",
-      "description": "Dev/coding tasks: opencode subprocess (clst_dev_project). Same model as review alias.",
+      "description": "Dev/coding runs: opencode subprocess (clst_dev_project). Same model as review alias.",
       "context_window": 32768,
       "supports_temperature": true
     },

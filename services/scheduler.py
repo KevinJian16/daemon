@@ -6,9 +6,11 @@ import json
 import logging
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 from spine.contracts import ContractError, check_contract
 from services.state_store import StateStore
@@ -51,6 +53,7 @@ class Scheduler:
         self._overrides_path = self._state / "schedules.json"
         self._overrides = self._load_overrides()
         self._history = self._load_history()
+        self._circuits_lock = threading.Lock()
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -96,16 +99,16 @@ class Scheduler:
         if not rdef:
             return {"ok": False, "error": f"Unknown routine: {routine_name}"}
 
-        method_name = routine_name.replace("spine.", "")
-        method = getattr(self._routines, method_name, None)
-        if not callable(method):
-            return {"ok": False, "error": f"Routine method not found: {method_name}"}
+        routine_method_name = routine_name.replace("spine.", "")
+        routine_method = getattr(self._routines, routine_method_name, None)
+        if not callable(routine_method):
+            return {"ok": False, "error": f"Routine function not found: {routine_method_name}"}
 
         try:
             context = self._contract_context()
             for resource in rdef.reads:
                 check_contract(routine_name, "pre", resource, context)
-            result = self._invoke_method(method_name, method, payload)
+            result = self._invoke_method(routine_method_name, routine_method, payload)
             for resource in rdef.writes:
                 check_contract(routine_name, "post", resource, context)
 
@@ -124,23 +127,23 @@ class Scheduler:
             logger.error("Routine %s failed trigger=%s: %s", routine_name, trigger, exc, exc_info=True)
             return {"ok": False, "routine": routine_name, "trigger": trigger, "error": str(exc)[:400]}
 
-    def _invoke_method(self, method_name: str, method: Any, payload: dict | None) -> dict:
-        if method_name == "record":
+    def _invoke_method(self, routine_method_name: str, routine_method: Any, payload: dict | None) -> dict:
+        if routine_method_name == "record":
             payload = payload or {}
             if payload.get("_bridge_event") == "delivery_completed":
-                return {"skipped": True, "reason": "record_on_task_completed_only"}
-            task_id = str(payload.get("task_id") or "")
+                return {"skipped": True, "reason": "record_on_run_completed_only"}
+            run_id = str(payload.get("run_id") or "")
             plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
             step_results = payload.get("step_results") if isinstance(payload.get("step_results"), list) else []
             outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
-            if not task_id or not plan:
+            if not run_id or not plan:
                 return {
                     "skipped": True,
-                    "reason": "missing_task_context",
-                    "task_id": task_id,
+                    "reason": "missing_run_context",
+                    "run_id": run_id,
                 }
-            return method(task_id=task_id, plan=plan, step_results=step_results, outcome=outcome)
-        return method()
+            return routine_method(run_id=run_id, plan=plan, step_results=step_results, outcome=outcome)
+        return routine_method()
 
     async def _loop_main(self) -> None:
         """Main scheduling loop."""
@@ -160,6 +163,7 @@ class Scheduler:
                     logger.info("Scheduler: triggering %s (cron due)", rdef.name)
                     await asyncio.to_thread(self._run_routine, rdef.name, None, "cron")
             await self._check_adaptive_routines()
+            await asyncio.to_thread(self._tick_user_circuits)
             await asyncio.sleep(30)
 
     async def _check_adaptive_routines(self) -> None:
@@ -197,25 +201,25 @@ class Scheduler:
                         routine_name, payload if isinstance(payload, dict) else {}, f"nerve:{ev}"
                     ),
                 )
-        self._nerve.on("task_replay", self._handle_task_replay)
+        self._nerve.on("run_replay", self._handle_run_replay)
         self._handlers_registered = True
 
-    def _handle_task_replay(self, payload: dict) -> None:
+    def _handle_run_replay(self, payload: dict) -> None:
         if not self._dispatch:
-            logger.warning("Received task_replay but dispatch is not configured")
+            logger.warning("Received run_replay but dispatch is not configured")
             return
-        task_id = str(payload.get("task_id") or "")
+        run_id = str(payload.get("run_id") or "")
         plan = payload.get("plan")
-        if not task_id or not isinstance(plan, dict):
-            logger.warning("Invalid task_replay payload: %s", payload)
+        if not run_id or not isinstance(plan, dict):
+            logger.warning("Invalid run_replay payload: %s", payload)
             return
 
         def _runner() -> None:
             try:
-                result = asyncio.run(self._dispatch.replay(task_id, plan))
-                logger.info("task_replay submitted task_id=%s result=%s", task_id, result)
+                result = asyncio.run(self._dispatch.replay(run_id, plan))
+                logger.info("run_replay submitted run_id=%s result=%s", run_id, result)
             except Exception as exc:
-                logger.error("task_replay failed for task_id=%s: %s", task_id, exc, exc_info=True)
+                logger.error("run_replay failed for run_id=%s: %s", run_id, exc, exc_info=True)
 
         threading.Thread(target=_runner, daemon=True).start()
 
@@ -370,7 +374,7 @@ class Scheduler:
         interval = max(60, interval)
 
         # Queue-depth adaptive tuning: idle -> shorter interval, busy -> longer interval.
-        running_count = self._running_tasks_count()
+        running_count = self._running_runs_count()
         if running_count <= 0:
             interval = int(interval * 0.6)
         elif running_count > 3:
@@ -386,9 +390,14 @@ class Scheduler:
         data = self._store.load_gate()
         return str(data.get("status") or "GREEN").upper()
 
-    def _running_tasks_count(self) -> int:
-        rows = self._store.load_tasks()
-        return sum(1 for row in rows if isinstance(row, dict) and str(row.get("status") or "") in {"running", "running_shadow"})
+    def _running_runs_count(self) -> int:
+        rows = self._store.load_runs()
+        return sum(
+            1
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("run_status") or "") in {"running", "running_shadow"}
+        )
 
     @staticmethod
     def _is_supported_schedule(schedule: str) -> bool:
@@ -504,3 +513,278 @@ class Scheduler:
             full = routine if routine.startswith("spine.") else f"spine.{routine}"
             rows = [r for r in rows if str(r.get("routine") or "") == full]
         return list(reversed(rows))[: max(1, min(limit, 500))]
+
+    # ── Recurring User Circuits ──────────────────────────────────────────────
+
+    @property
+    def _circuits_path(self) -> Path:
+        return self._state / "recurring_circuits.json"
+
+    @staticmethod
+    def _utc_now_iso() -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    @staticmethod
+    def _parse_utc_iso(value: str) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _normalize_tz(tz: str | None) -> str | None:
+        value = str(tz or "UTC").strip() or "UTC"
+        try:
+            ZoneInfo(value)
+            return value
+        except Exception:
+            return None
+
+    def _load_circuits_unlocked(self) -> list[dict]:
+        if not self._circuits_path.exists():
+            return []
+        try:
+            data = json.loads(self._circuits_path.read_text())
+            return data if isinstance(data, list) else []
+        except Exception as exc:
+            logger.warning("Failed to load recurring_circuits.json: %s", exc)
+            return []
+
+    def _load_circuits(self) -> list[dict]:
+        with self._circuits_lock:
+            return self._load_circuits_unlocked()
+
+    def _save_circuits_unlocked(self, circuits: list[dict]) -> None:
+        self._circuits_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._circuits_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(circuits, ensure_ascii=False, indent=2))
+        tmp.replace(self._circuits_path)
+
+    def _save_circuits(self, circuits: list[dict]) -> None:
+        with self._circuits_lock:
+            self._save_circuits_unlocked(circuits)
+
+    def _patch_circuit_runtime(self, circuit_id: str, mutator: Any) -> dict | None:
+        with self._circuits_lock:
+            circuits = self._load_circuits_unlocked()
+            for circuit in circuits:
+                if str(circuit.get("circuit_id") or "") != circuit_id:
+                    continue
+                mutator(circuit)
+                self._save_circuits_unlocked(circuits)
+                return dict(circuit)
+        return None
+
+    def _mark_circuit_trigger_success(self, circuit_id: str, run_id: str) -> dict | None:
+        now_iso = self._utc_now_iso()
+
+        def _mutate(circuit: dict) -> None:
+            circuit["last_triggered_utc"] = now_iso
+            circuit["last_run_id"] = run_id
+            circuit["run_count"] = int(circuit.get("run_count") or 0) + 1
+            circuit["consecutive_failures"] = 0
+            circuit["last_error"] = ""
+            circuit["last_error_utc"] = ""
+            circuit["next_retry_utc"] = ""
+
+        return self._patch_circuit_runtime(circuit_id, _mutate)
+
+    def _mark_circuit_trigger_failure(self, circuit_id: str, error: str) -> dict | None:
+        now = datetime.now(timezone.utc)
+        now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        def _mutate(circuit: dict) -> None:
+            failures = int(circuit.get("consecutive_failures") or 0) + 1
+            # Exponential backoff (60s -> 120s -> ... -> 30m max).
+            backoff_seconds = min(1800, 60 * (2 ** min(failures - 1, 5)))
+            circuit["consecutive_failures"] = failures
+            circuit["last_error"] = str(error or "")[:200]
+            circuit["last_error_utc"] = now_iso
+            circuit["next_retry_utc"] = (now + timedelta(seconds=backoff_seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        return self._patch_circuit_runtime(circuit_id, _mutate)
+
+    def list_circuits(self) -> list[dict]:
+        return self._load_circuits()
+
+    def create_circuit(self, name: str, prompt: str, run_type: str, cron: str, tz: str = "UTC") -> dict:
+        if not self._is_supported_schedule(cron):
+            return {"ok": False, "error": f"Invalid cron expression: {cron}"}
+        tz_norm = self._normalize_tz(tz)
+        if not tz_norm:
+            return {"ok": False, "error": f"Invalid timezone: {tz}"}
+
+        with self._circuits_lock:
+            circuits = self._load_circuits_unlocked()
+            now_iso = self._utc_now_iso()
+            circuit_id = f"circuit_{time.strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"
+            circuit: dict = {
+                "circuit_id": circuit_id,
+                "name": name,
+                "prompt": prompt,
+                "run_type": run_type,
+                "cron": cron,
+                "tz": tz_norm,
+                "enabled": True,
+                "status": "active",
+                "created_utc": now_iso,
+                # Prevent immediate trigger on create; first run is next cron slot.
+                "last_triggered_utc": now_iso,
+                "last_run_id": "",
+                "run_count": 0,
+                "consecutive_failures": 0,
+                "last_error": "",
+                "last_error_utc": "",
+                "next_retry_utc": "",
+            }
+            circuits.append(circuit)
+            self._save_circuits_unlocked(circuits)
+        return {"ok": True, "circuit": circuit}
+
+    def update_circuit(self, circuit_id: str, patch: dict) -> dict:
+        with self._circuits_lock:
+            circuits = self._load_circuits_unlocked()
+            for circuit in circuits:
+                if circuit.get("circuit_id") == circuit_id:
+                    allowed = {"name", "prompt", "run_type", "cron", "tz", "enabled"}
+                    for k, v in patch.items():
+                        if k not in allowed:
+                            continue
+                        if k == "cron" and not self._is_supported_schedule(str(v)):
+                            return {"ok": False, "error": f"Invalid cron expression: {v}"}
+                        if k == "tz":
+                            tz_norm = self._normalize_tz(str(v))
+                            if not tz_norm:
+                                return {"ok": False, "error": f"Invalid timezone: {v}"}
+                            circuit[k] = tz_norm
+                            continue
+                        if k == "enabled":
+                            enabled = bool(v)
+                            circuit["enabled"] = enabled
+                            if str(circuit.get("status") or "") != "cancelled":
+                                circuit["status"] = "active" if enabled else "paused"
+                            continue
+                        circuit[k] = v
+                    self._save_circuits_unlocked(circuits)
+                    return {"ok": True, "circuit": circuit}
+        return {"ok": False, "error": f"Circuit not found: {circuit_id}"}
+
+    def cancel_circuit(self, circuit_id: str) -> dict:
+        with self._circuits_lock:
+            circuits = self._load_circuits_unlocked()
+            for circuit in circuits:
+                if circuit.get("circuit_id") == circuit_id:
+                    circuit["status"] = "cancelled"
+                    circuit["enabled"] = False
+                    self._save_circuits_unlocked(circuits)
+                    return {"ok": True, "circuit_id": circuit_id}
+        return {"ok": False, "error": f"Circuit not found: {circuit_id}"}
+
+    def trigger_circuit(self, circuit_id: str) -> dict:
+        with self._circuits_lock:
+            circuits = self._load_circuits_unlocked()
+            circuit = next((c for c in circuits if str(c.get("circuit_id") or "") == circuit_id), None)
+        if circuit:
+            result = self._submit_circuit_run(circuit)
+            if result.get("ok"):
+                self._mark_circuit_trigger_success(circuit_id, str(result.get("run_id") or ""))
+            else:
+                self._mark_circuit_trigger_failure(circuit_id, str(result.get("error") or "submit_failed"))
+            return result
+        return {"ok": False, "error": f"Circuit not found: {circuit_id}"}
+
+    def _submit_circuit_run(self, circuit: dict) -> dict:
+        if not self._dispatch:
+            logger.warning("Circuit trigger skipped: dispatch not configured")
+            return {"ok": False, "error": "dispatch_not_configured"}
+        plan = {
+            "title": circuit["name"],
+            "prompt": circuit["prompt"],
+            "run_type": circuit.get("run_type", "research_report"),
+            "circuit_id": circuit["circuit_id"],
+            "circuit_name": circuit["name"],
+        }
+        try:
+            import asyncio as _asyncio
+            loop = self._loop
+            if loop and loop.is_running():
+                future = _asyncio.run_coroutine_threadsafe(self._dispatch.submit(plan), loop)
+                return future.result(timeout=30)
+            return _asyncio.run(self._dispatch.submit(plan))
+        except Exception as exc:
+            logger.error("Circuit %s submit failed: %s", circuit.get("circuit_id"), exc, exc_info=True)
+            return {"ok": False, "error": str(exc)[:200]}
+
+    def _tick_user_circuits(self) -> None:
+        """Check and trigger due recurring user circuits."""
+        circuits = self._load_circuits()
+        now_utc = datetime.now(timezone.utc)
+        for circuit in circuits:
+            if circuit.get("status") != "active" or not circuit.get("enabled"):
+                continue
+            cron = str(circuit.get("cron") or "").strip()
+            if not cron or not self._is_supported_schedule(cron):
+                continue
+            retry_dt = self._parse_utc_iso(str(circuit.get("next_retry_utc") or ""))
+            if retry_dt and retry_dt > now_utc:
+                continue
+
+            tz_name = self._normalize_tz(str(circuit.get("tz") or "UTC")) or "UTC"
+            last_dt = self._parse_utc_iso(str(circuit.get("last_triggered_utc") or "")) or datetime.fromtimestamp(0, tz=timezone.utc)
+            # Find the most recent occurrence that should have already fired
+            next_after_last = self._next_cron_occurrence_tz(cron, last_dt, tz_name)
+            if next_after_last is None or next_after_last > now_utc:
+                continue
+            logger.info("Circuit %s (%s) is due, triggering", circuit.get("circuit_id"), circuit.get("name"))
+            result = self._submit_circuit_run(circuit)
+            if result.get("ok"):
+                self._mark_circuit_trigger_success(str(circuit.get("circuit_id") or ""), str(result.get("run_id") or ""))
+            else:
+                logger.warning("Circuit %s trigger failed: %s", circuit.get("circuit_id"), result.get("error"))
+                self._mark_circuit_trigger_failure(str(circuit.get("circuit_id") or ""), str(result.get("error") or "submit_failed"))
+
+    @staticmethod
+    def _next_cron_occurrence_tz(schedule: str, now_utc: datetime, tz_name: str) -> datetime | None:
+        parts = schedule.split()
+        if len(parts) != 5:
+            return None
+
+        minutes = Scheduler._parse_cron_field(parts[0], 0, 59)
+        hours = Scheduler._parse_cron_field(parts[1], 0, 23)
+        dom = Scheduler._parse_cron_field(parts[2], 1, 31)
+        months = Scheduler._parse_cron_field(parts[3], 1, 12)
+        dows = Scheduler._parse_cron_field(parts[4], 0, 7, is_dow=True)
+        dom_any = parts[2].strip() == "*"
+        dow_any = parts[4].strip() == "*"
+
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = timezone.utc
+
+        cursor = now_utc.astimezone(tz).replace(second=0, microsecond=0) + timedelta(minutes=1)
+        for _ in range(60 * 24 * 14):
+            cron_dow = (cursor.weekday() + 1) % 7  # Mon=1 ... Sun=0
+            if dom_any and dow_any:
+                day_match = True
+            elif dom_any:
+                day_match = cron_dow in dows
+            elif dow_any:
+                day_match = cursor.day in dom
+            else:
+                day_match = cursor.day in dom or cron_dow in dows
+            if (
+                cursor.minute in minutes
+                and cursor.hour in hours
+                and cursor.month in months
+                and day_match
+            ):
+                return cursor.astimezone(timezone.utc)
+            cursor += timedelta(minutes=1)
+        return None

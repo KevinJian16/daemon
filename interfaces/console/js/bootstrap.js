@@ -17,7 +17,7 @@ function _readPanelFromQuery() {
   try {
     const params = new URLSearchParams(window.location.search || '');
     const panel = String(params.get('panel') || '').trim();
-    const allow = new Set(['overview', 'spine', 'fabric', 'policy', 'traces', 'strategies', 'model', 'agents', 'skill-evolution', 'schedules', 'campaigns', 'system']);
+    const allow = new Set(['overview', 'lexicon', 'spine', 'fabric', 'norm', 'traces', 'strategies', 'model', 'agents', 'skill-evolution', 'schedules', 'campaigns', 'system']);
     return allow.has(panel) ? panel : '';
   } catch (_) {
     return '';

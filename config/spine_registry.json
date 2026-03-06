@@ -22,7 +22,7 @@
     "spine.record": {
       "mode": "deterministic",
       "schedule": null,
-      "nerve_triggers": ["task_completed", "delivery_completed"],
+      "nerve_triggers": ["run_completed", "delivery_completed"],
       "reads": ["state:traces"],
       "writes": ["fabric:playbook:evaluations", "fabric:memory:usage", "state:traces:summary"],
       "depends_on": [],
@@ -32,7 +32,7 @@
       "mode": "hybrid",
       "schedule": "adaptive:4h:2h-12h",
       "nerve_triggers": [],
-      "reads": ["state:tasks", "state:traces", "fabric:memory:stats", "fabric:playbook:stats", "fabric:playbook:evaluations:unanalyzed"],
+      "reads": ["state:runs", "state:traces", "fabric:memory:stats", "fabric:playbook:stats", "fabric:playbook:evaluations:unanalyzed"],
       "writes": ["fabric:memory:observations", "fabric:compass:attention_signals"],
       "depends_on": ["spine.record"],
       "degraded_mode": "stats_only"
@@ -50,7 +50,7 @@
       "mode": "hybrid",
       "schedule": "adaptive:4h30m:2h30m-12h30m",
       "nerve_triggers": [],
-      "reads": ["state:tasks", "state:traces", "fabric:playbook:active", "fabric:memory:observations"],
+      "reads": ["state:runs", "state:traces", "fabric:playbook:active", "fabric:memory:observations"],
       "writes": ["fabric:playbook:candidates", "state:skill_evolution_proposals"],
       "depends_on": ["spine.witness"],
       "degraded_mode": "skip"

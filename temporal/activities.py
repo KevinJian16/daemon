@@ -23,7 +23,7 @@ from temporal.activities_campaign import (
 )
 from temporal.activities_delivery import (
     run_finalize_delivery as _run_finalize_delivery_impl,
-    run_update_task_status as _run_update_task_status_impl,
+    run_update_run_status as _run_update_run_status_impl,
 )
 from temporal.activities_exec import (
     run_openclaw_step as _run_openclaw_step_impl,
@@ -84,12 +84,12 @@ class DaemonActivities:
         """Contract quality gate + drift check + archive + bridge emit."""
         return await _run_finalize_delivery_impl(self, run_root, plan, step_results)
 
-    # ── Task status ───────────────────────────────────────────────────────────
+    # ── Run status ────────────────────────────────────────────────────────────
 
-    @activity.defn(name="activity_update_task_status")
-    async def activity_update_task_status(self, run_root: str, plan: dict, status: str) -> dict:
-        """Update task status in state/tasks.json (append-only for safety)."""
-        return await _run_update_task_status_impl(self, run_root, plan, status)
+    @activity.defn(name="activity_update_run_status")
+    async def activity_update_run_status(self, run_root: str, plan: dict, run_status: str) -> dict:
+        """Update run status in state/runs.json (append-only for safety)."""
+        return await _run_update_run_status_impl(self, run_root, plan, run_status)
 
     # ── Campaign state ────────────────────────────────────────────────────────
 
@@ -104,9 +104,15 @@ class DaemonActivities:
         return await _run_campaign_record_milestone_impl(self, campaign_id, milestone_index, result)
 
     @activity.defn(name="activity_campaign_set_status")
-    async def activity_campaign_set_status(self, campaign_id: str, status: str, phase: str, extra: dict | None = None) -> dict:
+    async def activity_campaign_set_status(
+        self,
+        campaign_id: str,
+        campaign_status: str,
+        campaign_phase: str,
+        extra: dict | None = None,
+    ) -> dict:
         """Update campaign manifest status/phase with mergeable metadata."""
-        return await _run_campaign_set_status_impl(self, campaign_id, status, phase, extra)
+        return await _run_campaign_set_status_impl(self, campaign_id, campaign_status, campaign_phase, extra)
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -134,11 +140,11 @@ class DaemonActivities:
                 context["runtime_hints"] = hints_path.read_text(encoding="utf-8", errors="ignore")[:4000]
             except Exception as exc:
                 activity.logger.warning("Failed to read runtime hints %s: %s", hints_path, exc)
-        # Embed task/strategy contract so Agent sees the active semantic + governance context.
+        # Embed run/strategy contract so Agent sees active semantic + governance context.
         context["execution_contract"] = {
-            "task_id": str(plan.get("task_id") or ""),
+            "run_id": str(plan.get("run_id") or ""),
             "cluster_id": str(plan.get("cluster_id") or ""),
-            "semantic_fingerprint": plan.get("semantic_fingerprint") if isinstance(plan.get("semantic_fingerprint"), dict) else {},
+            "semantic_spec": plan.get("semantic_spec") if isinstance(plan.get("semantic_spec"), dict) else {},
             "strategy_id": str(plan.get("strategy_id") or ""),
             "strategy_stage": str(plan.get("strategy_stage") or ""),
             "model_alias": str(plan.get("model_alias") or ""),
@@ -354,27 +360,29 @@ class DaemonActivities:
         payload["checkpoint_utc"] = _utc()
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _feedback_survey_path(self, task_id: str) -> Path:
-        return self._home / "state" / "feedback_surveys" / f"{task_id}.json"
+    def _feedback_survey_path(self, run_id: str) -> Path:
+        return self._home / "state" / "feedback_surveys" / f"{run_id}.json"
 
     def _generate_feedback_survey(self, *, plan: dict, outcome_path: Path) -> dict:
-        task_id = str(plan.get("task_id") or "")
-        task_scale = str(plan.get("task_scale") or "thread").strip().lower() or "thread"
-        task_type = str(plan.get("task_type") or "")
-        title = str(plan.get("title") or task_id)[:200]
+        run_id = str(plan.get("run_id") or "")
+        work_scale = str(plan.get("work_scale") or plan.get("work_scale") or "thread").strip().lower() or "thread"
+        run_type = str(plan.get("run_type") or "")
+        title = str(plan.get("title") or run_id)[:200]
         channels = ["portal", "telegram"]
-        required = task_scale in {"pulse", "thread", "campaign"}
-        if task_scale == "campaign":
+        required = work_scale in {"pulse", "thread", "campaign"}
+        if work_scale == "campaign":
             survey_type = "campaign_final"
             prompt = "你对本次 Campaign 最终交付是否满意？"
         else:
             survey_type = "delivery_final"
             prompt = "你对本次任务交付是否满意？"
         return {
-            "survey_id": f"svy_{task_id}",
-            "task_id": task_id,
-            "task_type": task_type,
-            "task_scale": task_scale,
+            "survey_id": f"svy_{run_id}",
+            "run_id": run_id,
+            "run_id": run_id,
+            "run_type": run_type,
+            "work_scale": work_scale,
+            "work_scale": work_scale,
             "title": title,
             "survey_type": survey_type,
             "prompt": prompt,
@@ -406,10 +414,10 @@ class DaemonActivities:
         }
 
     def _write_feedback_survey(self, payload: dict) -> None:
-        task_id = str(payload.get("task_id") or "")
-        if not task_id:
+        run_id = str(payload.get("run_id") or "")
+        if not run_id:
             return
-        path = self._feedback_survey_path(task_id)
+        path = self._feedback_survey_path(run_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -487,7 +495,7 @@ class DaemonActivities:
 
         return {"ok": True}
 
-    def _load_quality_contract(self, cluster_id: str, task_type: str) -> dict:
+    def _load_quality_contract(self, cluster_id: str, run_type: str) -> dict:
         contracts_dir = self._home / "config" / "semantics" / "quality_contracts"
         if cluster_id:
             p = contracts_dir / f"{cluster_id}.json"
@@ -496,8 +504,8 @@ class DaemonActivities:
                     return json.loads(p.read_text(encoding="utf-8"))
                 except Exception as exc:
                     activity.logger.warning("Failed to load quality contract %s: %s", p, exc)
-        if task_type:
-            p = contracts_dir / f"{task_type}.json"
+        if run_type:
+            p = contracts_dir / f"{run_type}.json"
             if p.exists():
                 try:
                     return json.loads(p.read_text(encoding="utf-8"))
@@ -612,7 +620,7 @@ class DaemonActivities:
         if not path.exists():
             return {"blocked": False, "reason": "no_history"}
         cluster_id = str(plan.get("cluster_id") or "")
-        task_type = str(plan.get("task_type") or "")
+        run_type = str(plan.get("run_type") or "")
         history: list[float] = []
         try:
             for line in reversed(path.read_text(encoding="utf-8").splitlines()):
@@ -627,7 +635,7 @@ class DaemonActivities:
                     continue
                 if cluster_id and str(row.get("cluster_id") or "") != cluster_id:
                     continue
-                if not cluster_id and task_type and str(row.get("task_type") or "") != task_type:
+                if not cluster_id and run_type and str(row.get("run_type") or "") != run_type:
                     continue
                 try:
                     history.append(float(row.get("quality_score") or 0.0))
@@ -664,9 +672,9 @@ class DaemonActivities:
         path = self._home / "state" / "telemetry" / "quality_scores.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         row = {
-            "task_id": str(plan.get("task_id") or ""),
+            "run_id": str(plan.get("run_id") or ""),
             "cluster_id": str(plan.get("cluster_id") or ""),
-            "task_type": str(plan.get("task_type") or ""),
+            "run_type": str(plan.get("run_type") or ""),
             "strategy_id": str(plan.get("strategy_id") or ""),
             "strategy_stage": str(plan.get("strategy_stage") or ""),
             "quality_score": round(float(score or 0.0), 4),
@@ -685,7 +693,7 @@ class DaemonActivities:
         return {
             "trace_id": str(plan.get("trace_id") or ""),
             "strategy_id": str(plan.get("strategy_id") or ""),
-            "semantic_fingerprint": plan.get("semantic_fingerprint") if isinstance(plan.get("semantic_fingerprint"), dict) else {},
+            "semantic_spec": plan.get("semantic_spec") if isinstance(plan.get("semantic_spec"), dict) else {},
         }
 
     def _archive_outcome(
@@ -696,9 +704,9 @@ class DaemonActivities:
         step_results: list[dict],
         outcome_root: Path | None = None,
     ) -> Path:
-        task_type = str(plan.get("task_type") or "manual")
-        task_id = str(plan.get("task_id") or uuid.uuid4().hex[:8])
-        raw_title = str(plan.get("title") or task_type)
+        run_type = str(plan.get("run_type") or "manual")
+        run_id = str(plan.get("run_id") or uuid.uuid4().hex[:8])
+        raw_title = str(plan.get("title") or run_type)
         title = raw_title[:60].replace("/", "-").replace(":", "-").strip()
         root = outcome_root or self._resolve_outcome_root()
 
@@ -717,9 +725,9 @@ class DaemonActivities:
 
         # manifest.json stays for system reference but is not the user-facing file.
         manifest = {
-            "task_id": task_id,
+            "run_id": run_id,
             "title": raw_title,
-            "task_type": task_type,
+            "run_type": run_type,
             "run_root": run_root,
             "steps": len(step_results),
             "delivered_utc": _utc(),
@@ -730,20 +738,20 @@ class DaemonActivities:
         return dest
 
     def _archive_shadow_outcome(self, run_root: str, plan: dict, render_path: Path, step_results: list[dict]) -> Path:
-        task_id = str(plan.get("task_id") or uuid.uuid4().hex[:8])
+        run_id = str(plan.get("run_id") or uuid.uuid4().hex[:8])
         shadow_of = str(plan.get("shadow_of") or "")
         strategy_id = str(plan.get("strategy_id") or "")
-        dest = self._home / "state" / "shadow_outcomes" / task_id
+        dest = self._home / "state" / "shadow_outcomes" / run_id
         dest.mkdir(parents=True, exist_ok=True)
 
         suffix = render_path.suffix or ".html"
         dest_file = dest / f"report{suffix}"
         dest_file.write_text(render_path.read_text())
         manifest = {
-            "task_id": task_id,
+            "run_id": run_id,
             "shadow_of": shadow_of,
             "strategy_id": strategy_id,
-            "task_type": str(plan.get("task_type") or ""),
+            "run_type": str(plan.get("run_type") or ""),
             "run_root": run_root,
             "steps": len(step_results),
             "delivered_utc": _utc(),
@@ -772,10 +780,11 @@ class DaemonActivities:
             rel_path = str(outcome_path)
         entry = {
             "path": rel_path,
-            "drive_path": rel_path,  # task_id → drive_path mapping for Portal lookup
+            "drive_path": rel_path,  # run_id → drive_path mapping for Portal lookup
             "title": plan.get("title", ""),
-            "task_type": plan.get("task_type", "manual"),
-            "task_id": plan.get("task_id", ""),
+            "run_type": plan.get("run_type", "manual"),
+            "run_id": plan.get("run_id", ""),
+            "work_scale": plan.get("work_scale", ""),
             "delivered_utc": _utc(),
         }
         index.append(entry)
@@ -789,27 +798,40 @@ class DaemonActivities:
         root.mkdir(parents=True, exist_ok=True)
         return root
 
-    def _update_task_status(self, run_root: str, plan: dict, status: str, outcome_path: str | None = None) -> None:
-        tasks = self._store.load_tasks()
-        task_id = str(plan.get("task_id") or "")
+    def _update_run_status(self, run_root: str, plan: dict, run_status: str, outcome_path: str | None = None) -> None:
+        runs = self._store.load_runs()
+        run_id = str(plan.get("run_id") or "")
+        work_scale = str(plan.get("work_scale") or "")
         last_error = str(plan.get("last_error") or "")
-        for task in tasks:
-            if task.get("task_id") == task_id:
-                task["status"] = status
-                task["updated_utc"] = _utc()
+        for row in runs:
+            if row.get("run_id") == run_id:
+                row["run_status"] = run_status
+                row["updated_utc"] = _utc()
+                row["run_id"] = run_id
+                if work_scale:
+                    row["work_scale"] = work_scale
+                if plan.get("campaign_id"):
+                    row["campaign_id"] = str(plan.get("campaign_id") or "")
                 if last_error:
-                    task["last_error"] = last_error
+                    row["last_error"] = last_error
                 if outcome_path:
-                    task["outcome_path"] = outcome_path
+                    row["outcome_path"] = outcome_path
                 break
         else:
-            row = {"task_id": task_id, "status": status, "updated_utc": _utc(), "run_root": run_root}
+            row = {
+                "run_id": run_id,
+                "work_scale": work_scale,
+                "campaign_id": str(plan.get("campaign_id") or ""),
+                "run_status": run_status,
+                "updated_utc": _utc(),
+                "run_root": run_root,
+            }
             if last_error:
                 row["last_error"] = last_error
             if outcome_path:
                 row["outcome_path"] = outcome_path
-            tasks.append(row)
-        self._store.save_tasks(tasks)
+            runs.append(row)
+        self._store.save_runs(runs)
 
     def _generate_pdf_best_effort(self, outcome_dir: Path, render_path: Path) -> None:
         pdf_path = outcome_dir / "report.pdf"

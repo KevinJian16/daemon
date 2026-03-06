@@ -8,9 +8,9 @@ async function loadOverview() {
   document.getElementById('stat-memory').textContent = d.memory?.total_active ?? '—';
   document.getElementById('stat-methods').textContent = d.playbook?.by_status?.active ?? '—';
   document.getElementById('stat-signals').textContent = d.compass?.active_signals ?? '—';
-  document.getElementById('stat-tasks').textContent = d.running_tasks ?? '—';
-  runningTasksCount = Number(d.running_tasks ?? 0);
-  document.getElementById('running-tasks').textContent = tx(`${runningTasksCount} 运行中`, `${runningTasksCount} running`);
+  document.getElementById('stat-runs').textContent = d.running_runs ?? '—';
+  runningRunsCount = Number(d.running_runs ?? 0);
+  document.getElementById('running-runs').textContent = tx(`${runningRunsCount} 运行中`, `${runningRunsCount} running`);
 
   const usage = d.cortex_usage?.by_provider || {};
   let html = `<table><thead><tr><th>${tx('提供方', 'Provider')}</th><th>${tx('调用', 'Calls')}</th><th>${tx('输入 Tokens', 'In Tokens')}</th><th>${tx('输出 Tokens', 'Out Tokens')}</th><th>${tx('错误', 'Errors')}</th></tr></thead><tbody>`;

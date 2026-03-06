@@ -13,17 +13,17 @@ async function showFabric(type) {
     content.innerHTML = html;
   } else if (type === 'playbook') {
     const methods = await api('/console/fabric/playbook');
-    let html = `<div class="card"><h3>${tx('活跃 Playbook Methods', 'Active Playbook Methods')}</h3><table><thead><tr><th>${tx('操作', 'Action')}</th><th>${tx('名称', 'Name')}</th><th>${tx('类别', 'Category')}</th><th>${tx('成功率', 'Success Rate')}</th><th>${tx('运行次数', 'Runs')}</th><th>${tx('版本', 'Version')}</th></tr></thead><tbody>`;
+    let html = `<div class="card"><h3>${tx('活跃 Playbook Recipes', 'Active Playbook Recipes')}</h3><table><thead><tr><th>${tx('操作', 'Action')}</th><th>${tx('名称', 'Name')}</th><th>${tx('类别', 'Category')}</th><th>${tx('成功率', 'Success Rate')}</th><th>${tx('运行次数', 'Runs')}</th><th>${tx('版本', 'Version')}</th></tr></thead><tbody>`;
     html += methods.map(m => `<tr><td><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewPlaybookMethod('${m.method_id}')">${tx('查看', 'View')}</button></td><td>${esc(m.name)}</td><td>${m.category}</td><td>${m.success_rate != null ? (m.success_rate*100).toFixed(1)+'%' : '—'}</td><td>${m.total_runs}</td><td>v${m.version}</td></tr>`).join('');
     html += '</tbody></table></div>';
     html += `<div class="card">
-      <h3>${tx('Playbook Method 详情', 'Playbook Method Detail')}</h3>
+      <h3>${tx('Playbook Recipe 详情', 'Playbook Recipe Detail')}</h3>
       <div class="search-row">
         <select id="playbook-version-select"><option value="">Select version</option></select>
         <button class="action" style="background:#334155" onclick="previewSelectedPlaybookVersion()">${tx('查看版本', 'View Version')}</button>
       </div>
       <pre id="playbook-version-preview">${tx('选择一个版本预览 spec。', 'Select one version to preview spec.')}</pre>
-      <pre id="playbook-detail">${tx('选择一个 method 查看评估与版本。', 'Select a method to inspect evaluations and versions.')}</pre>
+      <pre id="playbook-detail">${tx('选择一个 recipe 查看评估与版本。', 'Select a recipe to inspect evaluations and versions.')}</pre>
     </div>`;
     content.innerHTML = html;
   } else if (type === 'compass') {
@@ -83,7 +83,7 @@ async function viewMemoryUnit(unitId) {
 async function viewPlaybookMethod(methodId) {
   const target = document.getElementById('playbook-detail');
   if (!target) return;
-  target.textContent = tx('加载 playbook method 详情…', 'Loading playbook method detail…');
+  target.textContent = tx('加载 playbook recipe 详情…', 'Loading playbook recipe detail…');
   try {
     const m = await api('/console/fabric/playbook/' + encodeURIComponent(methodId));
     const detail = {

@@ -30,8 +30,8 @@ async function composeSend(){
 function showPlanCard(plan){
   detPlan=plan;
   const c=document.getElementById('plan-card'); c.style.display='block';
-  document.getElementById('plan-summary').textContent=plan.objective||plan.intent||plan.task_type||JSON.stringify(plan).slice(0,120);
-  document.getElementById('plan-scale').textContent=plan.task_scale?'Scale: '+plan.task_scale:'';
+  document.getElementById('plan-summary').textContent=plan.objective||plan.intent||plan.run_type||JSON.stringify(plan).slice(0,120);
+  document.getElementById('plan-scale').textContent=(plan.work_scale||plan.work_scale)?'Scale: '+(plan.work_scale||plan.work_scale):'';
 }
 function dismissPlan(){ detPlan=null; document.getElementById('plan-card').style.display='none'; }
 async function submitPlan(){
@@ -39,7 +39,7 @@ async function submitPlan(){
   const btn=document.getElementById('plan-ok-btn'); btn.disabled=true; btn.textContent='…';
   try{
     const d=await api('/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(detPlan)});
-    dismissPlan(); addMsg('system','✓ Submitted — '+(d.task_id||''));
+    dismissPlan(); addMsg('system','✓ Submitted — '+(d.run_id||d.run_id||''));
     sessId=null; setTimeout(renderNav,600);
   }catch(e){ addMsg('system','✗ '+e.message); btn.disabled=false; btn.textContent=t('submitPlan'); }
 }
@@ -52,4 +52,3 @@ function renderChips(){
     <div class="fchip"><span>${esc(f.name)}</span><button onclick="rmFile(${i})">×</button></div>`).join('');
 }
 function rmFile(i){ attachFiles.splice(i,1); renderChips(); }
-

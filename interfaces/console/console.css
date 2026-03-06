@@ -249,16 +249,16 @@ textarea.editor:focus { border-color: var(--accent); }
 .table-shell table {
   margin: 0;
 }
-#panel-policy .policy-toolbar input,
-#panel-policy .policy-toolbar select,
-#panel-policy .policy-toolbar .action {
+#panel-norm .norm-toolbar input,
+#panel-norm .norm-toolbar select,
+#panel-norm .norm-toolbar .action {
   height: 32px;
 }
-#panel-policy .policy-toolbar .action {
+#panel-norm .norm-toolbar .action {
   display: inline-flex;
   align-items: center;
 }
-#panel-policy .policy-note-row {
+#panel-norm .norm-note-row {
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -267,31 +267,31 @@ textarea.editor:focus { border-color: var(--accent); }
   color: var(--muted);
   font-size: 11px;
 }
-#panel-policy .policy-catalog-block h3 {
+#panel-norm .norm-catalog-block h3 {
   margin-bottom: 8px;
 }
-#panel-policy .table-shell table {
+#panel-norm .table-shell table {
   width: 100%;
   table-layout: fixed;
 }
-#panel-policy .table-shell th,
-#panel-policy .table-shell td {
+#panel-norm .table-shell th,
+#panel-norm .table-shell td {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-#panel-policy .table-shell td {
+#panel-norm .table-shell td {
   vertical-align: middle;
 }
-#panel-policy .table-shell th:last-child,
-#panel-policy .table-shell td:last-child {
+#panel-norm .table-shell th:last-child,
+#panel-norm .table-shell td:last-child {
   text-align: center;
 }
-#panel-policy .table-shell th.col-action-head,
-#panel-policy .table-shell td.col-action-cell {
+#panel-norm .table-shell th.col-action-head,
+#panel-norm .table-shell td.col-action-cell {
   text-align: center;
 }
-#panel-policy .table-shell td .action {
+#panel-norm .table-shell td .action {
   width: 88px;
   height: 30px;
   display: inline-flex;
@@ -364,7 +364,7 @@ textarea.editor:focus { border-color: var(--accent); }
     width: 100%;
     font-size: 13px;
   }
-  #running-tasks {
+  #running-runs {
     width: 100%;
     margin-left: 0 !important;
   }
@@ -409,13 +409,13 @@ textarea.editor:focus { border-color: var(--accent); }
     font-size: 11px;
     padding: 6px;
   }
-  #panel-policy .table-shell th,
-  #panel-policy .table-shell td {
+  #panel-norm .table-shell th,
+  #panel-norm .table-shell td {
     white-space: normal;
     overflow: visible;
     text-overflow: clip;
   }
-  #panel-policy .table-shell td .action {
+  #panel-norm .table-shell td .action {
     width: min(96px, 100%);
   }
   /* Dense data tables: keep words/buttons intact with horizontal scroll in-panel */

@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS priorities (
 );
 
 CREATE TABLE IF NOT EXISTS quality_profiles (
-    task_type   TEXT PRIMARY KEY,
+    run_type   TEXT PRIMARY KEY,
     rules_json  TEXT NOT NULL,
     updated_utc TEXT NOT NULL
 );
@@ -83,7 +83,7 @@ BOOTSTRAP_PRIORITIES: list[dict] = [
 
 BOOTSTRAP_QUALITY_PROFILES: list[dict] = [
     {
-        "task_type": "research_report",
+        "run_type": "research_report",
         "rules": {
             "min_sections": 3,
             "min_word_count": 800,
@@ -93,7 +93,7 @@ BOOTSTRAP_QUALITY_PROFILES: list[dict] = [
         },
     },
     {
-        "task_type": "daily_brief",
+        "run_type": "daily_brief",
         "rules": {
             "min_sections": 2,
             "min_word_count": 400,
@@ -103,7 +103,7 @@ BOOTSTRAP_QUALITY_PROFILES: list[dict] = [
         },
     },
     {
-        "task_type": "default",
+        "run_type": "default",
         "rules": {
             "min_sections": 1,
             "min_word_count": 200,
@@ -122,7 +122,7 @@ BOOTSTRAP_BUDGETS: list[dict] = [
     # Compatibility budgets for optional providers/tools.
     {"resource_type": "openai_tokens",     "daily_limit": 5_000_000},
     {"resource_type": "anthropic_tokens",  "daily_limit": 2_000_000},
-    {"resource_type": "concurrent_tasks",  "daily_limit": 10},
+    {"resource_type": "concurrent_runs",   "daily_limit": 10},
 ]
 
 BOOTSTRAP_PREFERENCES: list[dict] = [
@@ -183,10 +183,10 @@ class CompassFabric:
         for q in BOOTSTRAP_QUALITY_PROFILES:
             conn.execute(
                 """
-                INSERT OR IGNORE INTO quality_profiles (task_type, rules_json, updated_utc)
+                INSERT OR IGNORE INTO quality_profiles (run_type, rules_json, updated_utc)
                 VALUES (?,?,?)
                 """,
-                (q["task_type"], json.dumps(q["rules"], ensure_ascii=False), now),
+                (q["run_type"], json.dumps(q["rules"], ensure_ascii=False), now),
             )
         for b in BOOTSTRAP_BUDGETS:
             conn.execute(
@@ -233,20 +233,20 @@ class CompassFabric:
 
     # ── Quality profiles ─────────────────────────────────────────────────────
 
-    def set_quality_profile(self, task_type: str, rules: dict, changed_by: str = "system") -> None:
+    def set_quality_profile(self, run_type: str, rules: dict, changed_by: str = "system") -> None:
         now = _utc()
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO quality_profiles VALUES (?,?,?) ON CONFLICT(task_type) DO UPDATE SET rules_json=excluded.rules_json, updated_utc=excluded.updated_utc",
-                (task_type, json.dumps(rules), now),
+                "INSERT INTO quality_profiles VALUES (?,?,?) ON CONFLICT(run_type) DO UPDATE SET rules_json=excluded.rules_json, updated_utc=excluded.updated_utc",
+                (run_type, json.dumps(rules), now),
             )
-            self._version(conn, f"quality.{task_type}", rules, changed_by, None)
+            self._version(conn, f"quality.{run_type}", rules, changed_by, None)
 
-    def get_quality_profile(self, task_type: str) -> dict:
+    def get_quality_profile(self, run_type: str) -> dict:
         with self._conn() as conn:
-            row = conn.execute("SELECT rules_json FROM quality_profiles WHERE task_type=?", (task_type,)).fetchone()
+            row = conn.execute("SELECT rules_json FROM quality_profiles WHERE run_type=?", (run_type,)).fetchone()
             if not row:
-                row = conn.execute("SELECT rules_json FROM quality_profiles WHERE task_type='default'").fetchone()
+                row = conn.execute("SELECT rules_json FROM quality_profiles WHERE run_type='default'").fetchone()
         return json.loads(row["rules_json"]) if row else {}
 
     # ── Resource budgets ─────────────────────────────────────────────────────
@@ -416,8 +416,8 @@ class CompassFabric:
     def snapshot(self) -> dict:
         with self._conn() as conn:
             quality_profiles = {
-                r["task_type"]: json.loads(r["rules_json"])
-                for r in conn.execute("SELECT task_type, rules_json FROM quality_profiles").fetchall()
+                r["run_type"]: json.loads(r["rules_json"])
+                for r in conn.execute("SELECT run_type, rules_json FROM quality_profiles").fetchall()
             }
         return {
             "priorities": self.get_priorities(),

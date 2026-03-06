@@ -4,9 +4,9 @@ from __future__ import annotations
 from typing import Any
 
 
-def run_record(self, task_id: str, plan: dict, step_results: list[dict], outcome: dict) -> dict:
-    with self.tracer.span("spine.record", trigger="nerve:task_completed") as ctx:
-        method_name = plan.get("method") or plan.get("task_type") or "research_report"
+def run_record(self, run_id: str, plan: dict, step_results: list[dict], outcome: dict) -> dict:
+    with self.tracer.span("spine.record", trigger="nerve:run_completed") as ctx:
+        recipe_name = plan.get("run_type") or "research_report"
         status = "success" if outcome.get("ok") else "failure"
         score = float(outcome.get("score", 1.0 if outcome.get("ok") else 0.0))
 
@@ -20,23 +20,23 @@ def run_record(self, task_id: str, plan: dict, step_results: list[dict], outcome
         if not method_id:
             methods = self.playbook.consult(category="dag_pattern")
             for m in methods:
-                if m["name"] == method_name:
+                if m["name"] == recipe_name:
                     method_id = m["method_id"]
                     break
 
         if method_id:
             eval_detail = {
-                "task_id": task_id,
+                "run_id": run_id,
                 "steps": len(step_results),
                 "failed_steps": sum(1 for r in step_results if r.get("status") == "error"),
                 "plan_title": plan.get("title", "")[:100],
             }
-            self.playbook.evaluate(method_id, task_id, status, score, eval_detail)
+            self.playbook.evaluate(method_id, run_id, status, score, eval_detail)
             ctx.step("playbook_eval", {"method_id": method_id, "outcome": status})
 
         used_unit_ids: list[str] = plan.get("evidence_unit_ids") or []
         for uid in used_unit_ids:
-            self.memory.record_usage(uid, task_id, method_id, status)
+            self.memory.record_usage(uid, run_id, method_id, status)
         ctx.step("usage_recorded", len(used_unit_ids))
 
         strategy_id = str(plan.get("strategy_id") or "")
@@ -54,15 +54,15 @@ def run_record(self, task_id: str, plan: dict, step_results: list[dict], outcome
             )
             self.playbook.record_experiment(
                 strategy_id=strategy_id,
-                task_id=task_id,
+                run_id=run_id,
                 cluster_id=cluster_id,
                 score_components=strategy_components,
                 global_score=strategy_global_score,
                 outcome=status,
                 is_shadow=bool(plan.get("is_shadow", False)),
             )
-            self._update_task_strategy(
-                task_id=task_id,
+            self._update_run_strategy(
+                run_id=run_id,
                 semantic_cluster=cluster_id,
                 strategy_id=strategy_id,
                 strategy_stage=strategy_stage or "champion",
@@ -72,7 +72,7 @@ def run_record(self, task_id: str, plan: dict, step_results: list[dict], outcome
             )
             if bool(plan.get("is_shadow")):
                 self._write_shadow_comparison(
-                    task_id=task_id,
+                    run_id=run_id,
                     shadow_of=str(plan.get("shadow_of") or ""),
                     cluster_id=cluster_id,
                     strategy_id=strategy_id,
@@ -90,7 +90,7 @@ def run_record(self, task_id: str, plan: dict, step_results: list[dict], outcome
             )
 
         result = {
-            "task_id": task_id,
+            "run_id": run_id,
             "outcome": status,
             "method_id": method_id,
             "strategy_id": strategy_id,

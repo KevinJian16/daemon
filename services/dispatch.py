@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from runtime.semantic import SemanticFingerprint, SemanticGenerator, SemanticMappingError
+from runtime.semantic import SemanticSpec, SemanticGenerator, SemanticMappingError
 from services.dispatch_model import (
     apply_model_routing as _apply_model_routing_impl,
     load_model_policy as _load_model_policy_impl,
@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from runtime.cortex import Cortex
     from spine.nerve import Nerve
 
+
 def _utc() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -56,7 +57,7 @@ class Dispatch:
         nerve: "Nerve",
         state_dir: Path,
         temporal_client=None,
-        task_queue: str = "daemon-queue",
+        temporal_queue: str = "daemon-queue",
         cortex: "Cortex | None" = None,
     ) -> None:
         self._playbook = playbook
@@ -66,7 +67,7 @@ class Dispatch:
         self._store = StateStore(state_dir)
         self._logger = logger
         self._temporal = temporal_client
-        self._task_queue = task_queue
+        self._temporal_queue = temporal_queue
         self._cortex = cortex
         self._semantic = SemanticGenerator(cortex=cortex)
         self._agent_defaults = self._load_agent_defaults()
@@ -103,34 +104,33 @@ class Dispatch:
     def enrich(self, plan: dict) -> dict:
         """Apply Playbook parameters (timeouts, retry policy) into plan."""
         plan = dict(plan)
-        # Clear stale queue markers before re-evaluating gate policy (important for replay).
         plan.pop("queued", None)
         plan.pop("queue_reason", None)
-        plan.pop("status", None)
-        task_type = str(plan.get("task_type") or plan.get("method") or "research_report")
-        plan.setdefault("task_type", task_type)
-        plan.setdefault("task_id", _new_task_id())
+        plan.pop("run_status", None)
+
+        run_type = str(plan.get("run_type") or "research_report")
+        plan.setdefault("run_type", run_type)
+        plan.setdefault("run_id", _new_run_id())
+
         agent_defaults = self._agent_defaults_from_compass() or dict(self._agent_defaults)
         plan.setdefault("agent_concurrency_defaults", dict(agent_defaults))
         plan.setdefault("agent_concurrency", dict(agent_defaults))
 
-        # Compatibility path: enrich() may be called directly without prior semantic resolution.
         if not str(plan.get("cluster_id") or "").strip():
             try:
-                fp = self._semantic.from_task_type(task_type, title=str(plan.get("title") or ""))
+                fp = self._semantic.from_run_type(run_type, title=str(plan.get("title") or ""))
                 plan["cluster_id"] = fp.cluster_id
-                plan.setdefault("semantic_fingerprint", fp.to_dict())
+                plan.setdefault("semantic_spec", fp.to_dict())
                 self._annotate_capability_graph(plan, fp.cluster_id)
             except Exception as exc:
-                logger.warning("Failed to derive cluster_id from task_type=%s: %s", task_type, exc)
+                logger.warning("Failed to derive cluster_id from run_type=%s: %s", run_type, exc)
 
-        # Consult Playbook for best matching method.
         methods = self._playbook.consult(category="dag_pattern")
         best = None
         for m in methods:
-            if m["name"] == task_type or not best:
+            if m["name"] == run_type or not best:
                 best = m
-                if m["name"] == task_type:
+                if m["name"] == run_type:
                     break
 
         if best:
@@ -145,18 +145,19 @@ class Dispatch:
                 plan["timeout_hints"] = {**spec.get("timeout_hints", {}), **existing_hints}
             plan["method_id"] = best["method_id"]
 
-        # Apply Compass quality profile as timeout hint.
-        quality = self._compass.get_quality_profile(task_type)
+        quality = self._compass.get_quality_profile(run_type)
         plan.setdefault("quality_profile", quality)
         default_timeout = int(self._compass.get_pref("default_step_timeout_s", "480") or 480)
         plan.setdefault("default_step_timeout_s", default_timeout)
         plan.setdefault("model_primary", self._compass.get_pref("model_primary", ""))
         plan.setdefault("resource_budgets", self._compass.all_budgets())
+
         plan = self._apply_strategy(plan)
         plan = self._apply_complexity_probe(plan)
+        if not str(plan.get("work_scale") or "").strip():
+            plan["work_scale"] = "thread"
         plan = self._preflight_provider_budget(plan)
 
-        # Gate check — apply priority to queued vs immediate.
         gate = self._read_gate()
         if not plan.get("queued"):
             if gate.get("status") == "RED":
@@ -171,7 +172,6 @@ class Dispatch:
         return plan
 
     def _apply_strategy(self, plan: dict) -> dict:
-        """Inject champion strategy parameters for the resolved semantic cluster."""
         return _apply_strategy_impl(self, plan)
 
     def _load_model_policy(self) -> dict:
@@ -182,6 +182,7 @@ class Dispatch:
 
     def _resolve_capability_key(self, step: dict) -> str:
         from services.dispatch_model import resolve_capability_key
+
         return resolve_capability_key(step)
 
     def _apply_model_routing(self, plan: dict, strategy_spec: dict) -> None:
@@ -244,32 +245,23 @@ class Dispatch:
                 continue
         return out
 
-    def resolve_semantic(self, request: dict) -> "SemanticFingerprint":
-        """Four-path semantic resolution (decision §1). Raises SemanticMappingError on failure.
-
-        Path 1: caller provides semantic_fingerprint dict → validate cluster_id.
-        Path 2: caller provides intent_contract dict → generate fingerprint.
-        Path 3: caller provides task_type string → compat cluster mapping.
-        Path 4: none of the above → SemanticMappingError (fail-closed, 400).
-        """
+    def resolve_semantic(self, request: dict) -> "SemanticSpec":
+        """Resolve semantic spec by explicit input or run_type mapping."""
         return _resolve_semantic_impl(self, request)
 
     async def submit(self, plan: dict) -> dict:
-        """Semantic resolve → validate → enrich → Temporal submit."""
-        # Step 1: Semantic resolution (fail-closed).
         try:
-            fingerprint = self.resolve_semantic(plan)
+            spec = self.resolve_semantic(plan)
         except SemanticMappingError as exc:
             return {"ok": False, "error": str(exc), "error_code": "semantic_mapping_failed"}
         except Exception as exc:
             logger.error("Semantic resolution internal error: %s", exc)
             return {"ok": False, "error": f"semantic_resolution_internal_error:{str(exc)[:240]}", "error_code": "semantic_mapping_failed"}
 
-        # Attach resolved fingerprint to plan.
         plan = dict(plan)
-        plan["semantic_fingerprint"] = fingerprint.to_dict()
-        plan.setdefault("cluster_id", fingerprint.cluster_id)
-        self._annotate_capability_graph(plan, fingerprint.cluster_id)
+        plan["semantic_spec"] = spec.to_dict()
+        plan.setdefault("cluster_id", spec.cluster_id)
+        self._annotate_capability_graph(plan, spec.cluster_id)
 
         ok, err = self.validate(plan)
         if not ok:
@@ -280,45 +272,53 @@ class Dispatch:
         except ValueError as exc:
             return {"ok": False, "error": str(exc), "error_code": "strategy_guard_blocked"}
 
-        task_id = plan["task_id"]
-        plan.setdefault("trace_id", f"tr_task_{task_id}")
+        run_id = str(plan["run_id"])
+        plan.setdefault("trace_id", f"tr_run_{run_id}")
 
         if plan.get("queued"):
-            self._queue_task(plan)
-            out = {"ok": True, "task_id": task_id, "status": "queued", "reason": plan.get("queue_reason")}
+            self._queue_run(plan)
+            out = {
+                "ok": True,
+                "run_id": run_id,
+                "run_status": "queued",
+                "reason": plan.get("queue_reason"),
+                "work_scale": str(plan.get("work_scale") or "thread"),
+            }
             if str(plan.get("queue_reason") or "") == "provider_budget_insufficient":
                 out["error_code"] = "provider_budget_insufficient"
-                out["provider_routing"] = plan.get("provider_routing") if isinstance(plan.get("provider_routing"), dict) else {}
+                out["provider_routing"] = (
+                    plan.get("provider_routing") if isinstance(plan.get("provider_routing"), dict) else {}
+                )
                 self._nerve.emit(
                     "provider_budget_insufficient",
-                    {"task_id": task_id, "provider_routing": out["provider_routing"]},
+                    {"run_id": run_id, "provider_routing": out["provider_routing"]},
                 )
             return out
 
-        if str(plan.get("task_scale") or "") == "campaign":
+        if str(plan.get("work_scale") or "").strip().lower() == "campaign":
             return await self._submit_campaign(plan)
 
         if not self._temporal:
-            self._record_task(plan, "failed_submission", "")
+            self._record_run(plan, "failed_submission", "")
             return {
                 "ok": False,
-                "task_id": task_id,
+                "run_id": run_id,
                 "error_code": "temporal_unavailable",
                 "error": "Temporal client unavailable; submission rejected",
             }
 
-        run_root = self._make_run_root(task_id)
-        self._record_task(plan, "running", run_root)
+        run_root = self._make_run_root(run_id)
+        self._record_run(plan, "running", run_root)
 
         try:
-            workflow_id = f"daemon-{task_id}"
+            workflow_id = f"daemon-{run_id}"
             await self._temporal.submit(workflow_id, plan, run_root)
         except Exception as exc:
-            logger.error("Temporal submit failed for task %s: %s", task_id, exc)
-            self._record_task({**plan, "last_error": str(exc)[:300]}, "failed_submission", run_root)
+            logger.error("Temporal submit failed for run %s: %s", run_id, exc)
+            self._record_run({**plan, "last_error": str(exc)[:300]}, "failed_submission", run_root)
             return {
                 "ok": False,
-                "task_id": task_id,
+                "run_id": run_id,
                 "error_code": "temporal_submit_failed",
                 "error": str(exc)[:400],
             }
@@ -327,44 +327,50 @@ class Dispatch:
             self._playbook.record_release_execution(
                 strategy_id=str(plan.get("strategy_id") or ""),
                 cluster_id=str(plan.get("cluster_id") or ""),
-                stage=str(plan.get("strategy_stage") or "champion"),
+                strategy_stage=str(plan.get("strategy_stage") or "champion"),
                 mode="production",
-                task_id=task_id,
+                run_id=run_id,
                 actor="dispatch",
                 reason="primary_submission",
             )
         except Exception as exc:
-            logger.warning("Failed to record production release execution for %s: %s", task_id, exc)
+            logger.warning("Failed to record production release execution for %s: %s", run_id, exc)
 
-        self._nerve.emit("task_submitted", {"task_id": task_id, "run_root": run_root})
-        self._notify_task_started(plan)
-        await self._maybe_submit_shadow(plan, parent_task_id=task_id)
-        return {"ok": True, "task_id": task_id, "status": "running", "run_root": run_root}
+        self._nerve.emit("run_submitted", {"run_id": run_id, "run_root": run_root})
+        self._notify_run_started(plan)
+        await self._maybe_submit_shadow(plan, parent_run_id=run_id)
+        return {
+            "ok": True,
+            "run_id": run_id,
+            "run_status": "running",
+            "work_scale": str(plan.get("work_scale") or "thread"),
+            "run_root": run_root,
+        }
 
     async def _submit_campaign(self, plan: dict) -> dict:
-        task_id = str(plan.get("task_id") or _new_task_id())
+        run_id = str(plan.get("run_id") or _new_run_id())
         plan = dict(plan)
-        plan["task_id"] = task_id
-        plan.setdefault("task_scale", "campaign")
-        plan.setdefault("campaign_id", f"cmp_{task_id}")
-        campaign_id = str(plan.get("campaign_id") or f"cmp_{task_id}")
+        plan["run_id"] = run_id
+        plan.setdefault("work_scale", "campaign")
+        plan.setdefault("campaign_id", f"cmp_{run_id}")
+        campaign_id = str(plan.get("campaign_id") or f"cmp_{run_id}")
         workflow_id = f"daemon-campaign-{campaign_id}"
         plan["_workflow_id"] = workflow_id
         plan.setdefault("campaign_resume_from", 0)
         plan.setdefault("campaign_run_index", 0)
 
         if not self._temporal:
-            self._record_task(plan, "failed_submission", "")
+            self._record_run(plan, "failed_submission", "")
             return {
                 "ok": False,
-                "task_id": task_id,
+                "run_id": run_id,
                 "campaign_id": campaign_id,
                 "error_code": "temporal_unavailable",
                 "error": "Temporal client unavailable; campaign submission rejected",
             }
 
-        run_root = self._make_run_root(task_id)
-        self._record_task(plan, "running", run_root)
+        run_root = self._make_run_root(run_id)
+        self._record_run(plan, "running", run_root)
 
         try:
             await self._temporal.submit(
@@ -374,11 +380,11 @@ class Dispatch:
                 workflow_name="CampaignWorkflow",
             )
         except Exception as exc:
-            logger.error("Campaign submit failed for task %s: %s", task_id, exc)
-            self._record_task({**plan, "last_error": str(exc)[:300]}, "failed_submission", run_root)
+            logger.error("Campaign submit failed for run %s: %s", run_id, exc)
+            self._record_run({**plan, "last_error": str(exc)[:300]}, "failed_submission", run_root)
             return {
                 "ok": False,
-                "task_id": task_id,
+                "run_id": run_id,
                 "campaign_id": campaign_id,
                 "error_code": "temporal_submit_failed",
                 "error": str(exc)[:400],
@@ -387,7 +393,7 @@ class Dispatch:
         self._nerve.emit(
             "campaign_submitted",
             {
-                "task_id": task_id,
+                "run_id": run_id,
                 "campaign_id": campaign_id,
                 "workflow_id": workflow_id,
                 "run_root": run_root,
@@ -395,18 +401,17 @@ class Dispatch:
         )
         return {
             "ok": True,
-            "task_id": task_id,
+            "run_id": run_id,
             "campaign_id": campaign_id,
             "workflow_id": workflow_id,
-            "task_scale": "campaign",
-            "status": "running",
+            "work_scale": "campaign",
+            "run_status": "running",
             "run_root": run_root,
         }
 
     async def submit_sandbox(self, plan: dict, strategy_id: str) -> dict:
-        """Submit an isolated sandbox run for candidate/shadow/challenger strategy."""
         try:
-            fingerprint = self.resolve_semantic(plan)
+            spec = self.resolve_semantic(plan)
         except SemanticMappingError as exc:
             return {"ok": False, "error": str(exc), "error_code": "semantic_mapping_failed"}
         except Exception as exc:
@@ -414,9 +419,9 @@ class Dispatch:
             return {"ok": False, "error": f"semantic_resolution_internal_error:{str(exc)[:240]}", "error_code": "semantic_mapping_failed"}
 
         plan = dict(plan)
-        plan["semantic_fingerprint"] = fingerprint.to_dict()
-        plan.setdefault("cluster_id", fingerprint.cluster_id)
-        self._annotate_capability_graph(plan, fingerprint.cluster_id)
+        plan["semantic_spec"] = spec.to_dict()
+        plan.setdefault("cluster_id", spec.cluster_id)
+        self._annotate_capability_graph(plan, spec.cluster_id)
 
         ok, err = self.validate(plan)
         if not ok:
@@ -430,23 +435,25 @@ class Dispatch:
         strategy = self._playbook.get_strategy(strategy_id)
         if not strategy:
             return {"ok": False, "error": f"unknown_strategy:{strategy_id}", "error_code": "strategy_not_found"}
-        stage = str(strategy.get("stage") or "")
-        if stage not in {"candidate", "shadow", "challenger"}:
-            return {"ok": False, "error": f"sandbox_stage_invalid:{stage}", "error_code": "strategy_guard_blocked"}
+        strategy_stage = str(strategy.get("strategy_stage") or "")
+        if strategy_stage not in {"candidate", "shadow", "challenger"}:
+            return {"ok": False, "error": f"sandbox_stage_invalid:{strategy_stage}", "error_code": "strategy_guard_blocked"}
+
         cluster_id = str(plan.get("cluster_id") or "")
         if cluster_id and str(strategy.get("cluster_id") or "") != cluster_id:
             return {"ok": False, "error": "strategy_cluster_mismatch", "error_code": "strategy_guard_blocked"}
 
-        task_id = str(plan.get("task_id") or _new_task_id())
-        plan["task_id"] = task_id
-        plan.setdefault("trace_id", f"tr_task_{task_id}")
+        run_id = str(plan.get("run_id") or _new_run_id())
+        plan["run_id"] = run_id
+        plan.setdefault("trace_id", f"tr_run_{run_id}")
+
         champion = self._playbook.get_champion(cluster_id) if cluster_id else None
         champion_id = str(champion.get("strategy_id") or "") if champion else ""
         plan["is_shadow"] = True
         plan["delivery_mode"] = "sandbox"
-        plan["shadow_of"] = f"sandbox:{task_id}"
+        plan["shadow_of"] = f"sandbox:{run_id}"
         plan["strategy_id"] = strategy_id
-        plan["strategy_stage"] = stage
+        plan["strategy_stage"] = strategy_stage
         plan["shadow_champion_strategy_id"] = champion_id
 
         spec = strategy.get("spec") if isinstance(strategy.get("spec"), dict) else {}
@@ -459,25 +466,26 @@ class Dispatch:
                 plan["timeout_hints"] = {**spec.get("timeout_hints", {}), **current_hints}
 
         if not self._temporal:
-            self._record_task(plan, "failed_submission", "")
+            self._record_run(plan, "failed_submission", "")
             return {
                 "ok": False,
-                "task_id": task_id,
+                "run_id": run_id,
                 "error_code": "temporal_unavailable",
                 "error": "Temporal client unavailable; submission rejected",
             }
 
-        run_root = self._make_run_root(task_id, is_shadow=True)
-        self._record_task(plan, "running_shadow", run_root)
+        run_root = self._make_run_root(run_id, is_shadow=True)
+        self._record_run(plan, "running_shadow", run_root)
+
         try:
-            workflow_id = f"daemon-sandbox-{task_id}"
+            workflow_id = f"daemon-sandbox-{run_id}"
             await self._temporal.submit(workflow_id, plan, run_root)
         except Exception as exc:
-            logger.error("Temporal sandbox submit failed for task %s: %s", task_id, exc)
-            self._record_task({**plan, "last_error": str(exc)[:300]}, "failed_submission", run_root)
+            logger.error("Temporal sandbox submit failed for run %s: %s", run_id, exc)
+            self._record_run({**plan, "last_error": str(exc)[:300]}, "failed_submission", run_root)
             return {
                 "ok": False,
-                "task_id": task_id,
+                "run_id": run_id,
                 "error_code": "temporal_submit_failed",
                 "error": str(exc)[:400],
             }
@@ -486,38 +494,37 @@ class Dispatch:
             self._playbook.record_release_execution(
                 strategy_id=str(strategy_id or ""),
                 cluster_id=cluster_id,
-                stage=stage,
+                strategy_stage=strategy_stage,
                 mode="sandbox",
-                task_id=task_id,
+                run_id=run_id,
                 actor="dispatch",
                 reason="sandbox_submission",
                 shadow_of=str(plan.get("shadow_of") or ""),
             )
         except Exception as exc:
-            logger.warning("Failed to record sandbox release execution for %s: %s", task_id, exc)
+            logger.warning("Failed to record sandbox release execution for %s: %s", run_id, exc)
 
         self._nerve.emit(
             "sandbox_submitted",
             {
-                "task_id": task_id,
+                "run_id": run_id,
                 "strategy_id": strategy_id,
                 "cluster_id": cluster_id,
-                "stage": stage,
+                "strategy_stage": strategy_stage,
                 "run_root": run_root,
             },
         )
         return {
             "ok": True,
-            "task_id": task_id,
-            "status": "running_shadow",
+            "run_id": run_id,
+            "run_status": "running_shadow",
             "run_root": run_root,
             "strategy_id": strategy_id,
-            "strategy_stage": stage,
+            "strategy_stage": strategy_stage,
         }
 
-    async def _maybe_submit_shadow(self, plan: dict, parent_task_id: str) -> None:
-        """Submit a shadow run on a non-champion strategy without impacting primary delivery."""
-        await _maybe_submit_shadow_impl(self, plan, parent_task_id)
+    async def _maybe_submit_shadow(self, plan: dict, parent_run_id: str) -> None:
+        await _maybe_submit_shadow_impl(self, plan, parent_run_id)
 
     def _shadow_ratio(self) -> float:
         return _shadow_ratio_impl(self)
@@ -541,35 +548,33 @@ class Dispatch:
         return pick_alias_for_provider(provider, registry, prefer_alias=prefer_alias)
 
     def _annotate_capability_graph(self, plan: dict, cluster_id: str) -> None:
-        """Ensure each DAG node carries capability_id + quality_contract_id."""
         _annotate_capability_graph_impl(plan, cluster_id)
 
-    async def replay(self, task_id: str, plan: dict) -> dict:
-        """Replay a queued task with backoff enforcement (decision §7)."""
-        return await _replay_impl(self, task_id, plan)
+    async def replay(self, run_id: str, plan: dict) -> dict:
+        return await _replay_impl(self, run_id, plan)
 
     def _update_replay_state(
         self,
-        task_id: str,
-        tasks: list,
-        status: str,
+        run_id: str,
+        runs: list,
+        run_status: str,
         attempts: int | None = None,
         next_replay_utc: str | None = None,
         reason: str | None = None,
     ) -> None:
         _update_replay_state_impl(
             self,
-            task_id,
-            tasks,
-            status,
+            run_id,
+            runs,
+            run_status,
             attempts=attempts,
             next_replay_utc=next_replay_utc,
             reason=reason,
         )
 
-    def _notify_task_started(self, plan: dict) -> None:
-        """Push task_started notification to the Telegram adapter (best-effort)."""
+    def _notify_run_started(self, plan: dict) -> None:
         import os as _os
+
         prefs = {}
         try:
             prefs = self._compass.all_prefs() if self._compass else {}
@@ -577,79 +582,91 @@ class Dispatch:
             pass
         if prefs.get("telegram_enabled") != "true":
             return
+
         adapter_url = _os.environ.get("TELEGRAM_ADAPTER_URL", "http://127.0.0.1:8001")
         try:
             import httpx as _httpx
+
             _httpx.post(
                 f"{adapter_url}/notify",
                 json={
-                    "event": "task_started",
+                    "event": "run_started",
                     "payload": {
-                        "task_id": str(plan.get("task_id") or ""),
-                        "title": str(plan.get("title") or plan.get("task_type") or "任务"),
-                        "task_scale": str(plan.get("task_scale") or "thread"),
-                        "task_type": str(plan.get("task_type") or ""),
+                        "run_id": str(plan.get("run_id") or ""),
+                        "title": str(plan.get("title") or plan.get("run_type") or "运行"),
+                        "work_scale": str(plan.get("work_scale") or "thread"),
+                        "run_type": str(plan.get("run_type") or ""),
                     },
                 },
                 timeout=5,
             )
         except Exception as exc:
-            logger.warning("Telegram notify task_started failed: %s", exc)
+            logger.warning("Telegram notify run_started failed: %s", exc)
 
-    def _make_run_root(self, task_id: str, is_shadow: bool = False) -> str:
-        runs_dir = (self._state / "runs_shadow" / task_id) if is_shadow else (self._state / "runs" / task_id)
+    def _make_run_root(self, run_id: str, is_shadow: bool = False) -> str:
+        runs_dir = (self._state / "runs_shadow" / run_id) if is_shadow else (self._state / "runs" / run_id)
         runs_dir.mkdir(parents=True, exist_ok=True)
         return str(runs_dir)
 
-    def _record_task(self, plan: dict, status: str, run_root: str) -> None:
-        tasks = self._store.load_tasks()
-        task_id = plan.get("task_id", "")
-        for t in tasks:
-            if t.get("task_id") == task_id:
-                t["status"] = status
-                t["updated_utc"] = _utc()
-                if plan.get("last_error"):
-                    t["last_error"] = plan.get("last_error")
-                if run_root:
-                    t["run_root"] = run_root
-                if "cluster_id" in plan:
-                    t["semantic_cluster"] = plan.get("cluster_id", "")
-                if "strategy_id" in plan:
-                    t["strategy_id"] = plan.get("strategy_id", "")
-                if "strategy_stage" in plan:
-                    t["strategy_stage"] = plan.get("strategy_stage", "")
-                if "global_score_components" in plan:
-                    t["global_score_components"] = plan.get("global_score_components") or {}
-                break
+    def _record_run(self, plan: dict, run_status: str, run_root: str) -> None:
+        runs = self._store.load_runs()
+        run_id = str(plan.get("run_id") or "")
+        work_scale = str(plan.get("work_scale") or "")
+        for row in runs:
+            if str(row.get("run_id") or "") != run_id:
+                continue
+            row["run_status"] = run_status
+            row["updated_utc"] = _utc()
+            if work_scale:
+                row["work_scale"] = work_scale
+            if plan.get("campaign_id"):
+                row["campaign_id"] = str(plan.get("campaign_id") or "")
+            if plan.get("last_error"):
+                row["last_error"] = plan.get("last_error")
+            if run_root:
+                row["run_root"] = run_root
+            if "cluster_id" in plan:
+                row["semantic_cluster"] = plan.get("cluster_id", "")
+            if "strategy_id" in plan:
+                row["strategy_id"] = plan.get("strategy_id", "")
+            if "strategy_stage" in plan:
+                row["strategy_stage"] = plan.get("strategy_stage", "")
+            if "global_score_components" in plan:
+                row["global_score_components"] = plan.get("global_score_components") or {}
+            break
         else:
-            tasks.append({
-                "task_id": task_id,
-                "title": plan.get("title", ""),
-                "task_type": plan.get("task_type", ""),
-                "status": status,
-                "run_root": run_root,
-                "submitted_utc": _utc(),
-                "updated_utc": _utc(),
-                "priority": plan.get("priority", 5),
-                "semantic_cluster": plan.get("cluster_id", ""),
-                "strategy_id": plan.get("strategy_id", ""),
-                "strategy_stage": plan.get("strategy_stage", ""),
-                "global_score_components": plan.get("global_score_components") or {},
-                "plan": plan,
-                "last_error": plan.get("last_error", ""),
-            })
-        self._store.save_tasks(tasks)
+            runs.append(
+                {
+                    "run_id": run_id,
+                    "title": plan.get("title", ""),
+                    "run_type": plan.get("run_type", ""),
+                    "work_scale": work_scale or "thread",
+                    "campaign_id": str(plan.get("campaign_id") or ""),
+                    "run_status": run_status,
+                    "run_root": run_root,
+                    "submitted_utc": _utc(),
+                    "updated_utc": _utc(),
+                    "priority": plan.get("priority", 5),
+                    "semantic_cluster": plan.get("cluster_id", ""),
+                    "strategy_id": plan.get("strategy_id", ""),
+                    "strategy_stage": plan.get("strategy_stage", ""),
+                    "global_score_components": plan.get("global_score_components") or {},
+                    "plan": plan,
+                    "last_error": plan.get("last_error", ""),
+                }
+            )
+        self._store.save_runs(runs)
 
-    def _queue_task(self, plan: dict) -> None:
+    def _queue_run(self, plan: dict) -> None:
         plan_copy = dict(plan)
-        plan_copy["status"] = "queued"
+        plan_copy["run_status"] = "queued"
         plan_copy["queued_utc"] = _utc()
-        self._record_task(plan_copy, "queued", "")
+        self._record_run(plan_copy, "queued", "")
 
     def _read_gate(self) -> dict:
         return self._store.load_gate()
 
 
-def _new_task_id() -> str:
+def _new_run_id() -> str:
     ts = time.strftime("%Y%m%d%H%M%S", time.gmtime())
-    return f"task_{ts}_{uuid.uuid4().hex[:6]}"
+    return f"run_{ts}_{uuid.uuid4().hex[:6]}"

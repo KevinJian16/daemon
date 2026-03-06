@@ -66,6 +66,14 @@ class SpineRoutines:
         self.state_dir = daemon_home / "state"
         self._store = StateStore(self.state_dir)
 
+    @staticmethod
+    def _normalize_strategy_row(row: dict) -> dict:
+        out = dict(row or {})
+        strategy_stage = str(out.get("strategy_stage") or "").strip()
+        if strategy_stage:
+            out["strategy_stage"] = strategy_stage
+        return out
+
     # ── 1. pulse ─────────────────────────────────────────────────────────────
 
     def pulse(self) -> dict:
@@ -159,9 +167,9 @@ class SpineRoutines:
 
     # ── 3. record ─────────────────────────────────────────────────────────────
 
-    def record(self, task_id: str, plan: dict, step_results: list[dict], outcome: dict) -> dict:
-        """Record completed task: write Playbook evaluation, Memory usage, trace summary."""
-        return run_record(self, task_id, plan, step_results, outcome)
+    def record(self, run_id: str, plan: dict, step_results: list[dict], outcome: dict) -> dict:
+        """Record completed run: write Playbook evaluation, Memory usage, trace summary."""
+        return run_record(self, run_id, plan, step_results, outcome)
 
     # ── 4. witness ────────────────────────────────────────────────────────────
 
@@ -202,7 +210,7 @@ class SpineRoutines:
     # ── 10. tend ──────────────────────────────────────────────────────────────
 
     def tend(self) -> dict:
-        """Housekeeping: expire old data, clean orphaned sessions, replay queued tasks."""
+        """Housekeeping: expire old data, clean orphaned sessions, replay queued runs."""
         return run_tend(self)
 
     # ── 11. librarian ─────────────────────────────────────────────────────────
@@ -268,7 +276,7 @@ class SpineRoutines:
                 f"http://127.0.0.1:{port}/tools/invoke",
                 json={
                     "tool": "sessions_history",
-                    "args": {"sessionKey": "agent:collect:task:probe:gateway", "limit": 1},
+                    "args": {"sessionKey": "agent:collect:run:probe:gateway", "limit": 1},
                 },
                 headers={**headers, "Content-Type": "application/json"},
                 timeout=5,
@@ -300,17 +308,18 @@ class SpineRoutines:
 
         for c in clusters:
             cluster_id = str(c.get("cluster_id") or "")
-            rows = by_cluster.get(cluster_id, [])
+            raw_rows = by_cluster.get(cluster_id, [])
+            rows: list[dict] = [self._normalize_strategy_row(raw) for raw in raw_rows]
             if not rows:
                 continue
             checked += 1
             metrics = self._strategy_cluster_metrics(cluster_id)
 
-            champions = [r for r in rows if str(r.get("stage") or "") == "champion"]
+            champions = [r for r in rows if str(r.get("strategy_stage") or "") == "champion"]
             champion = sorted(champions, key=lambda x: str(x.get("updated_utc") or ""), reverse=True)[0] if champions else None
             candidates = [
                 r for r in rows
-                if str(r.get("stage") or "") in {"shadow", "challenger", "candidate"}
+                if str(r.get("strategy_stage") or "") in {"shadow", "challenger", "candidate"}
                 and int((metrics.get(str(r.get("strategy_id") or ""), {}) or {}).get("n", 0)) >= min_samples
             ]
             if not candidates:
@@ -325,8 +334,8 @@ class SpineRoutines:
                 ok_promote = self._promote_with_guard(
                     strategy_id=str(best.get("strategy_id") or ""),
                     decision="promote_auto",
-                    prev_stage=str(best.get("stage") or "candidate"),
-                    next_stage="champion",
+                    prev_strategy_stage=str(best.get("strategy_stage") or "candidate"),
+                    next_strategy_stage="champion",
                     reason="no_champion_present",
                     decided_by="spine.judge",
                     cluster_id=cluster_id,
@@ -380,8 +389,8 @@ class SpineRoutines:
                 ok_promote = self._promote_with_guard(
                     strategy_id=best_id,
                     decision="rollback_auto",
-                    prev_stage=str(best.get("stage") or "candidate"),
-                    next_stage="champion",
+                    prev_strategy_stage=str(best.get("strategy_stage") or "candidate"),
+                    next_strategy_stage="champion",
                     reason=f"champion_two_window_degradation;replace:{champion_id}",
                     decided_by="spine.judge",
                     cluster_id=cluster_id,
@@ -399,8 +408,8 @@ class SpineRoutines:
                 ok_promote = self._promote_with_guard(
                     strategy_id=best_id,
                     decision="promote_auto",
-                    prev_stage=str(best.get("stage") or "candidate"),
-                    next_stage="champion",
+                    prev_strategy_stage=str(best.get("strategy_stage") or "candidate"),
+                    next_strategy_stage="champion",
                     reason=f"global_delta={round(mean_best - mean_ch, 4)},confidence={round(confidence, 4)}",
                     decided_by="spine.judge",
                     cluster_id=cluster_id,
@@ -425,8 +434,8 @@ class SpineRoutines:
         *,
         strategy_id: str,
         decision: str,
-        prev_stage: str,
-        next_stage: str,
+        prev_strategy_stage: str,
+        next_strategy_stage: str,
         reason: str,
         decided_by: str,
         cluster_id: str,
@@ -435,8 +444,8 @@ class SpineRoutines:
             self.playbook.promote_strategy(
                 strategy_id=strategy_id,
                 decision=decision,
-                prev_stage=prev_stage,
-                next_stage=next_stage,
+                prev_strategy_stage=prev_strategy_stage,
+                next_strategy_stage=next_strategy_stage,
                 reason=reason,
                 decided_by=decided_by,
             )
@@ -448,8 +457,8 @@ class SpineRoutines:
                     "strategy_id": strategy_id,
                     "cluster_id": cluster_id,
                     "decision": decision,
-                    "prev_stage": prev_stage,
-                    "next_stage": next_stage,
+                    "prev_strategy_stage": prev_strategy_stage,
+                    "next_strategy_stage": next_strategy_stage,
                     "reason": reason,
                     "error": str(exc)[:300],
                 },
@@ -622,13 +631,17 @@ class SpineRoutines:
         }
 
     def _build_strategy_snapshot(self) -> dict:
-        strategies = self.playbook.list_strategies()
+        raw_strategies = self.playbook.list_strategies()
+        strategies: list[dict] = []
         champions: dict[str, dict] = {}
-        for row in strategies:
+        for raw in raw_strategies:
+            row = self._normalize_strategy_row(raw)
+            strategy_stage = str(row.get("strategy_stage") or "")
+            strategies.append(row)
             cid = str(row.get("cluster_id") or "")
             if not cid:
                 continue
-            if row.get("stage") == "champion":
+            if strategy_stage == "champion":
                 champions[cid] = {
                     "strategy_id": row.get("strategy_id"),
                     "global_score": row.get("global_score"),
@@ -678,8 +691,8 @@ class SpineRoutines:
         else:
             unstable = 0
             for r in step_results:
-                st = str(r.get("status") or "").lower()
-                if st in {"error", "failed", "degraded"}:
+                step_status = str(r.get("status") or "").lower()
+                if step_status in {"error", "failed", "degraded"}:
                     unstable += 1
             stability = max(0.0, min(1.0, 1.0 - (unstable / total_steps)))
 
@@ -713,9 +726,9 @@ class SpineRoutines:
             "cost": round(cost, 4),
         }
 
-    def _update_task_strategy(
+    def _update_run_strategy(
         self,
-        task_id: str,
+        run_id: str,
         semantic_cluster: str,
         strategy_id: str,
         strategy_stage: str,
@@ -723,12 +736,12 @@ class SpineRoutines:
         global_score: float,
         trace_id: str,
     ) -> None:
-        tasks = self._store.load_tasks()
-        if not tasks:
+        runs = self._store.load_runs()
+        if not runs:
             return
         updated = False
-        for row in tasks if isinstance(tasks, list) else []:
-            if str(row.get("task_id") or "") != task_id:
+        for row in runs if isinstance(runs, list) else []:
+            if str(row.get("run_id") or "") != run_id:
                 continue
             row["semantic_cluster"] = semantic_cluster
             row["strategy_id"] = strategy_id
@@ -742,13 +755,13 @@ class SpineRoutines:
         if not updated:
             return
         try:
-            self._store.save_tasks(tasks)
+            self._store.save_runs(runs)
         except Exception as exc:
-            logger.warning("Failed to write strategy updates to tasks.json: %s", exc)
+            logger.warning("Failed to write strategy updates to runs.json: %s", exc)
 
     def _write_shadow_comparison(
         self,
-        task_id: str,
+        run_id: str,
         shadow_of: str,
         cluster_id: str,
         strategy_id: str,
@@ -761,7 +774,7 @@ class SpineRoutines:
         champion_components = champion.get("score_components", {}) if champion and isinstance(champion.get("score_components"), dict) else {}
         row = {
             "created_utc": _utc(),
-            "task_id": task_id,
+            "run_id": run_id,
             "shadow_of": shadow_of,
             "cluster_id": cluster_id,
             "shadow_strategy_id": strategy_id,
@@ -932,25 +945,26 @@ class SpineRoutines:
                 self.compass.reset_budgets()
                 break
 
-    def _replay_queued_tasks(self) -> int:
-        """Find queued tasks eligible for replay (backoff respected). Returns count."""
-        tasks = self._store.load_tasks()
-        if not tasks:
+    def _replay_queued_runs(self) -> int:
+        """Find queued runs eligible for replay (backoff respected). Returns count."""
+        runs = self._store.load_runs()
+        if not runs:
             return 0
         now = _utc()
         window_hours = int(self.compass.get_pref("replay_window_hours", "24") or 24)
         replay_window_s = max(1, window_hours) * 3600
         changed = False
         eligible = []
-        for t in tasks:
-            if t.get("status") not in ("queued",):
+        for t in runs:
+            run_status = str(t.get("run_status") or "")
+            if run_status == "replay_exhausted":
                 continue
-            if t.get("status") == "replay_exhausted":
+            if run_status != "queued":
                 continue
             queued_utc = str(t.get("queued_utc") or t.get("submitted_utc") or "")
             queued_ts = self._iso_to_ts(queued_utc)
             if queued_ts and (time.time() - queued_ts) > replay_window_s:
-                t["status"] = "expired"
+                t["run_status"] = "expired"
                 t["updated_utc"] = now
                 t["expired_reason"] = "replay_window_exceeded"
                 changed = True
@@ -961,14 +975,14 @@ class SpineRoutines:
             eligible.append(t)
 
         replayed = 0
-        for task in sorted(eligible, key=lambda t: int(t.get("priority", 5)))[:10]:
-            self.nerve.emit("task_replay", {"task_id": task.get("task_id"), "plan": task.get("plan")})
+        for run in sorted(eligible, key=lambda r: int(r.get("priority", 5)))[:10]:
+            self.nerve.emit("run_replay", {"run_id": run.get("run_id"), "plan": run.get("plan")})
             replayed += 1
         if changed:
             try:
-                self._store.save_tasks(tasks)
+                self._store.save_runs(runs)
             except Exception as exc:
-                logger.warning("Failed to persist expired replay tasks: %s", exc)
+                logger.warning("Failed to persist expired replay runs: %s", exc)
         return replayed
 
     def _iso_to_ts(self, v: str) -> float | None:

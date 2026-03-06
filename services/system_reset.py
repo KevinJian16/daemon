@@ -587,7 +587,7 @@ class SystemResetManager:
             _rm(self.home / rel)
         for p in (self.home / "state").glob("skill_evolution_*.json"):
             _rm(p)
-        _rm(self.home / "state" / "tasks.json")
+        _rm(self.home / "state" / "runs.json")
         _rm(self.home / "state" / "schedule_history.json")
         _rm(self.home / "state" / "gate.json")
 
@@ -617,7 +617,7 @@ class SystemResetManager:
             (self.home / rel).mkdir(parents=True, exist_ok=True)
 
         # Force empty files that are frequently consumed.
-        _reset_array_file(self.home / "state" / "tasks.json")
+        _reset_array_file(self.home / "state" / "runs.json")
         _reset_array_file(self.home / "state" / "schedule_history.json")
         _reset_array_file(self.home / "state" / "skill_evolution_proposals.json")
         _reset_array_file(self.home / "state" / "skill_evolution_queue.json")

@@ -24,18 +24,21 @@ def apply_complexity_probe(plan: dict) -> dict:
         or estimated_phases > 4
         or estimated_hours > 4.0
     )
-    if requires_campaign:
-        task_scale = "campaign"
+    manual_scale = str(out.get("work_scale") or "").strip().lower()
+    if manual_scale in {"pulse", "thread", "campaign"}:
+        work_scale = manual_scale
+    elif requires_campaign:
+        work_scale = "campaign"
     elif estimated_phases <= 2 and estimated_hours <= 1.0:
-        task_scale = "pulse"
+        work_scale = "pulse"
     else:
-        task_scale = "thread"
+        work_scale = "thread"
     out["complexity_probe"] = {
         "estimated_phases": estimated_phases,
         "estimated_hours": round(estimated_hours, 2),
         "requires_campaign": requires_campaign,
     }
-    out["task_scale"] = task_scale
+    out["work_scale"] = work_scale
     return out
 
 
@@ -73,21 +76,21 @@ def preflight_provider_budget(plan: dict, *, compass: Any, registry: dict[str, d
         out["model_provider"] = current_provider
         out["model_id"] = str(registry[current_alias].get("model_id") or "")
 
-    chain = []
+    provider_route = []
     if current_provider:
-        chain.append(current_provider)
+        provider_route.append(current_provider)
     for p in ("minimax", "qwen", "zhipu", "deepseek"):
-        if p not in chain:
-            chain.append(p)
+        if p not in provider_route:
+            provider_route.append(p)
 
-    scale = str(out.get("task_scale") or "thread")
+    scale = str(out.get("work_scale") or "thread")
     default_budget_probe = {"pulse": 20_000, "thread": 80_000, "campaign": 160_000}
     est_tokens = int(out.get("estimated_tokens") or default_budget_probe.get(scale, 80_000))
     checks: list[dict[str, Any]] = []
     selected_provider = ""
     selected_alias = ""
     selected_model_id = ""
-    for provider in chain:
+    for provider in provider_route:
         budget = compass.get_budget(f"{provider}_tokens")
         if not budget:
             checks.append(
@@ -135,7 +138,7 @@ def preflight_provider_budget(plan: dict, *, compass: Any, registry: dict[str, d
 
     out["provider_routing"] = {
         "estimated_tokens": est_tokens,
-        "fallback_chain": chain,
+        "provider_route": provider_route,
         "selected_provider": selected_provider,
         "selected_alias": selected_alias,
         "selected_model_id": selected_model_id,

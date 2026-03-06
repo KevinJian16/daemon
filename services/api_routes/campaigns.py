@@ -7,6 +7,18 @@ from fastapi import FastAPI, HTTPException, Request
 
 
 def register_campaign_routes(app: FastAPI, *, ctx: Any) -> None:
+    def _campaign_status(manifest: dict) -> str:
+        return str(manifest.get("campaign_status") or "")
+
+    def _campaign_phase(manifest: dict) -> str:
+        return str(manifest.get("campaign_phase") or "")
+
+    def _set_campaign_state(manifest: dict, *, campaign_status: str | None = None, campaign_phase: str | None = None) -> None:
+        if campaign_status is not None:
+            manifest["campaign_status"] = str(campaign_status)
+        if campaign_phase is not None:
+            manifest["campaign_phase"] = str(campaign_phase)
+
     @app.get("/campaigns")
     def list_campaigns(limit: int = 200):
         return ctx.campaign_summaries(limit=limit)
@@ -16,6 +28,11 @@ def register_campaign_routes(app: FastAPI, *, ctx: Any) -> None:
         manifest = ctx.load_campaign_manifest(campaign_id)
         if not manifest:
             raise HTTPException(status_code=404, detail="campaign not found")
+        _set_campaign_state(
+            manifest,
+            campaign_status=_campaign_status(manifest),
+            campaign_phase=_campaign_phase(manifest),
+        )
         return {
             "manifest": manifest,
             "milestone_results": ctx.campaign_result_rows(campaign_id, limit=result_limit),
@@ -34,19 +51,19 @@ def register_campaign_routes(app: FastAPI, *, ctx: Any) -> None:
         if not isinstance(body, dict):
             body = {}
 
-        status = str(manifest.get("status") or "").lower()
-        if status in {"completed", "cancelled"}:
-            raise HTTPException(status_code=409, detail={"ok": False, "error": f"campaign_not_resumable:{status}"})
+        campaign_status = _campaign_status(manifest).lower()
+        if campaign_status in {"completed", "cancelled"}:
+            raise HTTPException(status_code=409, detail={"ok": False, "error": f"campaign_not_resumable:{campaign_status}"})
 
         current_idx = int(manifest.get("current_milestone_index") or 0)
         resume_from = int(body.get("resume_from") or current_idx)
         resume_from = max(0, min(resume_from, int(manifest.get("total_milestones") or current_idx)))
-        phase = str(manifest.get("current_phase") or "").strip().lower()
+        campaign_phase = _campaign_phase(manifest).strip().lower()
         confirmed = bool(body.get("confirmed") or body.get("campaign_confirmed"))
-        if phase == "phase0_waiting_confirmation" and not confirmed:
+        if campaign_phase == "phase0_waiting_confirmation" and not confirmed:
             raise HTTPException(
                 status_code=409,
-                detail={"ok": False, "error": "campaign_confirmation_required", "phase": phase},
+                detail={"ok": False, "error": "campaign_confirmation_required", "campaign_phase": campaign_phase},
             )
 
         feedback = body.get("feedback")
@@ -55,7 +72,7 @@ def register_campaign_routes(app: FastAPI, *, ctx: Any) -> None:
             ctx.append_campaign_feedback(campaign_id, current_idx, feedback)
             decision_payload = ctx.apply_campaign_feedback_decision(campaign_id, current_idx, feedback, source="resume_api")
 
-        if phase == "milestone_waiting_feedback":
+        if campaign_phase == "milestone_waiting_feedback":
             result_payload = ctx.campaign_result_payload(campaign_id, current_idx)
             decision_row = result_payload.get("user_feedback_decision") if isinstance(result_payload.get("user_feedback_decision"), dict) else {}
             if decision_payload and bool(decision_payload.get("accepted")):
@@ -79,21 +96,21 @@ def register_campaign_routes(app: FastAPI, *, ctx: Any) -> None:
         if not temporal_client:
             raise HTTPException(status_code=503, detail={"ok": False, "error_code": "temporal_unavailable"})
 
-        task_id = str(body.get("task_id") or f"{manifest.get('task_id', 'task')}_resume_{int(ctx.time_time())}")
-        run_root = str(ctx.state / "runs" / task_id)
+        run_id = str(body.get("run_id") or f"{manifest.get('run_id', 'run')}_resume_{int(ctx.time_time())}")
+        run_root = str(ctx.state / "runs" / run_id)
         run_index = int(manifest.get("run_index") or 0) + 1
         workflow_id = f"daemon-campaign-{campaign_id}-r{run_index}"
 
         plan = dict(base_plan)
-        plan["task_id"] = task_id
+        plan["run_id"] = run_id
         plan["campaign_id"] = campaign_id
         plan["campaign_resume_from"] = resume_from
         plan["campaign_run_index"] = run_index
         plan["_workflow_id"] = workflow_id
-        plan["task_scale"] = "campaign"
+        plan["work_scale"] = "campaign"
         plan["campaign_confirmed"] = True
 
-        if phase == "milestone_waiting_feedback":
+        if campaign_phase == "milestone_waiting_feedback":
             result_payload = ctx.campaign_result_payload(campaign_id, current_idx)
             decision_row = result_payload.get("user_feedback_decision") if isinstance(result_payload.get("user_feedback_decision"), dict) else {}
             decision_feedback = decision_row.get("feedback") if isinstance(decision_row.get("feedback"), dict) else {}
@@ -103,7 +120,7 @@ def register_campaign_routes(app: FastAPI, *, ctx: Any) -> None:
             plan["campaign_feedback_comment"] = str(decision_feedback.get("comment") or "")
             plan["campaign_force_user_rework"] = not satisfied
 
-        ctx.dispatch._record_task(plan, "running", run_root)
+        ctx.dispatch._record_run(plan, "running", run_root)
         try:
             await temporal_client.submit(
                 workflow_id=workflow_id,
@@ -112,18 +129,17 @@ def register_campaign_routes(app: FastAPI, *, ctx: Any) -> None:
                 workflow_name="CampaignWorkflow",
             )
         except Exception as exc:
-            ctx.dispatch._record_task({**plan, "last_error": str(exc)[:300]}, "failed_submission", run_root)
+            ctx.dispatch._record_run({**plan, "last_error": str(exc)[:300]}, "failed_submission", run_root)
             raise HTTPException(
                 status_code=503,
                 detail={"ok": False, "error_code": "temporal_submit_failed", "error": str(exc)[:300]},
             )
 
-        manifest["status"] = "running"
-        manifest["current_phase"] = "resume_requested"
+        _set_campaign_state(manifest, campaign_status="running", campaign_phase="resume_requested")
         manifest["current_milestone_index"] = resume_from
         manifest["workflow_id"] = workflow_id
         manifest["run_index"] = run_index
-        if phase == "phase0_waiting_confirmation":
+        if campaign_phase == "phase0_waiting_confirmation":
             manifest["confirmed_utc"] = ctx.utc()
         manifest["updated_utc"] = ctx.utc()
         ctx.save_campaign_manifest(campaign_id, manifest)
@@ -131,7 +147,7 @@ def register_campaign_routes(app: FastAPI, *, ctx: Any) -> None:
             "ok": True,
             "campaign_id": campaign_id,
             "workflow_id": workflow_id,
-            "task_id": task_id,
+            "run_id": run_id,
             "resume_from": resume_from,
         }
 
@@ -140,11 +156,11 @@ def register_campaign_routes(app: FastAPI, *, ctx: Any) -> None:
         manifest = ctx.load_campaign_manifest(campaign_id)
         if not manifest:
             raise HTTPException(status_code=404, detail="campaign not found")
-        phase = str(manifest.get("current_phase") or "").strip().lower()
-        if phase != "phase0_waiting_confirmation":
+        campaign_phase = _campaign_phase(manifest).strip().lower()
+        if campaign_phase != "phase0_waiting_confirmation":
             raise HTTPException(
                 status_code=409,
-                detail={"ok": False, "error": f"campaign_confirm_not_allowed_in_phase:{phase}"},
+                detail={"ok": False, "error": f"campaign_confirm_not_allowed_in_campaign_phase:{campaign_phase}"},
             )
 
         class _Req:
@@ -208,8 +224,12 @@ def register_campaign_routes(app: FastAPI, *, ctx: Any) -> None:
                 await temporal_client.cancel(workflow_id)
             except Exception as exc:
                 ctx.logger.warning("Campaign cancel failed workflow_id=%s: %s", workflow_id, exc)
-        manifest["status"] = "cancelled"
-        manifest["current_phase"] = "cancelled"
+        _set_campaign_state(manifest, campaign_status="cancelled", campaign_phase="cancelled")
         manifest["updated_utc"] = ctx.utc()
         ctx.save_campaign_manifest(campaign_id, manifest)
-        return {"ok": True, "campaign_id": campaign_id, "workflow_id": workflow_id, "status": "cancelled"}
+        return {
+            "ok": True,
+            "campaign_id": campaign_id,
+            "workflow_id": workflow_id,
+            "campaign_status": "cancelled",
+        }

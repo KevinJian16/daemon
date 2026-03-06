@@ -169,7 +169,7 @@ def bootstrap(daemon_home: Path | None = None, openclaw_home: Path | None | obje
         for p in BOOTSTRAP_PRIORITIES:
             compass.set_priority(p["domain"], p["weight"], p.get("reason", ""), source="bootstrap")
         for q in BOOTSTRAP_QUALITY_PROFILES:
-            compass.set_quality_profile(q["task_type"], q["rules"], changed_by="bootstrap")
+            compass.set_quality_profile(q["run_type"], q["rules"], changed_by="bootstrap")
         for b in BOOTSTRAP_BUDGETS:
             compass.set_budget(b["resource_type"], float(b["daily_limit"]), changed_by="bootstrap")
         for pref in BOOTSTRAP_PREFERENCES:

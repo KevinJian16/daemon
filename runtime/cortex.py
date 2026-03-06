@@ -127,8 +127,8 @@ class Cortex:
 
     def _provider_order(self) -> list[str]:
         policy = _load_policy()
-        chain = policy.get("fallback_chain") if isinstance(policy.get("fallback_chain"), list) else []
-        ordered = [str(p) for p in chain if str(p) in self._clients]
+        route = policy.get("provider_route") if isinstance(policy.get("provider_route"), list) else []
+        ordered = [str(p) for p in route if str(p) in self._clients]
         if self._compass:
             primary = self._compass.get_pref("model_primary", "")
             if primary and primary in self._clients and primary not in ordered:
@@ -158,7 +158,7 @@ class Cortex:
 
         resolved_provider: str | None = None
         resolved_model: str | None = model
-        attempted_chain: list[str] = []
+        attempted_route: list[str] = []
         if model:
             registry = _load_registry()
             if model in registry:
@@ -168,7 +168,7 @@ class Cortex:
 
         # Direct call when alias resolved to an available provider.
         if resolved_provider and resolved_provider in self._clients:
-            attempted_chain.append(resolved_provider)
+            attempted_route.append(resolved_provider)
             t0 = time.time()
             try:
                 result, in_t, out_t = self._call(resolved_provider, prompt, resolved_model, max_tokens, temperature)
@@ -182,7 +182,7 @@ class Cortex:
                         False,
                         "provider_budget_exceeded",
                         prompt_preview=prompt[:300],
-                        fallback_chain=attempted_chain,
+                        provider_route=attempted_route,
                     )
                 else:
                     self._record_usage(
@@ -194,13 +194,13 @@ class Cortex:
                         True,
                         prompt_preview=prompt[:300],
                         output_preview=result[:300],
-                        fallback_chain=attempted_chain,
+                        provider_route=attempted_route,
                     )
                     return result
             except Exception as e:
                 self._record_usage(resolved_provider, resolved_model or resolved_provider, 0, 0,
                                    round(time.time() - t0, 2), False, str(e)[:200], prompt_preview=prompt[:300],
-                                   fallback_chain=attempted_chain)
+                                   provider_route=attempted_route)
                 # Fall through to provider loop as fallback.
 
         providers = self._provider_order()
@@ -212,7 +212,7 @@ class Cortex:
         last_err: Exception | None = None
         budget_blocked = False
         for provider in providers:
-            attempted_chain.append(provider)
+            attempted_route.append(provider)
             t0 = time.time()
             try:
                 result, in_tokens, out_tokens = self._call(provider, prompt, resolved_model, max_tokens, temperature)
@@ -227,7 +227,7 @@ class Cortex:
                         False,
                         "provider_budget_exceeded",
                         prompt_preview=prompt[:300],
-                        fallback_chain=attempted_chain,
+                        provider_route=attempted_route,
                     )
                     budget_blocked = True
                     last_err = CortexError("provider_budget_exceeded")
@@ -242,7 +242,7 @@ class Cortex:
                     True,
                     prompt_preview=prompt[:300],
                     output_preview=result[:300],
-                    fallback_chain=attempted_chain,
+                    provider_route=attempted_route,
                 )
                 return result
             except Exception as e:
@@ -256,18 +256,18 @@ class Cortex:
                     False,
                     str(e)[:200],
                     prompt_preview=prompt[:300],
-                    fallback_chain=attempted_chain,
+                    provider_route=attempted_route,
                 )
                 last_err = e
 
         if budget_blocked:
-            chain = "->".join(attempted_chain)
+            route = "->".join(attempted_route)
             raise CortexError(
                 f"provider_budget_exceeded: all candidate providers blocked or failed after budget checks; "
-                f"fallback_chain={chain}"
+                f"provider_route={route}"
             )
-        chain = "->".join(attempted_chain)
-        raise CortexError(f"all providers failed; fallback_chain={chain}; last error: {last_err}") from last_err
+        route = "->".join(attempted_route)
+        raise CortexError(f"all providers failed; provider_route={route}; last error: {last_err}") from last_err
 
     def structured(self, prompt: str, schema: dict, model: str | None = None) -> dict:
         """LLM call that returns validated JSON. Falls back to empty dict on parse failure."""
@@ -432,7 +432,7 @@ class Cortex:
         error: str | None = None,
         prompt_preview: str | None = None,
         output_preview: str | None = None,
-        fallback_chain: list[str] | None = None,
+        provider_route: list[str] | None = None,
     ) -> None:
         trace = current_trace()
         entry = {
@@ -452,8 +452,8 @@ class Cortex:
             entry["prompt_preview"] = prompt_preview
         if output_preview:
             entry["output_preview"] = output_preview
-        if fallback_chain:
-            entry["fallback_chain"] = list(fallback_chain)
+        if provider_route:
+            entry["provider_route"] = list(provider_route)
         self._usage.append(entry)
         if len(self._usage) > 5000:
             self._usage = self._usage[-5000:]

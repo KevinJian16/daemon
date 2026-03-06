@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS audit (
 CREATE TABLE IF NOT EXISTS usage (
     usage_id    TEXT PRIMARY KEY,
     unit_id     TEXT NOT NULL REFERENCES units(unit_id),
-    task_id     TEXT,
+    run_id     TEXT,
     playbook_id TEXT,
     outcome     TEXT,
     used_utc    TEXT NOT NULL
@@ -141,6 +141,16 @@ class MemoryFabric:
             if "source_agent" not in cols:
                 try:
                     conn.execute("ALTER TABLE units ADD COLUMN source_agent TEXT")
+                except sqlite3.OperationalError:
+                    pass
+            # Ensure usage.run_id exists for databases created before this column was introduced.
+            usage_cols = {
+                str(r["name"])
+                for r in conn.execute("PRAGMA table_info(usage)").fetchall()
+            }
+            if "run_id" not in usage_cols:
+                try:
+                    conn.execute("ALTER TABLE usage ADD COLUMN run_id TEXT")
                 except sqlite3.OperationalError:
                     pass
             try:
@@ -425,11 +435,11 @@ class MemoryFabric:
             )
         return lid
 
-    def record_usage(self, unit_id: str, task_id: str, playbook_id: str | None, outcome: str) -> None:
+    def record_usage(self, unit_id: str, run_id: str, playbook_id: str | None, outcome: str) -> None:
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO usage VALUES (?,?,?,?,?,?)",
-                (_new_id("ug"), unit_id, task_id, playbook_id, outcome, _utc()),
+                (_new_id("ug"), unit_id, run_id, playbook_id, outcome, _utc()),
             )
 
     def expire(self) -> dict:

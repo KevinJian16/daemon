@@ -25,7 +25,7 @@ function renderHistoryGrouped(items){
     return;
   }
   const groups={today:[],week:[],month:[],older:[]};
-  items.forEach(o=>groups[timeGroupKey(o.delivered_utc||o.archived_utc)].push(o));
+  items.forEach(o=>groups[timeGroupKey(o.delivered_utc)].push(o));
   ['today','week','month','older'].forEach(key=>{
     const grpItems=groups[key]; if(!grpItems.length) return;
     // Default: 'older' is collapsed; restore saved state
@@ -44,7 +44,7 @@ function renderHistoryGrouped(items){
     };
     const body=document.createElement('div'); body.className='time-group-body';
     grpItems.forEach(o=>{
-      const el=makeItem(o.task_id,o.title||o.task_id,o.task_type,'completed',o.delivered_utc||o.archived_utc,()=>openOutcome(o,el));
+      const el=makeItem(o.run_id,o.title||o.run_id,o.run_type,'completed',o.delivered_utc,()=>openOutcome(o,el));
       body.appendChild(el);
     });
     grp.appendChild(lbl); grp.appendChild(body);
@@ -56,12 +56,11 @@ function filterHistory(q){
   const query=(q||'').trim().toLowerCase();
   const container=document.getElementById('history-groups');
   if(!query){ renderHistoryGrouped(histAllOutcomes); return; }
-  const filtered=histAllOutcomes.filter(o=>(o.title||o.task_id||'').toLowerCase().includes(query));
+  const filtered=histAllOutcomes.filter(o=>(o.title||o.run_id||'').toLowerCase().includes(query));
   container.innerHTML='';
   if(!filtered.length){ container.innerHTML=`<div class="nav-empty" style="padding:6px 14px">${t('none')}</div>`; return; }
   filtered.forEach(o=>{
-    const el=makeItem(o.task_id,o.title||o.task_id,o.task_type,'completed',o.delivered_utc||o.archived_utc,()=>openOutcome(o,el));
+    const el=makeItem(o.run_id,o.title||o.run_id,o.run_type,'completed',o.delivered_utc,()=>openOutcome(o,el));
     container.appendChild(el);
   });
 }
-

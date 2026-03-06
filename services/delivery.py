@@ -45,12 +45,12 @@ class DeliveryService:
 
     def deliver(self, run_root: str, plan: dict, step_results: list[dict]) -> dict:
         """Full delivery pipeline: quality gate → archive → channel routing."""
-        task_type = str(plan.get("task_type") or "default")
+        run_type = str(plan.get("run_type") or "default")
         cluster_id = str(plan.get("cluster_id") or "")
 
         # Load quality contract (cluster-aware, falls back to Compass profile).
-        contract = self._load_contract(cluster_id, task_type)
-        profile = self._compass.get_quality_profile(task_type)
+        contract = self._load_contract(cluster_id, run_type)
+        profile = self._compass.get_quality_profile(run_type)
 
         # Find render output.
         render_file = self._find_render_output(Path(run_root), step_results)
@@ -83,7 +83,7 @@ class DeliveryService:
         self._route_telegram(content, plan, prefs, quality_score=quality_score)
 
         self._nerve.emit("delivery_completed", {
-            "task_id": plan.get("task_id", ""),
+            "run_id": plan.get("run_id", ""),
             "outcome_path": str(outcome_dir),
             "quality_score": round(quality_score, 4),
         })
@@ -96,8 +96,8 @@ class DeliveryService:
             "score_components": score_components,
         }
 
-    def _load_contract(self, cluster_id: str, task_type: str) -> dict:
-        """Load quality contract JSON for cluster_id or task_type, fallback to {}."""
+    def _load_contract(self, cluster_id: str, run_type: str) -> dict:
+        """Load quality contract JSON for cluster_id or run_type, fallback to {}."""
         # Try cluster-based contract first.
         if cluster_id:
             p = _CONTRACTS_DIR / f"{cluster_id}.json"
@@ -106,9 +106,9 @@ class DeliveryService:
                     return json.loads(p.read_text(encoding="utf-8"))
                 except Exception as exc:
                     logger.warning("Failed to load quality contract %s: %s", p, exc)
-        # Try task_type-based contract.
-        if task_type:
-            p = _CONTRACTS_DIR / f"{task_type}.json"
+        # Try run_type-based contract.
+        if run_type:
+            p = _CONTRACTS_DIR / f"{run_type}.json"
             if p.exists():
                 try:
                     return json.loads(p.read_text(encoding="utf-8"))
@@ -373,9 +373,9 @@ class DeliveryService:
         return None
 
     def _archive(self, run_root: str, plan: dict, render_file: Path) -> Path:
-        task_type = str(plan.get("task_type") or "manual")
-        task_id = str(plan.get("task_id") or uuid.uuid4().hex[:8])
-        raw_title = str(plan.get("title") or task_type)
+        run_type = str(plan.get("run_type") or "manual")
+        run_id = str(plan.get("run_id") or uuid.uuid4().hex[:8])
+        raw_title = str(plan.get("title") or run_type)
         title = raw_title[:60].replace("/", "-").replace(":", "-").strip()
         outcome_root = self._resolve_outcome_root()
 
@@ -390,9 +390,9 @@ class DeliveryService:
         out.write_bytes(render_file.read_bytes())
 
         manifest = {
-            "task_id": task_id,
+            "run_id": run_id,
             "title": raw_title,
-            "task_type": task_type,
+            "run_type": run_type,
             "run_root": run_root,
             "delivered_utc": _utc(),
         }
@@ -413,10 +413,10 @@ class DeliveryService:
             rel_path = str(outcome_dir)
         index.append({
             "path": rel_path,
-            "drive_path": rel_path,  # task_id → drive_path mapping for Portal lookup
+            "drive_path": rel_path,  # run_id → drive_path mapping for Portal lookup
             "title": plan.get("title", ""),
-            "task_type": plan.get("task_type", "manual"),
-            "task_id": plan.get("task_id", ""),
+            "run_type": plan.get("run_type", "manual"),
+            "run_id": plan.get("run_id", ""),
             "delivered_utc": _utc(),
         })
         index_path.write_text(json.dumps(index[-1000:], ensure_ascii=False, indent=2))
@@ -430,7 +430,7 @@ class DeliveryService:
         return root
 
     def _route_telegram(self, content: str, plan: dict, prefs: dict[str, str], quality_score: float = 0.0) -> None:
-        """Push task_completed notification via the Telegram adapter's /notify endpoint.
+        """Push run_completed notification via the Telegram adapter's /notify endpoint.
 
         Uses the adapter (localhost) so inline keyboard rating is included automatically.
         """
@@ -438,17 +438,17 @@ class DeliveryService:
             return
         adapter_url = __import__("os").environ.get("TELEGRAM_ADAPTER_URL", "http://127.0.0.1:8001")
         notify_payload = {
-            "event": "task_completed",
+            "event": "run_completed",
             "payload": {
-                "task_id": str(plan.get("task_id") or ""),
-                "title": str(plan.get("title") or plan.get("task_type") or "任务"),
+                "run_id": str(plan.get("run_id") or ""),
+                "title": str(plan.get("title") or plan.get("run_type") or "任务"),
                 "summary": content[:1200].strip(),
                 "score": round(quality_score, 4),
-                "task_type": str(plan.get("task_type") or ""),
-                "task_scale": str(plan.get("task_scale") or "thread"),
+                "run_type": str(plan.get("run_type") or ""),
+                "work_scale": str(plan.get("work_scale") or "thread"),
             },
         }
         try:
             httpx.post(f"{adapter_url}/notify", json=notify_payload, timeout=10)
         except Exception as exc:
-            logger.warning("Telegram adapter notify failed for task %s: %s", plan.get("task_id", ""), exc)
+            logger.warning("Telegram adapter notify failed for run %s: %s", plan.get("run_id", ""), exc)
