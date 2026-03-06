@@ -10,9 +10,23 @@ function dotCls(s){
   return 'd-muted';
 }
 function sLabel(s){ return t('s_'+(s||'').replace('-','_')) || s; }
+function parseUtcMs(input){
+  if (!input) return NaN;
+  const raw = String(input).trim();
+  if (!raw) return NaN;
+  let normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  if (!/[zZ]$|[+\-]\d{2}:?\d{2}$/.test(normalized)) normalized += 'Z';
+  const parsed = Date.parse(normalized);
+  if (Number.isFinite(parsed)) return parsed;
+  const fallback = Date.parse(raw);
+  return Number.isFinite(fallback) ? fallback : NaN;
+}
 function relTime(u){
-  if(!u) return '';
-  const diff=(Date.now()-new Date(u.replace(' ','T').replace(/(?<!\+\d{2})$/,'Z')))/1000;
+  const ms = parseUtcMs(u);
+  if (!Number.isFinite(ms)) return '—';
+  let diff=(Date.now()-ms)/1000;
+  if (!Number.isFinite(diff)) return '—';
+  if (diff < 0) diff = 0;
   if(diff<60) return '<1m';
   if(diff<3600) return Math.floor(diff/60)+'m';
   if(diff<86400) return Math.floor(diff/3600)+'h';

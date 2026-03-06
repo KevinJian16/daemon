@@ -602,7 +602,13 @@ class Scheduler:
 
     def _load_circuits(self) -> list[dict]:
         with self._circuits_lock:
-            return self._load_circuits_unlocked()
+            circuits = self._load_circuits_unlocked()
+            # Historical data may contain soft-cancelled rows from older builds.
+            # Circuit delete is now hard-remove, so prune terminal rows on read.
+            active = [c for c in circuits if str(c.get("status") or "").lower() != "cancelled"]
+            if len(active) != len(circuits):
+                self._save_circuits_unlocked(active)
+            return active
 
     def _save_circuits_unlocked(self, circuits: list[dict]) -> None:
         self._circuits_path.parent.mkdir(parents=True, exist_ok=True)
@@ -780,12 +786,16 @@ class Scheduler:
     def cancel_circuit(self, circuit_id: str) -> dict:
         with self._circuits_lock:
             circuits = self._load_circuits_unlocked()
+            kept: list[dict] = []
+            removed: dict | None = None
             for circuit in circuits:
-                if circuit.get("circuit_id") == circuit_id:
-                    circuit["status"] = "cancelled"
-                    circuit["enabled"] = False
-                    self._save_circuits_unlocked(circuits)
-                    return {"ok": True, "circuit_id": circuit_id}
+                if str(circuit.get("circuit_id") or "") == str(circuit_id):
+                    removed = circuit
+                    continue
+                kept.append(circuit)
+            if removed is not None:
+                self._save_circuits_unlocked(kept)
+                return {"ok": True, "circuit_id": circuit_id, "removed": removed}
         return {"ok": False, "error": f"Circuit not found: {circuit_id}"}
 
     def trigger_circuit(self, circuit_id: str) -> dict:
