@@ -1,0 +1,93 @@
+{
+  "version": "1.1",
+  "updated_utc": "2026-03-09T00:00:00Z",
+  "skills": {
+    "coding_agent_v2": {
+      "display_name": "Coding Agent V2",
+      "description": "OpenCode-based code generation and modification via PTY subprocess",
+      "skill_type": "capability",
+      "capability_tags": ["code_generation", "code_modification", "refactoring", "debugging"],
+      "compatible_agents": ["artificer"],
+      "status": "active",
+      "install_type": "builtin",
+      "invocation": "bash pty:true workdir:<path> background:true command:\"opencode run '<instruction>'\"",
+      "config_ref": "~/.config/opencode/opencode.json",
+      "usage_count": 0,
+      "consecutive_failures": 0
+    },
+    "github_ops": {
+      "display_name": "GitHub Operations",
+      "description": "GitHub repository operations (branch, PR, issue management)",
+      "skill_type": "capability",
+      "capability_tags": ["git", "github", "pr_management", "issue_tracking", "branch_management"],
+      "compatible_agents": ["artificer", "envoy"],
+      "status": "active",
+      "install_type": "builtin",
+      "invocation": "github_ops",
+      "usage_count": 0,
+      "consecutive_failures": 0
+    },
+    "github_delivery": {
+      "display_name": "GitHub Delivery",
+      "description": "Deliver outputs to GitHub (commit, push, PR creation)",
+      "skill_type": "capability",
+      "capability_tags": ["herald", "git_push", "pr_creation"],
+      "compatible_agents": ["envoy"],
+      "status": "active",
+      "install_type": "builtin",
+      "invocation": "github_delivery",
+      "usage_count": 0,
+      "consecutive_failures": 0
+    },
+    "xurl_collect": {
+      "display_name": "XURL Collect",
+      "description": "URL-based content collection and extraction",
+      "skill_type": "capability",
+      "capability_tags": ["web_scraping", "content_extraction", "url_fetch"],
+      "compatible_agents": ["scout"],
+      "status": "active",
+      "install_type": "builtin",
+      "invocation": "xurl_collect",
+      "usage_count": 0,
+      "consecutive_failures": 0
+    },
+    "url_summarize": {
+      "display_name": "URL Summarize",
+      "description": "Summarize content from URLs with configurable depth",
+      "skill_type": "capability",
+      "capability_tags": ["summarization", "content_analysis", "url_fetch"],
+      "compatible_agents": ["scout", "sage"],
+      "status": "active",
+      "install_type": "builtin",
+      "invocation": "url_summarize",
+      "usage_count": 0,
+      "consecutive_failures": 0
+    },
+    "nano_pdf_render": {
+      "display_name": "Nano PDF Render",
+      "description": "Render structured content into PDF format",
+      "skill_type": "capability",
+      "capability_tags": ["pdf_generation", "document_rendering", "formatting"],
+      "compatible_agents": ["scribe"],
+      "status": "active",
+      "install_type": "builtin",
+      "invocation": "nano_pdf_render",
+      "usage_count": 0,
+      "consecutive_failures": 0
+    },
+    "session_log_access": {
+      "display_name": "Session Log Access",
+      "description": "Access and query OpenClaw session logs for context and debugging",
+      "skill_type": "capability",
+      "capability_tags": ["logging", "session_history", "debugging"],
+      "compatible_agents": ["counsel"],
+      "status": "active",
+      "install_type": "builtin",
+      "invocation": "session_log_access",
+      "usage_count": 0,
+      "consecutive_failures": 0
+    }
+  },
+  "deprecation_threshold": 5,
+  "deprecation_note": "Skills with consecutive_failures >= deprecation_threshold are proposed for deprecated status"
+}

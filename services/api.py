@@ -16,33 +16,33 @@ logger = logging.getLogger(__name__)
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 
-from fabric.memory import MemoryFabric
-from fabric.playbook import PlaybookFabric
-from fabric.compass import CompassFabric
+from psyche.memory import MemoryPsyche
+from psyche.lore import LorePsyche
+from psyche.instinct import InstinctPsyche
 from spine.nerve import Nerve
-from spine.trace import Tracer
-from spine.registry import SpineRegistry
+from spine.trail import Trail
+from spine.canon import SpineCanon
 from spine.routines import SpineRoutines
+from runtime.retinue import Retinue
 from runtime.cortex import Cortex
-from runtime.drive_accounts import DriveAccountRegistry
-from runtime.event_bridge import EventBridge
+from runtime.ether import Ether
 from runtime.temporal import TemporalClient
-from services.dispatch import Dispatch
-from services.dialog import DialogService
+from services.will import Will
+from services.voice import VoiceService
 from services.api_routes.basic import register_basic_routes
-from services.api_routes.campaigns import register_campaign_routes
+from services.api_routes.endeavors import register_endeavor_routes
 from services.api_routes.chat import register_chat_routes
 from services.api_routes.console_agents_skill import register_console_agents_skill_routes
 from services.api_routes.console_observe import register_console_observe_routes
 from services.api_routes.console_norm import register_console_norm_routes
 from services.api_routes.console_spine_fabric import register_console_spine_fabric_routes
-from services.api_routes.console_strategy_model import register_console_strategy_model_routes
-from services.api_routes.circuits import register_circuit_routes
 from services.api_routes.feedback import register_feedback_routes
 from services.api_routes.submit import register_submit_route
 from services.api_routes.system import register_system_routes
-from services.scheduler import Scheduler
-from services.state_store import StateStore
+from services.cadence import Cadence
+from services.ledger import Ledger
+from services.dominion_writ import DominionWritManager
+from services.api_routes.tracks import register_track_routes
 from services.system_reset import SystemResetManager
 from daemon_env import load_daemon_env
 from bootstrap import normalize_openclaw_config
@@ -74,34 +74,6 @@ def _temporal_config() -> dict[str, Any]:
     return {"host": host, "port": port, "namespace": namespace, "queue": queue}
 
 
-def _validate_semantic_config(home: Path) -> None:
-    """Hard error on startup if capability_catalog.json or mapping_rules.json is missing."""
-    catalog = home / "config" / "semantics" / "capability_catalog.json"
-    rules = home / "config" / "semantics" / "mapping_rules.json"
-    missing = [str(p) for p in (catalog, rules) if not p.exists()]
-    if missing:
-        raise RuntimeError(
-            f"Missing required semantic config files (daemon cannot start): {missing}. "
-            "Create config/semantics/capability_catalog.json and mapping_rules.json."
-        )
-
-
-def _bootstrap_clusters(home: Path, playbook) -> None:
-    """Seed semantic_clusters table from capability_catalog.json (idempotent)."""
-    catalog_path = home / "config" / "semantics" / "capability_catalog.json"
-    try:
-        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        logger.warning("Failed to read capability_catalog.json for bootstrap: %s", exc)
-        return
-    clusters = catalog.get("clusters") or []
-    if clusters:
-        try:
-            playbook.seed_clusters(clusters)
-            logger.info("Bootstrapped %d semantic clusters into Playbook DB.", len(clusters))
-        except Exception as exc:
-            logger.warning("Failed to seed semantic clusters: %s", exc)
-
 
 def create_app() -> FastAPI:
     # Ensure runtime entrypoint can read .env without relying on shell exports.
@@ -109,35 +81,35 @@ def create_app() -> FastAPI:
     home = _daemon_home()
     oc_home = _openclaw_home()
     state = home / "state"
-    store = StateStore(state)
+    ledger = Ledger(state)
 
-    # Initialize Fabric.
-    memory = MemoryFabric(state / "memory.db")
-    playbook = PlaybookFabric(state / "playbook.db")
-    compass = CompassFabric(state / "compass.db")
+    # Initialize Psyche.
+    memory = MemoryPsyche(state / "memory.db")
+    lore = LorePsyche(state / "lore.db")
+    instinct = InstinctPsyche(state / "instinct.db")
 
     # Initialize infrastructure.
-    cortex = Cortex(compass)
+    cortex = Cortex(instinct)
     nerve = Nerve()
-    tracer = Tracer(state / "traces")
-    if not str(compass.get_pref("eval_window_hours", "") or "").strip():
-        compass.set_pref("eval_window_hours", "2", source="system", changed_by="bootstrap")
+    trail = Trail(state / "trails")
+    if not str(instinct.get_pref("eval_window_hours", "") or "").strip():
+        instinct.set_pref("eval_window_hours", "2", source="system", changed_by="bootstrap")
 
     # Initialize Spine.
     registry_path = home / "config" / "spine_registry.json"
-    registry = SpineRegistry(registry_path)
+    canon = SpineCanon(registry_path)
     routines = SpineRoutines(
-        memory=memory, playbook=playbook, compass=compass,
-        cortex=cortex, nerve=nerve, tracer=tracer,
+        memory=memory, lore=lore, instinct=instinct,
+        cortex=cortex, nerve=nerve, trail=trail,
         daemon_home=home, openclaw_home=oc_home,
     )
     # Initialize Services.
-    dispatch = Dispatch(playbook, compass, nerve, state, cortex=cortex)
-    scheduler = Scheduler(registry, routines, compass, nerve, state, dispatch=dispatch)
-    dialog = DialogService(compass, oc_home)
+    will = Will(lore, instinct, nerve, state, cortex=cortex)
+    cadence = Cadence(canon, routines, instinct, nerve, state, will=will)
+    voice = VoiceService(instinct, oc_home)
     reset_manager = SystemResetManager(home)
-    bridge = EventBridge(state, source="api")
-    drive_accounts = DriveAccountRegistry(state)
+    ether = Ether(state, source="api")
+    dominion_writ = DominionWritManager(state_dir=state, nerve=nerve, ledger=ledger)
     telemetry_dir = state / "telemetry"
     telemetry_dir.mkdir(parents=True, exist_ok=True)
     portal_events_path = telemetry_dir / "portal_events.jsonl"
@@ -145,8 +117,6 @@ def create_app() -> FastAPI:
     skill_queue_path = state / "skill_evolution_queue.json"
     feedback_surveys_dir = state / "feedback_surveys"
     feedback_surveys_dir.mkdir(parents=True, exist_ok=True)
-    semantic_catalog_path = home / "config" / "semantics" / "capability_catalog.json"
-    semantic_rules_path = home / "config" / "semantics" / "mapping_rules.json"
     model_policy_path = home / "config" / "model_policy.json"
     model_registry_path = home / "config" / "model_registry.json"
     app_started_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -299,7 +269,7 @@ p{
                     namespace=tc["namespace"],
                     queue=tc["queue"],
                 )
-                dispatch.set_temporal_client(temporal_client)
+                will.set_temporal_client(temporal_client)
                 logger.info(
                     "Temporal client connected host=%s port=%s namespace=%s queue=%s",
                     tc["host"], tc["port"], tc["namespace"], tc["queue"],
@@ -323,13 +293,19 @@ p{
         if norm.get("warnings"):
             for warn in norm.get("warnings") or []:
                 logger.warning("OpenClaw config warning: %s", warn)
-        # Validate required semantic config files — hard error if missing.
-        _validate_semantic_config(home)
-        # Bootstrap semantic clusters into Playbook DB.
-        _bootstrap_clusters(home, playbook)
-
+        # Recover orphaned retinue instances from previous unclean shutdown.
+        try:
+            retinue = Retinue(home, oc_home)
+            recovery = retinue.recover_on_startup()
+            if recovery.get("count", 0) > 0:
+                logger.info("Retinue recovery: %d instances recovered", recovery["count"])
+        except Exception as exc:
+            logger.warning("Retinue recovery failed: %s", exc)
         await _ensure_temporal_client(retries=20, delay_s=0.5)
-        await scheduler.start()
+        trigger_count = dominion_writ.register_all_triggers()
+        if trigger_count:
+            logger.info("Registered %d active Writ triggers", trigger_count)
+        await cadence.start()
         bridge_running = True
         bridge_task = asyncio.create_task(_bridge_loop())
 
@@ -343,33 +319,33 @@ p{
                 await bridge_task
             except asyncio.CancelledError:
                 pass
-        await scheduler.stop()
+        await cadence.stop()
 
     async def _bridge_loop() -> None:
         while bridge_running:
             try:
-                events = await asyncio.to_thread(bridge.consume, "api", 200)
+                events = await asyncio.to_thread(ether.consume, "api", 200)
                 if events:
                     for evt in events:
                         payload = evt.get("payload") if isinstance(evt.get("payload"), dict) else {}
                         event_name = str(evt.get("event") or "")
                         if event_name == "feedback_survey_generated":
-                            run_id = str(payload.get("run_id") or "")
-                            if run_id:
+                            deed_id = str(payload.get("deed_id") or "")
+                            if deed_id:
                                 survey = dict(payload)
                                 survey.setdefault("status", "pending")
                                 survey.setdefault("created_utc", _utc())
-                                _save_feedback_survey(run_id, survey)
+                                _save_feedback_survey(deed_id, survey)
                                 _append_jsonl(
                                     telemetry_dir / "feedback_surveys.jsonl",
-                                    {"run_id": run_id, "event": "generated", "payload": survey, "created_utc": _utc()},
+                                    {"deed_id": deed_id, "event": "generated", "payload": survey, "created_utc": _utc()},
                                 )
                                 try:
                                     notify_result = await _notify_feedback_survey_telegram(survey)
                                     _append_jsonl(
                                         telemetry_dir / "feedback_surveys.jsonl",
                                         {
-                                            "run_id": run_id,
+                                            "deed_id": deed_id,
                                             "event": "telegram_notified",
                                             "result": notify_result,
                                             "created_utc": _utc(),
@@ -377,48 +353,48 @@ p{
                                     )
                                 except Exception as exc:
                                     logger.warning("Feedback survey telegram notify error: %s", exc)
-                        if event_name == "campaign_milestone_recorded":
+                        if event_name == "endeavor_passage_recorded":
                             _append_jsonl(
-                                telemetry_dir / "campaign_progress.jsonl",
+                                telemetry_dir / "endeavor_progress.jsonl",
                                 {"event": event_name, "payload": payload, "created_utc": _utc()},
                             )
                             try:
-                                notify = await _notify_campaign_progress_telegram(payload)
+                                notify = await _notify_endeavor_progress_telegram(payload)
                                 _append_jsonl(
-                                    telemetry_dir / "campaign_progress.jsonl",
+                                    telemetry_dir / "endeavor_progress.jsonl",
                                     {
-                                        "event": "campaign_progress_telegram_notified",
+                                        "event": "endeavor_progress_telegram_notified",
                                         "payload": payload,
                                         "result": notify,
                                         "created_utc": _utc(),
                                     },
                                 )
                             except Exception as exc:
-                                logger.warning("Campaign milestone telegram notify error: %s", exc)
-                        if event_name == "campaign_status_changed":
+                                logger.warning("Endeavor passage telegram notify error: %s", exc)
+                        if event_name == "endeavor_status_changed":
                             _append_jsonl(
-                                telemetry_dir / "campaign_progress.jsonl",
+                                telemetry_dir / "endeavor_progress.jsonl",
                                 {"event": event_name, "payload": payload, "created_utc": _utc()},
                             )
-                            campaign_phase = str(payload.get("campaign_phase") or "")
-                            if campaign_phase in {"phase0_waiting_confirmation", "milestone_waiting_feedback", "milestone_failed", "delivery_failed"}:
+                            endeavor_phase = str(payload.get("endeavor_phase") or "")
+                            if endeavor_phase in {"phase0_waiting_confirmation", "passage_waiting_feedback", "passage_failed", "herald_failed"}:
                                 try:
-                                    notify = await _notify_campaign_status_telegram(payload)
+                                    notify = await _notify_endeavor_status_telegram(payload)
                                     _append_jsonl(
-                                        telemetry_dir / "campaign_progress.jsonl",
+                                        telemetry_dir / "endeavor_progress.jsonl",
                                         {
-                                            "event": "campaign_status_telegram_notified",
+                                            "event": "endeavor_status_telegram_notified",
                                             "payload": payload,
                                             "result": notify,
                                             "created_utc": _utc(),
                                         },
                                     )
                                 except Exception as exc:
-                                    logger.warning("Campaign status telegram notify error: %s", exc)
-                        payload = {**payload, "_bridge_event_id": evt.get("event_id"), "_bridge_event": event_name}
+                                    logger.warning("Endeavor status telegram notify error: %s", exc)
+                        payload = {**payload, "_ether_event_id": evt.get("event_id"), "_ether_event": event_name}
                         nerve.emit(event_name, payload)
                         await asyncio.to_thread(
-                            bridge.acknowledge,
+                            ether.acknowledge,
                             str(evt.get("event_id") or ""),
                             event_name,
                             payload,
@@ -427,7 +403,7 @@ p{
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.error("Event bridge loop error: %s", exc)
+                logger.error("Ether loop error: %s", exc)
             await asyncio.sleep(2)
 
     def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
@@ -468,36 +444,38 @@ p{
             logger.warning("Failed to read %s: %s", path, exc)
         return []
 
-    def _run_view(run: dict) -> dict:
-        out = dict(run)
+    def _deed_view(deed: dict) -> dict:
+        out = dict(deed)
         plan = out.get("plan") if isinstance(out.get("plan"), dict) else {}
-        run_id = str(out.get("run_id") or "")
-        run_status = str(out.get("run_status") or "")
-        work_scale = str(out.get("work_scale") or plan.get("work_scale") or "")
-        campaign_id = str(out.get("campaign_id") or plan.get("campaign_id") or "")
-        run_title = str(out.get("run_title") or out.get("title") or plan.get("run_title") or plan.get("title") or run_id)
+        brief = plan.get("brief") or {}
+        deed_id = str(out.get("deed_id") or "")
+        deed_status = str(out.get("deed_status") or "")
+        complexity = str(out.get("complexity") or plan.get("complexity") or brief.get("complexity") or "charge")
+        endeavor_id = str(out.get("endeavor_id") or plan.get("endeavor_id") or "")
+        deed_title = str(
+            out.get("deed_title") or out.get("title")
+            or plan.get("deed_title") or plan.get("title")
+            or brief.get("objective", "")
+            or deed_id
+        )
         phase = str(out.get("phase") or "").strip().lower()
         if phase not in {"running", "awaiting_eval", "history"}:
-            status_lower = run_status.lower()
-            if status_lower in {"running", "queued", "paused", "running_shadow", "cancel_requested", "cancelling"}:
+            status_lower = deed_status.lower()
+            if status_lower in {"running", "queued", "paused", "cancel_requested", "cancelling"}:
                 phase = "running"
             elif status_lower in {"awaiting_eval", "pending_review"}:
                 phase = "awaiting_eval"
             else:
                 phase = "history"
-        out.setdefault("run_id", run_id)
-        if run_status:
-            out["run_status"] = run_status
+        out.setdefault("deed_id", deed_id)
+        if deed_status:
+            out["deed_status"] = deed_status
         out["phase"] = phase
-        out["run_title"] = run_title
-        out["title"] = run_title
-        if work_scale:
-            out.setdefault("work_scale", work_scale)
-        if campaign_id:
-            out.setdefault("campaign_id", campaign_id)
-        out.setdefault("semantic_cluster", plan.get("cluster_id", ""))
-        out.setdefault("strategy_id", plan.get("strategy_id", ""))
-        out.setdefault("strategy_stage", plan.get("strategy_stage", ""))
+        out["deed_title"] = deed_title
+        out["title"] = deed_title
+        out["complexity"] = complexity
+        if endeavor_id:
+            out.setdefault("endeavor_id", endeavor_id)
         out.setdefault("global_score_components", plan.get("global_score_components") or {})
         out.setdefault("eval_window_hours", plan.get("eval_window_hours", 2))
         out.setdefault("exec_completed_utc", out.get("exec_completed_utc", ""))
@@ -508,23 +486,16 @@ p{
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(items, ensure_ascii=False, indent=2))
 
-    def _require_outcome_root() -> Path:
-        resolved = drive_accounts.resolve_outcome_root()
-        if not resolved.get("ok"):
-            raise HTTPException(
-                status_code=503,
-                detail={"ok": False, "error_code": "drive_storage_unavailable", "error": resolved.get("error", "")},
-            )
-        p = Path(str(resolved.get("outcome_root") or ""))
-        if not p.exists():
-            p.mkdir(parents=True, exist_ok=True)
+    def _require_offering_root() -> Path:
+        p = home / "offerings"
+        p.mkdir(parents=True, exist_ok=True)
         return p
 
-    def _feedback_survey_path(run_id: str) -> Path:
-        return feedback_surveys_dir / f"{run_id}.json"
+    def _feedback_survey_path(deed_id: str) -> Path:
+        return feedback_surveys_dir / f"{deed_id}.json"
 
-    def _load_feedback_survey(run_id: str) -> dict | None:
-        path = _feedback_survey_path(run_id)
+    def _load_feedback_survey(deed_id: str) -> dict | None:
+        path = _feedback_survey_path(deed_id)
         if not path.exists():
             return None
         try:
@@ -533,8 +504,8 @@ p{
             return None
         return data if isinstance(data, dict) else None
 
-    def _save_feedback_survey(run_id: str, payload: dict) -> None:
-        path = _feedback_survey_path(run_id)
+    def _save_feedback_survey(deed_id: str, payload: dict) -> None:
+        path = _feedback_survey_path(deed_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -546,12 +517,12 @@ p{
             return []
         return [r for r in rows if isinstance(r, dict)]
 
-    def _feedback_state(run_id: str) -> dict:
-        survey = _load_feedback_survey(run_id) or {}
+    def _feedback_state(deed_id: str) -> dict:
+        survey = _load_feedback_survey(deed_id) or {}
         history = _feedback_history(survey)
         response = survey.get("response") if isinstance(survey.get("response"), dict) else {}
         return {
-            "run_id": str(survey.get("run_id") or run_id),
+            "deed_id": str(survey.get("deed_id") or deed_id),
             "status": str(survey.get("status") or ""),
             "submitted_utc": str(survey.get("submitted_utc") or ""),
             "handled_channel": str(survey.get("handled_channel") or ""),
@@ -602,95 +573,95 @@ p{
     async def _notify_feedback_survey_telegram(payload: dict) -> dict:
         if os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() == "":
             return {"sent": 0, "skipped": True}
-        run_id = str(payload.get("run_id") or "")
-        if run_id:
-            survey = _load_feedback_survey(run_id)
+        deed_id = str(payload.get("deed_id") or "")
+        if deed_id:
+            survey = _load_feedback_survey(deed_id)
             if isinstance(survey, dict):
                 if str(survey.get("status") or "") == "submitted" and str(survey.get("handled_channel") or "") == "portal":
                     return {"sent": 0, "skipped": True, "reason": "handled_by_portal"}
         return await _notify_via_adapter(
             "feedback_survey",
             {
-                "run_id": run_id,
-                "run_title": str(payload.get("title") or run_id),
-                "work_scale": str(payload.get("work_scale") or ""),
+                "deed_id": deed_id,
+                "deed_title": str(payload.get("title") or deed_id),
+                "complexity": str(payload.get("complexity") or ""),
             },
         )
 
-    async def _notify_campaign_progress_telegram(payload: dict) -> dict:
+    async def _notify_endeavor_progress_telegram(payload: dict) -> dict:
         if os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() == "":
             return {"sent": 0, "skipped": True}
         return await _notify_via_adapter(
-            "milestone_done",
+            "passage_completed",
             {
-                "campaign_id": str(payload.get("campaign_id") or ""),
-                "milestone_idx": int(payload.get("milestone_index") or 0) + 1,
-                "run_title": str(payload.get("title") or payload.get("campaign_id") or ""),
-                "milestone_status": str(payload.get("milestone_status") or ""),
+                "endeavor_id": str(payload.get("endeavor_id") or ""),
+                "passage_idx": int(payload.get("passage_index") or 0) + 1,
+                "deed_title": str(payload.get("title") or payload.get("endeavor_id") or ""),
+                "passage_status": str(payload.get("passage_status") or ""),
             },
         )
 
-    async def _notify_campaign_status_telegram(payload: dict) -> dict:
+    async def _notify_endeavor_status_telegram(payload: dict) -> dict:
         if os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() == "":
             return {"sent": 0, "skipped": True}
         return await _notify_via_adapter(
-            "campaign_status",
+            "endeavor_status",
             {
-                "campaign_id": str(payload.get("campaign_id") or ""),
-                "run_title": str(payload.get("campaign_id") or ""),
-                "campaign_status": str(payload.get("campaign_status") or ""),
-                "campaign_phase": str(payload.get("campaign_phase") or ""),
-                "current_milestone_index": int(payload.get("current_milestone_index") or 0),
+                "endeavor_id": str(payload.get("endeavor_id") or ""),
+                "deed_title": str(payload.get("endeavor_id") or ""),
+                "endeavor_status": str(payload.get("endeavor_status") or ""),
+                "endeavor_phase": str(payload.get("endeavor_phase") or ""),
+                "current_passage_index": int(payload.get("current_passage_index") or 0),
             },
         )
 
-    def _campaign_root(campaign_id: str | None = None) -> Path:
-        root = state / "campaigns"
-        return root / campaign_id if campaign_id else root
+    def _endeavor_root(endeavor_id: str | None = None) -> Path:
+        root = state / "endeavors"
+        return root / endeavor_id if endeavor_id else root
 
-    def _normalize_campaign_milestone_row(row: dict) -> dict:
+    def _normalize_endeavor_passage_row(row: dict) -> dict:
         item = dict(row or {})
-        milestone_status = str(item.get("milestone_status") or "").strip()
-        if milestone_status:
-            item["milestone_status"] = milestone_status
+        passage_status = str(item.get("passage_status") or "").strip()
+        if passage_status:
+            item["passage_status"] = passage_status
         return item
 
-    def _normalize_campaign_manifest(manifest: dict) -> dict:
+    def _normalize_endeavor_manifest(manifest: dict) -> dict:
         out = dict(manifest or {})
-        campaign_status = str(out.get("campaign_status") or "").strip()
-        campaign_phase = str(out.get("campaign_phase") or "").strip()
-        if campaign_status:
-            out["campaign_status"] = campaign_status
-        if campaign_phase:
-            out["campaign_phase"] = campaign_phase
-        milestones = out.get("milestones")
-        if isinstance(milestones, list):
+        endeavor_status = str(out.get("endeavor_status") or "").strip()
+        endeavor_phase = str(out.get("endeavor_phase") or "").strip()
+        if endeavor_status:
+            out["endeavor_status"] = endeavor_status
+        if endeavor_phase:
+            out["endeavor_phase"] = endeavor_phase
+        passages = out.get("passages")
+        if isinstance(passages, list):
             normalized: list[dict] = []
-            for row in milestones:
+            for row in passages:
                 if not isinstance(row, dict):
                     continue
-                normalized.append(_normalize_campaign_milestone_row(row))
-            out["milestones"] = normalized
+                normalized.append(_normalize_endeavor_passage_row(row))
+            out["passages"] = normalized
         return out
 
-    def _load_campaign_manifest(campaign_id: str) -> dict | None:
-        path = _campaign_root(campaign_id) / "manifest.json"
+    def _load_endeavor_manifest(endeavor_id: str) -> dict | None:
+        path = _endeavor_root(endeavor_id) / "manifest.json"
         if not path.exists():
             return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return None
-        return _normalize_campaign_manifest(data) if isinstance(data, dict) else None
+        return _normalize_endeavor_manifest(data) if isinstance(data, dict) else None
 
-    def _save_campaign_manifest(campaign_id: str, manifest: dict) -> None:
-        path = _campaign_root(campaign_id) / "manifest.json"
+    def _save_endeavor_manifest(endeavor_id: str, manifest: dict) -> None:
+        path = _endeavor_root(endeavor_id) / "manifest.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = _normalize_campaign_manifest(manifest if isinstance(manifest, dict) else {})
+        payload = _normalize_endeavor_manifest(manifest if isinstance(manifest, dict) else {})
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _campaign_summaries(limit: int = 200) -> list[dict]:
-        root = _campaign_root()
+    def _endeavor_summaries(limit: int = 200) -> list[dict]:
+        root = _endeavor_root()
         if not root.exists():
             return []
         rows: list[dict] = []
@@ -701,18 +672,18 @@ p{
                 continue
             if not isinstance(data, dict):
                 continue
-            normalized = _normalize_campaign_manifest(data)
-            campaign_status = str(normalized.get("campaign_status") or "")
-            campaign_phase = str(normalized.get("campaign_phase") or "")
+            normalized = _normalize_endeavor_manifest(data)
+            endeavor_status = str(normalized.get("endeavor_status") or "")
+            endeavor_phase = str(normalized.get("endeavor_phase") or "")
             rows.append(
                 {
-                    "campaign_id": str(normalized.get("campaign_id") or p.parent.name),
-                    "run_id": str(normalized.get("run_id") or ""),
+                    "endeavor_id": str(normalized.get("endeavor_id") or p.parent.name),
+                    "deed_id": str(normalized.get("deed_id") or ""),
                     "title": str(normalized.get("title") or ""),
-                    "campaign_status": campaign_status,
-                    "campaign_phase": campaign_phase,
-                    "current_milestone_index": int(normalized.get("current_milestone_index") or 0),
-                    "total_milestones": int(normalized.get("total_milestones") or len(normalized.get("milestones") or [])),
+                    "endeavor_status": endeavor_status,
+                    "endeavor_phase": endeavor_phase,
+                    "current_passage_index": int(normalized.get("current_passage_index") or 0),
+                    "total_passages": int(normalized.get("total_passages") or len(normalized.get("passages") or [])),
                     "updated_utc": str(normalized.get("updated_utc") or ""),
                     "workflow_id": str(normalized.get("workflow_id") or ""),
                 }
@@ -720,22 +691,22 @@ p{
         rows.sort(key=lambda x: str(x.get("updated_utc") or ""), reverse=True)
         return rows[: max(1, min(limit, 1000))]
 
-    def _campaign_result_rows(campaign_id: str, limit: int = 200) -> list[dict]:
-        milestones_dir = _campaign_root(campaign_id) / "milestones"
-        if not milestones_dir.exists():
+    def _endeavor_result_rows(endeavor_id: str, limit: int = 200) -> list[dict]:
+        passages_dir = _endeavor_root(endeavor_id) / "passages"
+        if not passages_dir.exists():
             return []
         rows: list[dict] = []
-        for p in sorted(milestones_dir.glob("*/result.json")):
+        for p in sorted(passages_dir.glob("*/result.json")):
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
             except Exception:
                 continue
             if isinstance(data, dict):
-                rows.append(_normalize_campaign_milestone_row(data))
+                rows.append(_normalize_endeavor_passage_row(data))
         return rows[: max(1, min(limit, 2000))]
 
-    def _append_campaign_feedback(campaign_id: str, milestone_index: int, feedback: dict) -> None:
-        result_path = _campaign_root(campaign_id) / "milestones" / str(max(1, int(milestone_index) + 1)) / "result.json"
+    def _append_endeavor_feedback(endeavor_id: str, passage_index: int, feedback: dict) -> None:
+        result_path = _endeavor_root(endeavor_id) / "passages" / str(max(1, int(passage_index) + 1)) / "result.json"
         result_path.parent.mkdir(parents=True, exist_ok=True)
         data: dict[str, Any] = {}
         if result_path.exists():
@@ -750,8 +721,8 @@ p{
         data["user_feedback_log"] = logs[-100:]
         result_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _campaign_result_payload(campaign_id: str, milestone_index: int) -> dict:
-        result_path = _campaign_root(campaign_id) / "milestones" / str(max(1, int(milestone_index) + 1)) / "result.json"
+    def _endeavor_result_payload(endeavor_id: str, passage_index: int) -> dict:
+        result_path = _endeavor_root(endeavor_id) / "passages" / str(max(1, int(passage_index) + 1)) / "result.json"
         if not result_path.exists():
             return {}
         try:
@@ -760,7 +731,7 @@ p{
             return {}
         if not isinstance(data, dict):
             return {}
-        return _normalize_campaign_milestone_row(data)
+        return _normalize_endeavor_passage_row(data)
 
     def _feedback_satisfied(feedback: dict) -> bool:
         if not isinstance(feedback, dict):
@@ -775,14 +746,14 @@ p{
         verdict = str(feedback.get("verdict") or feedback.get("decision") or "").strip().lower()
         return verdict in {"yes", "y", "ok", "pass", "satisfied", "满意"}
 
-    def _apply_campaign_feedback_decision(
-        campaign_id: str,
-        milestone_index: int,
+    def _apply_endeavor_feedback_decision(
+        endeavor_id: str,
+        passage_index: int,
         feedback: dict,
         *,
         source: str,
     ) -> dict:
-        result_path = _campaign_root(campaign_id) / "milestones" / str(max(1, int(milestone_index) + 1)) / "result.json"
+        result_path = _endeavor_root(endeavor_id) / "passages" / str(max(1, int(passage_index) + 1)) / "result.json"
         result_path.parent.mkdir(parents=True, exist_ok=True)
         data: dict[str, Any] = {}
         if result_path.exists():
@@ -834,16 +805,8 @@ p{
             return "config"
         return "skill"
 
-    def _semantic_target_spec(target: str) -> tuple[str, Path]:
-        t = str(target or "").strip().lower()
-        if t in {"catalog", "capability_catalog"}:
-            return "semantics.catalog", semantic_catalog_path
-        if t in {"mapping_rules", "mapping-rules", "rules"}:
-            return "semantics.mapping_rules", semantic_rules_path
-        raise ValueError(f"unknown_semantic_target:{target}")
-
-    def _sync_compass_provider_budgets_from_policy(policy: dict, *, overwrite: bool) -> dict:
-        """Sync model_policy budget_limits into Compass provider budgets."""
+    def _sync_instinct_provider_rations_from_policy(policy: dict, *, overwrite: bool) -> dict:
+        """Sync model_policy budget_limits into Instinct provider rations."""
         limits = policy.get("budget_limits") if isinstance(policy.get("budget_limits"), dict) else {}
         touched: list[dict] = []
         for key, raw in limits.items():
@@ -859,17 +822,17 @@ p{
                 continue
             if daily_limit <= 0:
                 continue
-            current = compass.get_budget(resource_type)
+            current = instinct.get_ration(resource_type)
             if current and not overwrite:
                 try:
                     if float(current.get("daily_limit") or 0) >= daily_limit:
                         continue
                 except (TypeError, ValueError):
                     pass
-            compass.set_budget(resource_type, daily_limit, changed_by="model_policy")
+            instinct.set_ration(resource_type, daily_limit, changed_by="model_policy")
             touched.append({"resource_type": resource_type, "daily_limit": daily_limit})
         if touched:
-            nerve.emit("fabric_updated", {"fabric": "compass", "key": "budget_limits_from_model_policy", "count": len(touched)})
+            nerve.emit("psyche_updated", {"psyche": "instinct", "key": "ration_limits_from_model_policy", "count": len(touched)})
         return {"updated": touched}
 
     def _model_target_spec(target: str) -> tuple[str, Path]:
@@ -920,28 +883,13 @@ p{
         default_alias = str(payload.get("default_alias") or "").strip()
         if default_alias and default_alias not in aliases:
             raise ValueError(f"model_policy.default_alias not found in registry: {default_alias}")
-        for key in ("by_capability", "by_semantic_cluster", "by_risk_level"):
-            mapping = payload.get(key) if isinstance(payload.get(key), dict) else {}
-            for k, v in mapping.items():
-                alias = str(v or "").strip()
-                if alias and alias not in aliases:
-                    raise ValueError(f"model_policy.{key}[{k}] alias not found: {alias}")
-
-    def _write_semantic_target(target: str, payload: dict, changed_by: str, reason: str) -> dict:
-        cfg_key, path = _semantic_target_spec(target)
-        if not isinstance(payload, dict):
-            raise ValueError("payload_must_be_object")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        cv_version = compass.record_config_version(cfg_key, payload, changed_by=changed_by, reason=reason)
-        # Keep runtime semantics consistent without restart.
-        dispatch.reload_semantic_configs()
-        if cfg_key == "semantics.catalog":
-            clusters = payload.get("clusters") if isinstance(payload.get("clusters"), list) else []
-            if clusters:
-                playbook.seed_clusters(clusters)
-        nerve.emit("fabric_updated", {"fabric": "semantics", "target": cfg_key, "path": str(path)})
-        return {"ok": True, "target": cfg_key, "path": str(path), "config_version": cv_version}
+        agent_model_map = payload.get("agent_model_map") if isinstance(payload.get("agent_model_map"), dict) else {}
+        for agent, alias in agent_model_map.items():
+            if str(agent).startswith("_"):
+                continue
+            alias = str(alias or "").strip()
+            if alias and alias not in aliases:
+                raise ValueError(f"model_policy.agent_model_map[{agent}] alias not found: {alias}")
 
     def _sync_skill_proposals() -> list[dict]:
         source = _read_json_list(skill_proposals_path)
@@ -1019,8 +967,8 @@ p{
             return False, f"write_failed:{exc}"
         return True, ""
 
-    def _sandbox_gate_open() -> bool:
-        v = str(compass.get_pref("skill_evolution.sandbox_gate", "open") or "open").strip().lower()
+    def _sandbox_ward_open() -> bool:
+        v = str(instinct.get_pref("skill_evolution.sandbox_ward", "open") or "open").strip().lower()
         return v in {"1", "true", "open", "on", "enabled"}
 
     def _extract_json_payload(text: str) -> dict | None:
@@ -1052,26 +1000,20 @@ p{
 
         target_norm = target.lower()
         try:
-            if target_norm in {"catalog", "capability_catalog", "semantics.catalog"}:
-                _write_semantic_target("catalog", payload, changed_by="skill_evolution", reason="auto_adopt_config_proposal")
-                return True, ""
-            if target_norm in {"mapping_rules", "rules", "semantics.mapping_rules"}:
-                _write_semantic_target("mapping_rules", payload, changed_by="skill_evolution", reason="auto_adopt_config_proposal")
-                return True, ""
             if target_norm in {"model_policy", "model-policy"}:
                 aliases = _model_registry_aliases(json.loads(model_registry_path.read_text(encoding="utf-8")) if model_registry_path.exists() else {})
                 _validate_model_policy(payload, aliases)
                 payload["_updated"] = _utc()[:10]
                 model_policy_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-                compass.record_config_version("model_policy", payload, changed_by="skill_evolution", reason="auto_adopt_config_proposal")
-                nerve.emit("fabric_updated", {"fabric": "model_policy", "path": str(model_policy_path)})
+                instinct.record_config_version("model_policy", payload, changed_by="skill_evolution", reason="auto_adopt_config_proposal")
+                nerve.emit("psyche_updated", {"psyche": "model_policy", "path": str(model_policy_path)})
                 return True, ""
             if target_norm in {"model_registry", "registry", "model-registry"}:
                 _validate_model_registry(payload)
                 payload["_updated"] = _utc()[:10]
                 model_registry_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-                compass.record_config_version("model_registry", payload, changed_by="skill_evolution", reason="auto_adopt_config_proposal")
-                nerve.emit("fabric_updated", {"fabric": "model_registry", "path": str(model_registry_path)})
+                instinct.record_config_version("model_registry", payload, changed_by="skill_evolution", reason="auto_adopt_config_proposal")
+                nerve.emit("psyche_updated", {"psyche": "model_registry", "path": str(model_registry_path)})
                 return True, ""
             return False, f"unknown_config_target:{target}"
         except Exception as exc:
@@ -1088,19 +1030,19 @@ p{
         app_started_utc=app_started_utc,
         ensure_temporal_client=_ensure_temporal_client,
         get_temporal_client=lambda: temporal_client,
-        store=store,
-        dispatch=dispatch,
+        ledger=ledger,
+        will=will,
         cortex=cortex,
         model_policy_path=model_policy_path,
         model_registry_path=model_registry_path,
         openclaw_home=oc_home,
         validate_model_registry=_validate_model_registry,
-        run_view=_run_view,
+        deed_view=_deed_view,
         log_portal_event=_log_portal_event,
-        require_outcome_root=_require_outcome_root,
+        require_offering_root=_require_offering_root,
         memory=memory,
-        playbook=playbook,
-        compass=compass,
+        lore=lore,
+        instinct=instinct,
     )
 
     def _require_localhost(request: Request) -> str:
@@ -1113,14 +1055,14 @@ p{
         app,
         require_localhost=_require_localhost,
         reset_manager=reset_manager,
-        drive_accounts=drive_accounts,
         log_portal_event=_log_portal_event,
+        state_dir=state,
     )
 
     register_submit_route(
         app,
         ensure_temporal_client=_ensure_temporal_client,
-        dispatch=dispatch,
+        will=will,
         log_portal_event=_log_portal_event,
     )
 
@@ -1128,93 +1070,87 @@ p{
     console_ctx.logger = logger
     console_ctx.state = state
     console_ctx.oc_home = oc_home
-    console_ctx.scheduler = scheduler
-    console_ctx.registry = registry
+    console_ctx.cadence = cadence
+    console_ctx.canon = canon
     console_ctx.nerve = nerve
     console_ctx.memory = memory
-    console_ctx.playbook = playbook
-    console_ctx.compass = compass
+    console_ctx.lore = lore
+    console_ctx.instinct = instinct
     console_ctx.cortex = cortex
-    console_ctx.tracer = tracer
-    console_ctx.store = store
-    console_ctx.dispatch = dispatch
+    console_ctx.trail = trail
+    console_ctx.ledger = ledger
+    console_ctx.will = will
     console_ctx.skill_queue_path = skill_queue_path
     console_ctx.utc = _utc
     console_ctx.sync_skill_proposals = _sync_skill_proposals
     console_ctx.write_json_list = _write_json_list
-    console_ctx.sandbox_gate_open = _sandbox_gate_open
+    console_ctx.sandbox_ward_open = _sandbox_ward_open
     console_ctx.apply_evolution_proposal = _apply_evolution_proposal
-    console_ctx.semantic_catalog_path = semantic_catalog_path
-    console_ctx.semantic_rules_path = semantic_rules_path
     console_ctx.model_policy_path = model_policy_path
     console_ctx.model_registry_path = model_registry_path
-    console_ctx.semantic_target_spec = _semantic_target_spec
-    console_ctx.write_semantic_target = _write_semantic_target
     console_ctx.validate_model_registry = _validate_model_registry
     console_ctx.validate_model_policy = _validate_model_policy
     console_ctx.model_registry_aliases = _model_registry_aliases
-    console_ctx.sync_compass_provider_budgets_from_policy = _sync_compass_provider_budgets_from_policy
+    console_ctx.sync_instinct_provider_rations_from_policy = _sync_instinct_provider_rations_from_policy
 
     register_console_spine_fabric_routes(app, ctx=console_ctx)
-    register_console_strategy_model_routes(app, ctx=console_ctx)
     register_console_norm_routes(app, ctx=console_ctx)
     register_console_observe_routes(app, ctx=console_ctx)
     register_console_agents_skill_routes(app, ctx=console_ctx)
 
-    campaign_ctx = type("CampaignRouteContext", (), {})()
-    campaign_ctx.logger = logger
-    campaign_ctx.state = state
-    campaign_ctx.dispatch = dispatch
-    campaign_ctx.telemetry_dir = telemetry_dir
-    campaign_ctx.time_time = time.time
-    campaign_ctx.utc = _utc
-    campaign_ctx.ensure_temporal_client = _ensure_temporal_client
-    campaign_ctx.get_temporal_client = lambda: temporal_client
-    campaign_ctx.campaign_summaries = _campaign_summaries
-    campaign_ctx.load_campaign_manifest = _load_campaign_manifest
-    campaign_ctx.save_campaign_manifest = _save_campaign_manifest
-    campaign_ctx.campaign_result_rows = _campaign_result_rows
-    campaign_ctx.append_campaign_feedback = _append_campaign_feedback
-    campaign_ctx.apply_campaign_feedback_decision = _apply_campaign_feedback_decision
-    campaign_ctx.campaign_result_payload = _campaign_result_payload
-    campaign_ctx.feedback_satisfied = _feedback_satisfied
-    campaign_ctx.append_jsonl = _append_jsonl
+    endeavor_ctx = type("EndeavorRouteContext", (), {})()
+    endeavor_ctx.logger = logger
+    endeavor_ctx.state = state
+    endeavor_ctx.will = will
+    endeavor_ctx.telemetry_dir = telemetry_dir
+    endeavor_ctx.time_time = time.time
+    endeavor_ctx.utc = _utc
+    endeavor_ctx.ensure_temporal_client = _ensure_temporal_client
+    endeavor_ctx.get_temporal_client = lambda: temporal_client
+    endeavor_ctx.endeavor_summaries = _endeavor_summaries
+    endeavor_ctx.load_endeavor_manifest = _load_endeavor_manifest
+    endeavor_ctx.save_endeavor_manifest = _save_endeavor_manifest
+    endeavor_ctx.endeavor_result_rows = _endeavor_result_rows
+    endeavor_ctx.append_endeavor_feedback = _append_endeavor_feedback
+    endeavor_ctx.apply_endeavor_feedback_decision = _apply_endeavor_feedback_decision
+    endeavor_ctx.endeavor_result_payload = _endeavor_result_payload
+    endeavor_ctx.feedback_satisfied = _feedback_satisfied
+    endeavor_ctx.append_jsonl = _append_jsonl
 
-    register_campaign_routes(app, ctx=campaign_ctx)
-    register_chat_routes(app, dialog=dialog, log_portal_event=_log_portal_event)
-    register_circuit_routes(app, ctx=console_ctx)
+    register_endeavor_routes(app, ctx=endeavor_ctx)
+    register_chat_routes(app, voice=voice, log_portal_event=_log_portal_event)
+    register_track_routes(app, dominion_writ)
 
     # ── User feedback (Portal) ────────────────────────────────────────────────
 
-    async def _get_feedback_questions(run_id: str):
-        """Generate run-specific feedback questions via Cortex (LLM).
+    async def _get_feedback_questions(deed_id: str):
+        """Generate deed-specific feedback questions via Cortex (LLM).
         Falls back to a minimal default set if Cortex is unavailable.
         """
-        # Load run context.
-        run_record: dict = {}
+        # Load deed context.
+        deed_record: dict = {}
         try:
-            runs = store.load_runs()
-            run_record = next((r for r in runs if r.get("run_id") == run_id), {})
+            deed_record = ledger.get_deed(deed_id) or {}
         except Exception:
             pass
 
-        plan = run_record.get("plan") or {}
-        title = str(plan.get("title") or run_id)
-        run_type = str(plan.get("run_type") or "general")
+        plan = deed_record.get("plan") or {}
+        brief = plan.get("brief") or {}
+        title = str(plan.get("title") or brief.get("objective", "") or deed_id)
+        complexity = str(plan.get("complexity") or brief.get("complexity") or "charge")
 
-        # Load outcome content snippet.
+        # Load offering content snippet.
         content_snippet = ""
         try:
-            outcome_root = _require_outcome_root()
-            index = store.load_outcome_index(outcome_root)
-            entry = next((e for e in reversed(index) if e.get("run_id") == run_id), None)
+            offering_root = _require_offering_root()
+            index = ledger.load_herald_log()
+            entry = next((e for e in reversed(index) if e.get("deed_id") == deed_id), None)
             if entry:
-                out_path = outcome_root / str(entry["path"])
+                out_path = offering_root / str(entry["path"])
                 for fname in ("report.md", "report.html"):
                     p = out_path / fname
                     if p.exists():
                         raw = p.read_text(encoding="utf-8", errors="ignore")
-                        # Strip HTML tags if HTML.
                         if fname.endswith(".html"):
                             import re as _re
                             raw = _re.sub(r"<[^>]+>", " ", raw)
@@ -1259,7 +1195,7 @@ p{
 
         prompt = (
             "你是一个AI产出评估专家。根据以下运行信息，生成3-4个针对性反馈问题。\n\n"
-            f"运行类型: {run_type}\n"
+            f"复杂度: {complexity}\n"
             f"运行标题: {title}\n"
         )
         if content_snippet:
@@ -1291,7 +1227,7 @@ p{
 
         return _DEFAULT_QUESTIONS
 
-    async def _submit_feedback_internal(run_id: str, body: dict, request: Request | None = None) -> dict:
+    async def _submit_feedback_internal(deed_id: str, body: dict, request: Request | None = None) -> dict:
         source = str(body.get("source") or "portal")
         fb_type = str(body.get("type") or "quick").strip().lower()
         if fb_type not in {"quick", "deep", "append"}:
@@ -1319,20 +1255,16 @@ p{
             if fb_type == "deep" and rating is None and not has_partial:
                 raise HTTPException(status_code=400, detail="deep_feedback_requires_comment_or_rating")
 
-        # Find run record to get method_id and run_type.
-        runs = store.load_runs()
-        run_record = next((r for r in runs if r.get("run_id") == run_id), None)
+        # Find deed record to get complexity.
+        deed_record = ledger.get_deed(deed_id)
 
-        run_type = ""
-        work_scale = ""
-        method_id = ""
-        if run_record:
-            plan = run_record.get("plan") if isinstance(run_record.get("plan"), dict) else {}
-            run_type = str(plan.get("run_type") or "")
-            work_scale = str(plan.get("work_scale") or "")
-            method_id = str(plan.get("method_id") or "")
+        complexity = ""
+        if deed_record:
+            plan = deed_record.get("plan") if isinstance(deed_record.get("plan"), dict) else {}
+            brief = plan.get("brief") or {}
+            complexity = str(brief.get("complexity") or plan.get("complexity") or "")
 
-        survey = _load_feedback_survey(run_id) or {"run_id": run_id}
+        survey = _load_feedback_survey(deed_id) or {"deed_id": deed_id}
         prev_response = survey.get("response") if isinstance(survey.get("response"), dict) else {}
         prev_rating = prev_response.get("rating")
         first_scored_feedback = bool(rating is not None and prev_rating in (None, ""))
@@ -1351,37 +1283,37 @@ p{
             except (TypeError, ValueError):
                 main_rating = None
 
-        # Primary score feedback contributes to playbook exactly once per run.
-        if first_scored_feedback and method_id:
-            outcome = "success" if int(rating or 0) >= 3 else "failure"
-            playbook.evaluate(
-                method_id=method_id,
-                run_id=run_id,
-                outcome=outcome,
-                score=score,
-                detail={
-                    "rating": rating,
-                    "comment": comment,
-                    "aspects": aspects,
-                    "source": "user_feedback",
-                    "feedback_type": fb_type,
-                },
-            )
+        # Primary score feedback updates lore exactly once per deed.
+        if first_scored_feedback:
+            try:
+                lore.update_feedback(
+                    deed_id=deed_id,
+                    user_feedback={
+                        "rating": rating,
+                        "score": score,
+                        "comment": comment,
+                        "aspects": aspects,
+                        "source": "user_feedback",
+                        "feedback_type": fb_type,
+                    },
+                )
+            except Exception as exc:
+                logger.warning("Failed to update lore feedback for %s: %s", deed_id, exc)
 
-        if first_scored_feedback and work_scale == "campaign":
+        if first_scored_feedback and complexity == "endeavor":
             summary_zh = (
-                f"Campaign运行用户反馈：rating={rating}/5；comment={comment or '无'}；"
+                f"Endeavor 用户反馈：rating={rating}/5；comment={comment or '无'}；"
                 f"aspects={json.dumps(aspects, ensure_ascii=False)}"
             )
             summary_en = (
-                f"Campaign final feedback: rating={rating}/5; comment={comment or 'n/a'}; "
+                f"Endeavor final feedback: rating={rating}/5; comment={comment or 'n/a'}; "
                 f"aspects={json.dumps(aspects, ensure_ascii=False)}"
             )
             try:
                 memory.intake(
                     [
                         {
-                            "title": f"Campaign feedback {run_id}",
+                            "title": f"Endeavor feedback {deed_id}",
                             "domain": "user_feedback",
                             "tier": "deep",
                             "confidence": 1.0,
@@ -1397,16 +1329,16 @@ p{
                     source_agent="user",
                 )
             except Exception as exc:
-                logger.warning("Failed to store campaign feedback into memory: %s", exc)
+                logger.warning("Failed to store endeavor feedback into memory: %s", exc)
 
-        # Persist feedback aspects as Compass prefs for the learning system.
-        if aspects and run_type:
+        # Persist feedback aspects as Instinct prefs for the learning system.
+        if aspects and complexity:
             for aspect_key, aspect_val in aspects.items():
                 try:
                     v = float(aspect_val)
                     if 0.0 <= v <= 1.0:
-                        compass.set_pref(
-                            f"feedback.{run_type}.{aspect_key}",
+                        instinct.set_pref(
+                            f"feedback.{complexity}.{aspect_key}",
                             str(round(v, 4)),
                             source="user_feedback",
                             changed_by="user",
@@ -1440,18 +1372,18 @@ p{
             }
         survey["status"] = "submitted"
         survey["submitted_utc"] = now
-        survey["run_id"] = str(survey.get("run_id") or run_id)
+        survey["deed_id"] = str(survey.get("deed_id") or deed_id)
         if source == "portal":
             survey["handled_channel"] = "portal"
             survey["telegram_reminder_suppressed"] = True
-        _save_feedback_survey(run_id, survey)
+        _save_feedback_survey(deed_id, survey)
 
         # Write to feedback JSONL.
-        feedback_path = telemetry_dir / "outcome_feedback.jsonl"
+        feedback_path = telemetry_dir / "offering_feedback.jsonl"
         _append_jsonl(
             feedback_path,
             {
-                "run_id": run_id,
+                "deed_id": deed_id,
                 "type": "append" if is_append else fb_type,
                 "source": source,
                 "rating": rating,
@@ -1459,33 +1391,34 @@ p{
                 "comment": comment,
                 "aspects": aspects,
                 "answers": answers,
-                "run_type": run_type,
-                "work_scale": work_scale,
+                "complexity": complexity,
                 "created_utc": now,
             },
         )
 
         # Eval window closes immediately once any feedback is submitted.
-        if not is_append and run_record:
-            for row in runs:
-                if str(row.get("run_id") or "") != run_id:
-                    continue
-                status = str(row.get("run_status") or "").strip().lower()
-                if status in {"awaiting_eval", "pending_review"}:
-                    row["run_status"] = "completed"
-                    row["phase"] = "history"
-                    row["updated_utc"] = now
-                    row["eval_submitted_utc"] = now
-                    row.pop("eval_deadline_utc", None)
-                break
-            store.save_runs(runs)
+        if not is_append and deed_record:
+            def _close_eval(deeds: list[dict]) -> None:
+                for row in deeds:
+                    if str(row.get("deed_id") or "") != deed_id:
+                        continue
+                    status = str(row.get("deed_status") or "").strip().lower()
+                    if status in {"awaiting_eval", "pending_review"}:
+                        row["deed_status"] = "completed"
+                        row["phase"] = "history"
+                        row["updated_utc"] = now
+                        row["eval_submitted_utc"] = now
+                        row.pop("eval_deadline_utc", None)
+                    break
+
+            ledger.mutate_deeds(_close_eval)
 
         if rating is not None:
-            nerve.emit("user_feedback_received", {"run_id": run_id, "rating": rating, "score": score})
+            nerve.emit("user_feedback_received", {"deed_id": deed_id, "rating": rating, "score": score})
         nerve.emit(
-            "run_feedback_submitted" if not is_append else "run_feedback_appended",
+            "deed_feedback_submitted" if not is_append else "deed_feedback_appended",
             {
-                "run_id": run_id,
+                "deed_id": deed_id,
                 "source": source,
                 "type": "append" if is_append else fb_type,
                 "rating": rating,
@@ -1494,12 +1427,12 @@ p{
         if request is not None:
             _log_portal_event(
                 "feedback_submitted" if not is_append else "feedback_appended",
-                {"run_id": run_id, "rating": rating, "source": source},
+                {"deed_id": deed_id, "rating": rating, "source": source},
                 request,
             )
         return {
             "ok": True,
-            "run_id": run_id,
+            "deed_id": deed_id,
             "score": score,
             "status": str(survey.get("status") or ""),
             "type": "append" if is_append else fb_type,
@@ -1513,15 +1446,15 @@ p{
     feedback_ctx.submit_feedback_internal = _submit_feedback_internal
     register_feedback_routes(app, ctx=feedback_ctx)
 
-    # ── Startup sync (model policy -> Compass provider budgets) ───────────────
+    # ── Startup sync (model policy -> Instinct provider rations) ────────────
 
     if model_policy_path.exists():
         try:
             policy = json.loads(model_policy_path.read_text(encoding="utf-8"))
             if isinstance(policy, dict):
-                _sync_compass_provider_budgets_from_policy(policy, overwrite=False)
+                _sync_instinct_provider_rations_from_policy(policy, overwrite=False)
         except Exception as exc:
-            logger.warning("Failed to sync provider budgets from model policy on startup: %s", exc)
+            logger.warning("Failed to sync provider rations from model policy on startup: %s", exc)
 
     # ── Serve static interfaces ────────────────────────────────────────────────
 

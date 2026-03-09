@@ -1,164 +1,408 @@
-"""Spine relay/tend/librarian implementations."""
+"""Spine relay/tend/curate implementations (V2 aligned)."""
 from __future__ import annotations
 
 import json
+import logging
+import shutil
+import time
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+def _utc() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def run_relay(self) -> dict:
-    with self.tracer.span("spine.relay", trigger="cron") as ctx:
+    """Export Psyche snapshots to state/snapshots/ and retinue instance workspaces."""
+    with self.trail.span("spine.relay", trigger="nerve:deed_allocated") as ctx:
         snapshots_dir = self.state_dir / "snapshots"
         snapshots_dir.mkdir(parents=True, exist_ok=True)
 
         mem_snap = self.memory.snapshot()
-        pb_snap = self.playbook.snapshot()
-        cp_snap = self.compass.snapshot()
-        semantic_snap = self._build_semantic_snapshot()
-        strategy_snap = self._build_strategy_snapshot()
-        model_registry_snap = self._build_model_registry_snapshot()
+        lore_snap = self.lore.snapshot()
+        inst_snap = self.instinct.snapshot()
 
-        (snapshots_dir / "memory_snapshot.json").write_text(json.dumps(mem_snap, ensure_ascii=False, indent=2))
-        (snapshots_dir / "playbook_snapshot.json").write_text(json.dumps(pb_snap, ensure_ascii=False, indent=2))
-        (snapshots_dir / "compass_snapshot.json").write_text(json.dumps(cp_snap, ensure_ascii=False, indent=2))
-        (snapshots_dir / "semantic_snapshot.json").write_text(json.dumps(semantic_snap, ensure_ascii=False, indent=2))
-        (snapshots_dir / "strategy_snapshot.json").write_text(json.dumps(strategy_snap, ensure_ascii=False, indent=2))
-        (snapshots_dir / "model_registry_snapshot.json").write_text(json.dumps(model_registry_snap, ensure_ascii=False, indent=2))
-        ctx.step("snapshots_written", 6)
+        (snapshots_dir / "memory_snapshot.json").write_text(
+            json.dumps(mem_snap, ensure_ascii=False, indent=2))
+        (snapshots_dir / "lore_snapshot.json").write_text(
+            json.dumps(lore_snap, ensure_ascii=False, indent=2))
+        (snapshots_dir / "instinct_snapshot.json").write_text(
+            json.dumps(inst_snap, ensure_ascii=False, indent=2))
+        ctx.step("snapshots_written", 3)
 
-        policy_snapshot = self._build_model_policy_snapshot()
-        snap_path = snapshots_dir / "model_policy_snapshot.json"
-        snap_path.write_text(json.dumps(policy_snapshot, ensure_ascii=False, indent=2))
-        ctx.step("model_policy_snapshot_written", True)
+        model_policy = self._build_model_policy_snapshot()
+        model_registry = self._build_model_registry_snapshot()
+        (snapshots_dir / "model_policy_snapshot.json").write_text(
+            json.dumps(model_policy, ensure_ascii=False, indent=2))
+        (snapshots_dir / "model_registry_snapshot.json").write_text(
+            json.dumps(model_registry, ensure_ascii=False, indent=2))
+        ctx.step("model_snapshots_written", 2)
 
-        skill_index = self._build_skill_index()
-        index_written = False
-        if self.openclaw_home:
-            router_mem = self.openclaw_home / "workspace" / "router" / "memory"
-            router_mem.mkdir(parents=True, exist_ok=True)
-            (router_mem / "skill_index.json").write_text(json.dumps(skill_index, ensure_ascii=False, indent=2))
-            index_written = True
-        ctx.step("skill_index_written", index_written)
+        runtime_hints = _build_runtime_hints(mem_snap, lore_snap, inst_snap)
+        (snapshots_dir / "runtime_hints.json").write_text(
+            json.dumps(runtime_hints, ensure_ascii=False, indent=2))
+        ctx.step("runtime_hints_written", True)
 
-        if self.openclaw_home:
-            policy_json = json.dumps(policy_snapshot, ensure_ascii=False, indent=2)
-            registry_json = json.dumps(model_registry_snap, ensure_ascii=False, indent=2)
-            for agent in ["router", "collect", "analyze", "build", "review", "render", "apply"]:
-                agent_mem = self.openclaw_home / "workspace" / agent / "memory"
-                agent_mem.mkdir(parents=True, exist_ok=True)
-                (agent_mem / "compass_snapshot.json").write_text(json.dumps(cp_snap, ensure_ascii=False, indent=2))
-                (agent_mem / "model_policy_snapshot.json").write_text(policy_json)
-                (agent_mem / "model_registry_snapshot.json").write_text(registry_json)
-                if agent == "router":
-                    (agent_mem / "semantic_snapshot.json").write_text(json.dumps(semantic_snap, ensure_ascii=False, indent=2))
-                    (agent_mem / "strategy_snapshot.json").write_text(json.dumps(strategy_snap, ensure_ascii=False, indent=2))
-
-            router_mem = self.openclaw_home / "workspace" / "router" / "memory"
-            router_mem.mkdir(parents=True, exist_ok=True)
-            hints = self._build_runtime_hints(mem_snap, pb_snap, cp_snap)
-            (router_mem / "runtime_hints.txt").write_text(hints)
-            ctx.step("runtime_hints_written", True)
-
-            weave_dir = router_mem / "weave_patterns"
-            weave_dir.mkdir(parents=True, exist_ok=True)
-            weave_index = self._build_weave_index(weave_dir)
-            (weave_dir / "index.json").write_text(
-                json.dumps(weave_index, ensure_ascii=False, indent=2)
-            )
-            hints_json = self._build_runtime_hints_json(mem_snap, pb_snap, cp_snap, weave_index)
-            (router_mem / "runtime_hints.json").write_text(
-                json.dumps(hints_json, ensure_ascii=False, indent=2)
-            )
-            ctx.step("weave_index_written", weave_index.get("total_patterns", 0))
-
-        result = {"snapshots": 6, "skill_index": index_written, "model_policy_snapshot": True, "model_registry_snapshot": True}
+        result = {"snapshots": 5, "runtime_hints": True}
         ctx.set_result(result)
     return result
 
 
 def run_tend(self) -> dict:
-    with self.tracer.span("spine.tend", trigger="cron") as ctx:
-        mem_result = self.memory.expire()
-        ctx.step("memory_expire", mem_result)
-        source_policy = self.memory.apply_source_ttl_policy(actor="spine.tend")
-        ctx.step("memory_source_policy_expire", source_policy)
-
-        mem_stats = self.memory.stats()
-        total_units = int(mem_stats.get("total_active") or 0)
-        total_units_cap = int(self.compass.get_pref("total_units_cap", "10000") or 10000)
-        memory_pressure = total_units > total_units_cap
-        if memory_pressure:
-            self.nerve.emit(
-                "memory_pressure",
-                {"total_units": total_units, "total_units_cap": total_units_cap, "source": "spine.tend"},
-            )
-        ctx.step("memory_pressure", {"active": total_units, "cap": total_units_cap, "triggered": memory_pressure})
-
-        signals_removed = self.compass.expire_signals()
-        ctx.step("signals_expire", signals_removed)
-
-        self._maybe_reset_budgets()
-        ctx.step("budgets_checked")
-
-        gate = self._read_gate()
-        replayed = 0
-        if gate.get("status") == "GREEN":
-            replayed = self._replay_queued_runs()
-        ctx.step("replay", replayed)
+    """Housekeeping: clean traces, check rations, state/ git commit."""
+    with self.trail.span("spine.tend", trigger="daily") as ctx:
+        self._maybe_reset_rations()
+        ctx.step("rations_checked")
 
         cleaned = self._clean_old_traces(max_age_days=7)
         ctx.step("traces_cleaned", cleaned)
 
-        weave_count = self._check_weave_pressure()
-        if weave_count is not None:
-            ctx.step("weave_pressure_checked", weave_count)
+        _clean_old_events(self.state_dir, max_age_days=30)
+        ctx.step("events_cleaned")
+
+        herald_log_rotated = _rotate_herald_log(self.state_dir, max_entries=2000)
+        ctx.step("herald_log_rotated", herald_log_rotated)
+
+        notify_queue_cleaned = _clean_notify_queue(self.state_dir, max_age_days=3)
+        ctx.step("notify_queue_cleaned", notify_queue_cleaned)
+
+        _state_git_commit(self.state_dir)
+        ctx.step("state_git_committed")
+
+        backup_result = _backup_state(self.daemon_home)
+        ctx.step("state_backed_up", backup_result)
 
         result = {
-            "memory_archived": mem_result.get("archived", 0) + source_policy.get("archived", 0),
-            "memory_archived_ttl": mem_result.get("archived", 0),
-            "memory_archived_source_policy": source_policy.get("archived", 0),
-            "memory_pressure_triggered": memory_pressure,
-            "memory_total_active": total_units,
-            "memory_total_cap": total_units_cap,
-            "signals_removed": signals_removed,
-            "runs_replayed": replayed,
             "traces_cleaned": cleaned,
-            "weave_pattern_count": weave_count,
+            "rations_checked": True,
+            "herald_log_rotated": herald_log_rotated,
+            "notify_queue_cleaned": notify_queue_cleaned,
+            "state_committed": True,
+            "backup": backup_result,
         }
         ctx.set_result(result)
     return result
 
 
-def run_librarian(self) -> dict:
-    with self.tracer.span("spine.librarian", trigger="cron") as ctx:
-        judge_result = self.playbook.judge()
-        tiered = judge_result.get("tiered", {})
-        ctx.step("tiers_refreshed", tiered)
+def run_curate(self) -> dict:
+    """Vault deed_root to vault/, clean expired vaults (90 days)."""
+    with self.trail.span("spine.curate", trigger="every_6h") as ctx:
+        vaulted = _vault_completed_deeds(self)
+        ctx.step("deeds_vaulted", vaulted)
 
-        prune_result = self._prune_weave_patterns()
-        ctx.step("weave_pruned", prune_result)
+        expired = _expire_old_vaults(self)
+        ctx.step("vaults_expired", expired)
 
-        merge_result = self._librarian_merge_methods()
-        ctx.step("methods_merged", merge_result)
-
-        export_result = self._cold_export_memory()
-        ctx.step("memory_cold_export", export_result)
-        upload_result = self._upload_to_drive(export_result.get("files", []))
-        ctx.step("memory_archive_upload", upload_result)
-        cleanup_result = self._cleanup_local_jsonl()
-        ctx.step("memory_archive_cleanup", cleanup_result)
+        cleaned = _clean_old_deed_roots(self)
+        ctx.step("deed_roots_cleaned", cleaned)
 
         result = {
-            "hot": tiered.get("hot", 0),
-            "warm": tiered.get("warm", 0),
-            "cold": tiered.get("cold", 0),
-            "weave_patterns_archived": prune_result.get("archived", 0),
-            "weave_patterns_deleted": prune_result.get("deleted", 0),
-            "methods_merged": merge_result.get("merged", 0),
-            "memory_exported": export_result.get("exported", 0),
-            "memory_deleted": export_result.get("deleted", 0),
-            "archive_files": len(export_result.get("files", [])),
-            "archive_uploaded": upload_result.get("uploaded", 0),
-            "archive_upload_failed": upload_result.get("failed", 0),
-            "archive_local_cleaned": cleanup_result.get("deleted", 0),
+            "deeds_vaulted": vaulted,
+            "vaults_expired": expired,
+            "deed_roots_cleaned": cleaned,
         }
         ctx.set_result(result)
     return result
+
+
+def _build_runtime_hints(mem_snap: dict, lore_snap: dict, inst_snap: dict) -> dict:
+    recent_records = lore_snap.get("records", [])[:5]
+    prefs = inst_snap.get("preferences", {})
+    return {
+        "generated_utc": _utc(),
+        "preferences": prefs,
+        "recent_records": [
+            {
+                "objective": r.get("objective_text", "")[:100],
+                "complexity": r.get("complexity"),
+                "success": r.get("success"),
+            }
+            for r in recent_records
+        ],
+        "memory_summary": {
+            "total_entries": len(mem_snap.get("entries", [])),
+        },
+    }
+
+
+def _vault_completed_deeds(self) -> int:
+    """Move completed deed_roots to vault/."""
+    deeds_dir = self.state_dir / "deeds"
+    if not deeds_dir.exists():
+        return 0
+
+    drive_vault = Path.home() / "My Drive" / "daemon" / "vault"
+    vaulted = 0
+
+    for deed_dir in deeds_dir.iterdir():
+        if not deed_dir.is_dir():
+            continue
+        status_file = deed_dir / "status.json"
+        if not status_file.exists():
+            continue
+        try:
+            status = json.loads(status_file.read_text())
+        except Exception:
+            continue
+
+        deed_status = str(status.get("status") or "")
+        if deed_status not in {"completed", "failed", "cancelled"}:
+            continue
+
+        completed_utc = str(status.get("completed_utc") or status.get("updated_utc") or "")
+        if not completed_utc:
+            continue
+
+        age_days = (time.time() - _iso_to_ts(completed_utc)) / 86400 if _iso_to_ts(completed_utc) else 0
+        if age_days < 1:
+            continue
+
+        deed_id = deed_dir.name
+        month = completed_utc[:7]
+        dest = drive_vault / month / deed_id
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            manifest = {
+                "deed_id": deed_id,
+                "status": deed_status,
+                "completed_utc": completed_utc,
+                "vaulted_utc": _utc(),
+            }
+
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
+
+            moves_src = deed_dir / "moves"
+            if moves_src.exists():
+                shutil.copytree(moves_src, dest / "moves", dirs_exist_ok=True)
+
+            for f in ["plan.json", "status.json"]:
+                src = deed_dir / f
+                if src.exists():
+                    shutil.copy2(src, dest / f)
+
+            vaulted += 1
+        except Exception as exc:
+            logger.warning("Failed to vault deed %s: %s", deed_id, exc)
+
+    return vaulted
+
+
+def _expire_old_vaults(self) -> int:
+    """Delete vaults older than 90 days."""
+    drive_vault = Path.home() / "My Drive" / "daemon" / "vault"
+    if not drive_vault.exists():
+        return 0
+
+    cutoff = time.time() - 90 * 86400
+    expired = 0
+    for month_dir in drive_vault.iterdir():
+        if not month_dir.is_dir():
+            continue
+        for deed_dir in month_dir.iterdir():
+            if not deed_dir.is_dir():
+                continue
+            manifest_path = deed_dir / "manifest.json"
+            if not manifest_path.exists():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text())
+                vaulted_utc = manifest.get("vaulted_utc", "")
+                ts = _iso_to_ts(vaulted_utc)
+                if ts and ts < cutoff:
+                    shutil.rmtree(deed_dir)
+                    expired += 1
+            except Exception as exc:
+                logger.warning("Failed to expire vault %s: %s", deed_dir, exc)
+
+    return expired
+
+
+def _clean_old_deed_roots(self) -> int:
+    """Delete deed_roots that have been vaulted and are older than 7 days."""
+    deeds_dir = self.state_dir / "deeds"
+    if not deeds_dir.exists():
+        return 0
+
+    cutoff = time.time() - 7 * 86400
+    drive_vault = Path.home() / "My Drive" / "daemon" / "vault"
+    cleaned = 0
+
+    for deed_dir in deeds_dir.iterdir():
+        if not deed_dir.is_dir():
+            continue
+        status_file = deed_dir / "status.json"
+        if not status_file.exists():
+            continue
+        try:
+            status = json.loads(status_file.read_text())
+        except Exception:
+            continue
+
+        deed_status = str(status.get("status") or "")
+        if deed_status not in {"completed", "failed", "cancelled"}:
+            continue
+
+        if deed_dir.stat().st_mtime > cutoff:
+            continue
+
+        deed_id = deed_dir.name
+        in_vault = any(drive_vault.glob(f"*/{deed_id}")) if drive_vault.exists() else False
+        if not in_vault and deed_status == "completed":
+            continue
+
+        try:
+            shutil.rmtree(deed_dir)
+            cleaned += 1
+        except Exception as exc:
+            logger.warning("Failed to clean deed root %s: %s", deed_dir, exc)
+
+    return cleaned
+
+
+def _clean_old_events(state_dir: Path, max_age_days: int = 30) -> None:
+    events_path = state_dir / "events.jsonl"
+    if not events_path.exists():
+        return
+    try:
+        cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - max_age_days * 86400))
+        lines = events_path.read_text(encoding="utf-8").splitlines()
+        kept = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+                ts = str(row.get("timestamp") or "")
+                if ts >= cutoff:
+                    kept.append(line)
+            except json.JSONDecodeError:
+                continue
+        events_path.write_text("\n".join(kept) + "\n" if kept else "", encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to clean old events: %s", exc)
+
+
+def _rotate_herald_log(state_dir: Path, max_entries: int = 2000) -> int:
+    """Keep only the last max_entries in herald_log.jsonl."""
+    path = state_dir / "herald_log.jsonl"
+    if not path.exists():
+        return 0
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        non_empty = [ln for ln in lines if ln.strip()]
+        if len(non_empty) <= max_entries:
+            return 0
+        trimmed = len(non_empty) - max_entries
+        path.write_text("\n".join(non_empty[-max_entries:]) + "\n", encoding="utf-8")
+        return trimmed
+    except Exception as exc:
+        logger.warning("Herald log rotation failed: %s", exc)
+        return 0
+
+
+def _clean_notify_queue(state_dir: Path, max_age_days: int = 3) -> int:
+    """Remove notification queue entries older than max_age_days or with 3+ retries."""
+    path = state_dir / "notify_queue.jsonl"
+    if not path.exists():
+        return 0
+    try:
+        cutoff = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(time.time() - max_age_days * 86400),
+        )
+        lines = path.read_text(encoding="utf-8").splitlines()
+        remaining: list[str] = []
+        dropped = 0
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                queued = str(obj.get("queued_utc") or "")
+                retries = int(obj.get("retry_count") or 0)
+                if retries >= 3 or (queued and queued < cutoff):
+                    dropped += 1
+                    continue
+                remaining.append(line)
+            except (json.JSONDecodeError, ValueError):
+                dropped += 1
+        path.write_text("\n".join(remaining) + "\n" if remaining else "", encoding="utf-8")
+        return dropped
+    except Exception as exc:
+        logger.warning("Notify queue cleanup failed: %s", exc)
+        return 0
+
+
+def _backup_state(home: Path) -> dict:
+    """Snapshot critical state files to state/backups/. Keep last 7."""
+    state_dir = home / "state"
+    backup_root = state_dir / "backups"
+    backup_root.mkdir(parents=True, exist_ok=True)
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    dest = backup_root / timestamp
+    dest.mkdir(parents=True, exist_ok=True)
+
+    files_to_backup = [
+        "deeds.json", "ward.json", "cadence_history.json",
+        "herald_log.jsonl", "instinct.db",
+    ]
+    copied = 0
+    for fname in files_to_backup:
+        src = state_dir / fname
+        if src.exists():
+            try:
+                shutil.copy2(str(src), str(dest / fname))
+                copied += 1
+            except Exception as exc:
+                logger.warning("Backup failed for %s: %s", fname, exc)
+
+    # Prune old backups (keep last 7).
+    existing = sorted(
+        [d for d in backup_root.iterdir() if d.is_dir()],
+        key=lambda d: d.name,
+    )
+    pruned = 0
+    while len(existing) > 7:
+        old = existing.pop(0)
+        try:
+            shutil.rmtree(str(old))
+            pruned += 1
+        except Exception as exc:
+            logger.warning("Backup prune failed for %s: %s", old, exc)
+
+    return {"copied": copied, "pruned": pruned, "path": str(dest)}
+
+
+def _state_git_commit(state_dir: Path) -> None:
+    """Commit state/ changes to its internal git repo."""
+    import subprocess
+    git_dir = state_dir / ".git"
+    if not git_dir.exists():
+        return
+    try:
+        subprocess.run(
+            ["git", "add", "-A"],
+            cwd=state_dir, capture_output=True, timeout=10,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", f"tend: auto-commit {_utc()}", "--allow-empty"],
+            cwd=state_dir, capture_output=True, timeout=10,
+        )
+    except Exception as exc:
+        logger.warning("state/ git commit failed: %s", exc)
+
+
+def _iso_to_ts(v: str) -> float | None:
+    if not v:
+        return None
+    try:
+        import calendar
+        return float(calendar.timegm(time.strptime(v, "%Y-%m-%dT%H:%M:%SZ")))
+    except Exception:
+        return None

@@ -125,9 +125,9 @@ def register_console_agents_skill_routes(app: FastAPI, *, ctx: Any) -> None:
         if proposal_type == "python":
             target["status"] = "pending_human_review"
             target["apply_error"] = "python_change_requires_human_review"
-        elif not ctx.sandbox_gate_open():
+        elif not ctx.sandbox_ward_open():
             target["status"] = "sandbox_blocked"
-            target["apply_error"] = "sandbox_gate_closed"
+            target["apply_error"] = "sandbox_ward_closed"
         elif auto_apply or proposal_type in {"skill", "config"}:
             ok, err = ctx.apply_evolution_proposal(target)
             if ok:
@@ -158,9 +158,9 @@ def register_console_agents_skill_routes(app: FastAPI, *, ctx: Any) -> None:
             target["apply_error"] = "python_change_requires_human_review"
             ctx.write_json_list(ctx.skill_queue_path, proposals)
             return {"ok": False, "proposal_id": proposal_id, "status": target["status"], "apply_error": target["apply_error"]}
-        if not ctx.sandbox_gate_open():
+        if not ctx.sandbox_ward_open():
             target["status"] = "sandbox_blocked"
-            target["apply_error"] = "sandbox_gate_closed"
+            target["apply_error"] = "sandbox_ward_closed"
             ctx.write_json_list(ctx.skill_queue_path, proposals)
             return {"ok": False, "proposal_id": proposal_id, "status": target["status"], "apply_error": target["apply_error"]}
 

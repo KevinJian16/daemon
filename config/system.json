@@ -1,18 +1,18 @@
 {
   "version": 1,
-  "canonical_agents": ["router", "collect", "analyze", "build", "review", "render", "apply"],
+  "canonical_agents": ["counsel", "scout", "sage", "artificer", "arbiter", "scribe", "envoy"],
   "temporal": {
     "namespace": "default",
     "queue": "daemon-queue"
   },
   "agent_concurrency_defaults": {
-    "collect": 8,
-    "analyze": 4,
-    "review": 2,
-    "render": 2,
-    "apply": 1,
+    "scout": 8,
+    "sage": 4,
+    "arbiter": 2,
+    "scribe": 2,
+    "envoy": 1,
     "spine": 2,
-    "router": 1,
-    "build": 2
+    "counsel": 1,
+    "artificer": 2
   }
 }

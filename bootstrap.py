@@ -1,22 +1,17 @@
-"""Cold-start bootstrap: create Fabric DBs, seed initial data, validate OpenClaw environment."""
+"""Cold-start bootstrap: create Psyche DBs, seed initial data, validate OpenClaw environment, register Retinue."""
 from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
 
-from fabric.memory import MemoryFabric
-from fabric.playbook import PlaybookFabric, BOOTSTRAP_METHODS
-from fabric.compass import (
-    CompassFabric,
-    BOOTSTRAP_PRIORITIES,
-    BOOTSTRAP_QUALITY_PROFILES,
-    BOOTSTRAP_BUDGETS,
-    BOOTSTRAP_PREFERENCES,
-)
+from psyche.memory import MemoryPsyche
+from psyche.lore import LorePsyche
+from psyche.instinct import InstinctPsyche
+from runtime.retinue import Retinue, register_retinue_instances, DEFAULT_POOL_SIZE
 
 
-CANONICAL_AGENTS = ["router", "collect", "analyze", "build", "review", "render", "apply"]
+CANONICAL_AGENTS = ["counsel", "scout", "sage", "artificer", "arbiter", "scribe", "envoy"]
 _UNSET = object()
 
 
@@ -79,36 +74,36 @@ def normalize_openclaw_config(oc_home: Path) -> dict:
         report["updated"] = True
         report["changes"].append(f"agents.list.removed_main={removed_main}")
 
-    router: dict | None = None
+    counsel: dict | None = None
     for row in agent_list:
-        if isinstance(row, dict) and str(row.get("id") or "").strip() == "router":
-            router = row
+        if isinstance(row, dict) and str(row.get("id") or "").strip() == "counsel":
+            counsel = row
             break
-    if router is None:
-        report["warnings"].append("router agent not found; cannot set default router")
+    if counsel is None:
+        report["warnings"].append("counsel agent not found; cannot set default counsel")
     else:
         for row in agent_list:
             if not isinstance(row, dict):
                 continue
-            if row is not router and row.get("default") is True:
+            if row is not counsel and row.get("default") is True:
                 row.pop("default", None)
                 report["updated"] = True
                 report["changes"].append(f"agents.list.default_removed:{row.get('id')}")
-        if router.get("default") is not True:
-            router["default"] = True
+        if counsel.get("default") is not True:
+            counsel["default"] = True
             report["updated"] = True
-            report["changes"].append("agents.list.default=router")
-        # Ensure router can spawn canonical daemon agents when using sessions_spawn.
-        subagents = router.get("subagents")
+            report["changes"].append("agents.list.default=counsel")
+        # Ensure counsel can spawn canonical daemon agents when using sessions_spawn.
+        subagents = counsel.get("subagents")
         if not isinstance(subagents, dict):
             subagents = {}
-            router["subagents"] = subagents
+            counsel["subagents"] = subagents
         allow_agents = subagents.get("allowAgents")
         desired_allow = [a for a in CANONICAL_AGENTS if a]
         if not isinstance(allow_agents, list) or sorted(str(x) for x in allow_agents) != sorted(desired_allow):
             subagents["allowAgents"] = desired_allow
             report["updated"] = True
-            report["changes"].append("router.subagents.allowAgents=canonical")
+            report["changes"].append("counsel.subagents.allowAgents=canonical")
 
     desired_default_workspace = (oc_home / "workspace" / "_default").resolve()
     current_workspace = str(defaults.get("workspace") or "").strip()
@@ -154,7 +149,7 @@ def bootstrap(daemon_home: Path | None = None, openclaw_home: Path | None | obje
     report: dict = {
         "daemon_home": str(home),
         "openclaw_home": str(oc_home) if oc_home else None,
-        "fabric": {},
+        "psyche": {},
         "openclaw_validation": {},
         "warnings": [],
     }
@@ -162,65 +157,48 @@ def bootstrap(daemon_home: Path | None = None, openclaw_home: Path | None | obje
     db_dir = home / "state"
     db_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Memory Fabric ─────────────────────────────────────────────────────────
+    # ── Memory Psyche ─────────────────────────────────────────────────────────
     mem_db = db_dir / "memory.db"
     mem_is_new = not mem_db.exists() or force
-    memory = MemoryFabric(mem_db)
-    report["fabric"]["memory"] = {"new": mem_is_new, "path": str(mem_db)}
+    memory = MemoryPsyche(mem_db)
+    report["psyche"]["memory"] = {"new": mem_is_new, "path": str(mem_db)}
 
-    # ── Playbook Fabric ───────────────────────────────────────────────────────
-    pb_db = db_dir / "playbook.db"
-    pb_is_new = not pb_db.exists() or force
-    playbook = PlaybookFabric(pb_db)
-    if pb_is_new:
-        for method in BOOTSTRAP_METHODS:
-            playbook.register(
-                name=method["name"],
-                category=method["category"],
-                spec=method["spec"],
-                description=method["description"],
-                status="active",
-            )
-    report["fabric"]["playbook"] = {"new": pb_is_new, "methods_seeded": len(BOOTSTRAP_METHODS) if pb_is_new else 0}
+    # ── Lore Psyche ───────────────────────────────────────────────────────
+    lore_db = db_dir / "lore.db"
+    lore_is_new = not lore_db.exists() or force
+    lore = LorePsyche(lore_db)
+    report["psyche"]["lore"] = {"new": lore_is_new, "path": str(lore_db)}
 
-    # ── Compass Fabric ────────────────────────────────────────────────────────
-    cp_db = db_dir / "compass.db"
-    cp_is_new = not cp_db.exists() or force
-    compass = CompassFabric(cp_db)
-    if cp_is_new:
-        for p in BOOTSTRAP_PRIORITIES:
-            compass.set_priority(p["domain"], p["weight"], p.get("reason", ""), source="bootstrap")
-        for q in BOOTSTRAP_QUALITY_PROFILES:
-            compass.set_quality_profile(q["run_type"], q["rules"], changed_by="bootstrap")
-        for b in BOOTSTRAP_BUDGETS:
-            compass.set_budget(b["resource_type"], float(b["daily_limit"]), changed_by="bootstrap")
-        for pref in BOOTSTRAP_PREFERENCES:
-            compass.set_pref(pref["pref_key"], pref["value"], source="bootstrap")
-    report["fabric"]["compass"] = {
-        "new": cp_is_new,
-        "priorities_seeded": len(BOOTSTRAP_PRIORITIES) if cp_is_new else 0,
-    }
+    # ── Instinct Psyche (self-seeds preferences + rations on init) ────────────
+    instinct_db = db_dir / "instinct.db"
+    instinct_is_new = not instinct_db.exists() or force
+    instinct = InstinctPsyche(instinct_db)
+    report["psyche"]["instinct"] = {"new": instinct_is_new, "path": str(instinct_db)}
 
-    # ── Ensure gate.json exists ───────────────────────────────────────────────
+    # ── Ensure ward.json exists ───────────────────────────────────────────────
+    ward_path = home / "state" / "ward.json"
+    if not ward_path.exists():
+        ward_path.write_text(json.dumps({"status": "GREEN", "updated_utc": "bootstrap"}, indent=2))
+    # Migrate old gate.json if it exists
     gate_path = home / "state" / "gate.json"
-    if not gate_path.exists():
-        gate_path.write_text(json.dumps({"status": "GREEN", "updated_utc": "bootstrap"}, indent=2))
+    if gate_path.exists() and not ward_path.exists():
+        gate_path.rename(ward_path)
 
-    # ── Ensure outcome/index.json exists ─────────────────────────────────────
-    outcome_index = home / "outcome" / "index.json"
-    outcome_index.parent.mkdir(parents=True, exist_ok=True)
-    if not outcome_index.exists():
-        outcome_index.write_text("[]")
+    # ── Ensure state/herald_log.jsonl exists ───────────────────────────
+    herald_log = home / "state" / "herald_log.jsonl"
+    herald_log.parent.mkdir(parents=True, exist_ok=True)
+    if not herald_log.exists():
+        herald_log.write_text("")
 
-    # ── ~/Outcome symlink ─────────────────────────────────────────────────────
-    symlink = Path.home() / "Outcome"
-    outcome_dir = home / "outcome"
+    # ── ~/Offerings symlink ────────────────────────────────────────────────────
+    symlink = Path.home() / "Offerings"
+    offering_dir = home / "offerings"
     if not symlink.exists() and not symlink.is_symlink():
         try:
-            symlink.symlink_to(outcome_dir)
+            symlink.symlink_to(offering_dir)
             report["symlink"] = str(symlink)
         except Exception as e:
-            report["warnings"].append(f"Could not create ~/Outcome symlink: {e}")
+            report["warnings"].append(f"Could not create ~/Offerings symlink: {e}")
 
     # ── OpenClaw environment validation ──────────────────────────────────────
     if oc_home:
@@ -232,11 +210,113 @@ def bootstrap(daemon_home: Path | None = None, openclaw_home: Path | None | obje
         report["openclaw_validation"] = val
         if val.get("warnings"):
             report["warnings"].extend(val["warnings"])
+
+        # ── Retinue registration ──────────────────────────────────────
+        retinue_status_file = home / "state" / "retinue_status.json"
+        if not retinue_status_file.exists() or force:
+            retinue_size = int(instinct.get_pref("retinue_size_n", str(DEFAULT_POOL_SIZE)))
+            retinue_report = register_retinue_instances(oc_home, home, pool_size=retinue_size)
+            report["retinue"] = retinue_report
+            if not retinue_report.get("ok"):
+                report["warnings"].append(f"Retinue registration issue: {retinue_report.get('error', 'unknown')}")
+        else:
+            report["retinue"] = {"skipped": True, "reason": "retinue_status.json already exists"}
     else:
         report["openclaw_validation"] = {"skipped": True, "reason": "OPENCLAW_HOME not set"}
         report["warnings"].append("OPENCLAW_HOME not set — OpenClaw validation skipped")
 
+    # ── Ensure templates/ directory structure ─────────────────────────────
+    for role in CANONICAL_AGENTS:
+        if role == "counsel":
+            continue
+        tmpl_dir = home / "templates" / role
+        tmpl_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Ensure system_status.json ─────────────────────────────────────────
+    sys_status_path = home / "state" / "system_status.json"
+    if not sys_status_path.exists():
+        sys_status_path.write_text(json.dumps({
+            "status": "running",
+            "updated_utc": _utc(),
+        }, indent=2))
+
+    # ── Alerts directory + TROUBLESHOOTING.md (§4.5) ───────────────────
+    alerts_dir = home / "alerts"
+    alerts_dir.mkdir(parents=True, exist_ok=True)
+    troubleshoot = alerts_dir / "TROUBLESHOOTING.md"
+    if not troubleshoot.exists():
+        troubleshoot.write_text(_TROUBLESHOOTING_MD, encoding="utf-8")
+
+    # ── Install watchdog cron job (§4.5) ───────────────────────────────
+    watchdog_script = home / "scripts" / "watchdog.sh"
+    if watchdog_script.exists():
+        cron_result = _install_watchdog_cron(home, watchdog_script)
+        report["watchdog_cron"] = cron_result
+
     return report
+
+
+def _utc() -> str:
+    import time
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _install_watchdog_cron(home: Path, script: Path) -> dict:
+    """Install watchdog cron job (every 5 minutes). Idempotent."""
+    import subprocess
+    marker = "# daemon-watchdog"
+    cron_line = f"*/5 * * * * DAEMON_HOME={home} {script} {marker}"
+    try:
+        existing = subprocess.run(
+            ["crontab", "-l"], capture_output=True, text=True
+        ).stdout
+    except Exception:
+        existing = ""
+    if marker in existing:
+        return {"installed": False, "reason": "already_installed"}
+    new_crontab = existing.rstrip("\n") + "\n" + cron_line + "\n"
+    try:
+        subprocess.run(
+            ["crontab", "-"], input=new_crontab, text=True, check=True,
+            capture_output=True,
+        )
+        return {"installed": True}
+    except Exception as exc:
+        return {"installed": False, "error": str(exc)}
+
+
+_TROUBLESHOOTING_MD = """\
+# Daemon Troubleshooting Guide
+
+## Watchdog Alerts
+
+### API process not running
+- Check: `pgrep -f "uvicorn.*services.api"`
+- Fix: `cd $DAEMON_HOME && python -m uvicorn services.api:create_app --factory --host 0.0.0.0 --port 8000`
+
+### Temporal worker not running
+- Check: `pgrep -f "python.*temporal.*worker"`
+- Fix: `cd $DAEMON_HOME && python temporal/worker.py`
+
+### API not responding
+- Check logs: `tail -50 $DAEMON_HOME/state/api.log`
+- Common cause: port conflict, missing .env vars
+
+### Pulse routine stale
+- Check cadence: `curl -s http://127.0.0.1:8000/console/schedules | python3 -m json.tool`
+- Check spine status: `cat $DAEMON_HOME/state/spine_status.json`
+
+## Manual Recovery
+1. Stop all: `pkill -f "uvicorn.*services.api"; pkill -f "python.*temporal.*worker"`
+2. Re-bootstrap: `cd $DAEMON_HOME && python bootstrap.py --force`
+3. Restart: start API + Worker processes
+
+## Log Locations
+- API: stdout / systemd journal
+- Worker: stdout / systemd journal
+- Watchdog: `$DAEMON_HOME/alerts/watchdog.log`
+- Spine: `$DAEMON_HOME/state/spine_log.jsonl`
+"""
 
 
 def _validate_openclaw(oc_home: Path) -> dict:

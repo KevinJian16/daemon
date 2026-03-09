@@ -1,4 +1,4 @@
-"""Console traces, usage, schedules routes."""
+"""Console trails, usage, schedules routes."""
 from __future__ import annotations
 
 from typing import Any
@@ -7,23 +7,23 @@ from fastapi import FastAPI, HTTPException, Request
 
 
 def register_console_observe_routes(app: FastAPI, *, ctx: Any) -> None:
-    # ── Console — Traces ──────────────────────────────────────────────────────
+    # ── Console — Trails ──────────────────────────────────────────────────────
 
-    @app.get("/console/traces")
-    def list_traces(
+    @app.get("/console/trails")
+    def list_trails(
         routine: str | None = None,
         status: str | None = None,
         degraded: bool | None = None,
         since: str | None = None,
         limit: int = 50,
     ):
-        return ctx.tracer.query(routine=routine, status=status, degraded=degraded, since=since, limit=limit)
+        return ctx.trail.query(routine=routine, status=status, degraded=degraded, since=since, limit=limit)
 
-    @app.get("/console/traces/{trace_id}")
-    def get_trace(trace_id: str):
-        trace = ctx.tracer.get(trace_id)
-        if trace:
-            rows = ctx.cortex.usage_for_trace(trace_id, limit=200)
+    @app.get("/console/trails/{trail_id}")
+    def get_trail(trail_id: str):
+        trail_record = ctx.trail.get(trail_id)
+        if trail_record:
+            rows = ctx.cortex.usage_for_trail(trail_id, limit=200)
             by_provider: dict[str, dict] = {}
             errors: list[dict] = []
             for r in rows:
@@ -49,7 +49,7 @@ def register_console_observe_routes(app: FastAPI, *, ctx: Any) -> None:
             for agg in by_provider.values():
                 if agg["calls"] > 0:
                     agg["avg_elapsed_s"] = round(agg["avg_elapsed_s"] / agg["calls"], 3)
-            trace_out = dict(trace)
+            trace_out = dict(trail_record)
             trace_out["cortex_summary"] = {
                 "total_calls": len(rows),
                 "total_in_tokens": sum(int(r.get("in_tokens") or 0) for r in rows),
@@ -74,18 +74,18 @@ def register_console_observe_routes(app: FastAPI, *, ctx: Any) -> None:
 
     @app.get("/console/schedules")
     def list_schedules():
-        return ctx.scheduler.status()
+        return ctx.cadence.status()
 
     @app.get("/console/schedules/history")
     def list_schedule_history(routine: str | None = None, limit: int = 100):
-        return ctx.scheduler.history(routine=routine, limit=limit)
+        return ctx.cadence.history(routine=routine, limit=limit)
 
     @app.put("/console/schedules/{job_id}")
     async def update_schedule(job_id: str, request: Request):
         body = await request.json()
         schedule = body.get("schedule") if "schedule" in body else None
         enabled = body.get("enabled") if "enabled" in body else None
-        result = ctx.scheduler.update_schedule(job_id, schedule=schedule, enabled=enabled)
+        result = ctx.cadence.update_schedule(job_id, schedule=schedule, enabled=enabled)
         if not result.get("ok"):
             raise HTTPException(status_code=400, detail=result)
         return result
@@ -93,7 +93,7 @@ def register_console_observe_routes(app: FastAPI, *, ctx: Any) -> None:
     @app.post("/console/schedules/{routine}/trigger")
     async def trigger_schedule(routine: str):
         full_name = routine if routine.startswith("spine.") else f"spine.{routine}"
-        result = await ctx.scheduler.trigger(full_name)
+        result = await ctx.cadence.trigger(full_name)
         if not result.get("ok"):
             raise HTTPException(status_code=400, detail=result.get("error"))
         return result

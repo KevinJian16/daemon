@@ -6,7 +6,7 @@ time, so utility commands like state reset can run with minimal environment.
 
 from __future__ import annotations
 
-__all__ = ["Cortex", "OpenClawAdapter", "EventBridge", "TemporalClient"]
+__all__ = ["Cortex", "OpenClawAdapter", "Ether", "TemporalClient"]
 
 
 def __getattr__(name: str):
@@ -18,10 +18,10 @@ def __getattr__(name: str):
         from .openclaw import OpenClawAdapter
 
         return OpenClawAdapter
-    if name == "EventBridge":
-        from .event_bridge import EventBridge
+    if name == "Ether":
+        from .ether import Ether
 
-        return EventBridge
+        return Ether
     if name == "TemporalClient":
         from .temporal import TemporalClient
 

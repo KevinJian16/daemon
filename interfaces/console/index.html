@@ -9,9 +9,9 @@
 <body>
 <header>
   <h1 id="h-title">Daemon Console</h1>
-  <span id="gate-badge" class="GREEN" title="Gate = 系统接单状态。GREEN：正常接单；YELLOW：降级运行；RED：暂停接单">GREEN</span>
-  <span id="gate-label" style="color:var(--muted);font-size:11px" title="Gate = 系统接单状态">接单中</span>
-  <span id="running-runs" style="color:var(--muted);font-size:11px;margin-left:auto"></span>
+  <span id="ward-badge" class="GREEN" title="Ward = 系统接单状态。GREEN：正常接单；YELLOW：降级运行；RED：暂停接单">GREEN</span>
+  <span id="ward-label" style="color:var(--muted);font-size:11px" title="Ward = 系统接单状态">接单中</span>
+  <span id="running-deeds" style="color:var(--muted);font-size:11px;margin-left:auto"></span>
   <button onclick="toggleConsoleLang()" id="c-lang-btn" style="color:var(--muted);font-size:12px;padding:4px 8px;border-radius:6px;transition:background .12s">EN</button>
   <a href="/portal/" data-zh="Portal" data-en="Portal" style="color:var(--muted);font-size:12px;padding:4px 8px;border-radius:6px;text-decoration:none;transition:background .12s" onmouseover="this.style.background='var(--hover)'" onmouseout="this.style.background=''">Portal</a>
   <button onclick="refreshAll()" data-zh="↻ 刷新" data-en="↻ Refresh" style="color:var(--muted);font-size:12px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);transition:background .12s" onmouseover="this.style.background='var(--hover)'" onmouseout="this.style.background=''">↻ 刷新</button>
@@ -21,15 +21,15 @@
   <button class="active" onclick="show('overview', this)" data-zh="概览" data-en="Overview">概览</button>
   <button onclick="show('lexicon', this)" data-zh="术语词典" data-en="Lexicon">术语词典</button>
   <button onclick="show('spine', this)" data-zh="Spine" data-en="Spine">Spine</button>
-  <button onclick="show('fabric', this)" data-zh="Fabric" data-en="Fabric">Fabric</button>
+  <button onclick="show('psyche', this)" data-zh="Psyche" data-en="Psyche">Psyche</button>
   <button onclick="show('norm', this)" data-zh="Norm 基准" data-en="Norm">Norm</button>
-  <button onclick="show('traces', this)" data-zh="追踪" data-en="Traces">追踪</button>
-  <button onclick="show('strategies', this)" data-zh="Strategy 发布" data-en="Strategy">Strategy</button>
+  <button onclick="show('trails', this)" data-zh="痕迹" data-en="Trails">痕迹</button>
+
   <button onclick="show('model', this)" data-zh="模型与用量" data-en="Model & Usage">模型与用量</button>
   <button onclick="show('agents', this)" data-zh="Agents" data-en="Agents">Agents</button>
   <button onclick="show('skill-evolution', this)" data-zh="Skills 进化" data-en="Skill Evolution">Skills 进化</button>
-  <button onclick="show('schedules', this)" data-zh="调度" data-en="Schedules">调度</button>
-  <button onclick="show('campaigns', this)" data-zh="Campaign" data-en="Campaign">Campaign</button>
+  <button onclick="show('schedules', this)" data-zh="节律" data-en="Cadence">节律</button>
+  <button onclick="show('endeavors', this)" data-zh="Endeavor" data-en="Endeavor">Endeavor</button>
   <button onclick="show('system', this)" data-zh="系统" data-en="System">系统</button>
 </nav>
 
@@ -41,7 +41,7 @@
     <div class="stat"><div class="val" id="stat-memory">—</div><div class="lbl">Memory Units</div></div>
     <div class="stat"><div class="val" id="stat-methods">—</div><div class="lbl">Active Recipes</div></div>
     <div class="stat"><div class="val" id="stat-signals">—</div><div class="lbl">Attention Signals</div></div>
-    <div class="stat"><div class="val" id="stat-runs">—</div><div class="lbl">Running Runs</div></div>
+    <div class="stat"><div class="val" id="stat-deeds">—</div><div class="lbl">Running Deeds</div></div>
   </div>
   <div class="card">
     <h3>Cortex Usage Today</h3>
@@ -91,14 +91,14 @@
   </div>
 </div>
 
-<!-- FABRIC -->
-<div id="panel-fabric" class="panel">
+<!-- PSYCHE -->
+<div id="panel-psyche" class="panel">
   <div style="display:flex;gap:8px;margin-bottom:12px;">
-    <button class="action" onclick="showFabric('memory')" data-zh="Memory" data-en="Memory">Memory</button>
-    <button class="action" onclick="showFabric('playbook')" data-zh="Playbook" data-en="Playbook">Playbook</button>
-    <button class="action" onclick="showFabric('compass')" data-zh="Compass" data-en="Compass">Compass</button>
+    <button class="action" onclick="showPsyche('memory')" data-zh="Memory" data-en="Memory">Memory</button>
+    <button class="action" onclick="showPsyche('lore')" data-zh="Lore" data-en="Lore">Lore</button>
+    <button class="action" onclick="showPsyche('instinct')" data-zh="Instinct" data-en="Instinct">Instinct</button>
   </div>
-  <div id="fabric-content"></div>
+  <div id="psyche-content"></div>
 </div>
 
 <!-- NORM -->
@@ -116,7 +116,7 @@
       <select id="norm-scope" onchange="onNormScopeChange(true, false)" style="width:160px">
         <option value="quality">quality</option>
         <option value="preference">preference</option>
-        <option value="budget">budget</option>
+        <option value="ration">ration</option>
       </select>
       <select id="norm-key-select" onchange="onNormKeyPresetChange()" style="width:240px">
         <option value="default">default</option>
@@ -163,7 +163,7 @@
       </div>
     </div>
     <div class="norm-catalog-block">
-      <h3 id="norm-heading-budgets">Norm 预算</h3>
+      <h3 id="norm-heading-rations">Norm 配额</h3>
       <div class="table-shell">
         <table>
           <colgroup>
@@ -172,8 +172,8 @@
             <col style="width:25%">
             <col style="width:25%">
           </colgroup>
-          <thead><tr><th>Budget Type</th><th>Daily Limit</th><th>Current Usage</th><th class="col-action-head">Action</th></tr></thead>
-          <tbody id="norm-budget-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
+          <thead><tr><th>Ration Type</th><th>Daily Limit</th><th>Current Usage</th><th class="col-action-head">Action</th></tr></thead>
+          <tbody id="norm-ration-tbody"><tr><td colspan="4" style="color:var(--muted)">Loading…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -203,10 +203,10 @@
   </div>
 </div>
 
-<!-- TRACES -->
-<div id="panel-traces" class="panel">
+<!-- TRAILS -->
+<div id="panel-trails" class="panel">
   <div class="search-row">
-    <select id="trace-routine">
+    <select id="trail-routine">
       <option value="">All routines</option>
       <option>spine.pulse</option><option>spine.intake</option>
       <option>spine.record</option><option>spine.witness</option>
@@ -214,102 +214,29 @@
       <option>spine.judge</option><option>spine.focus</option>
       <option>spine.relay</option><option>spine.tend</option>
     </select>
-    <select id="trace-status"><option value="">Any status</option><option>ok</option><option>error</option></select>
-    <select id="trace-date-preset" onchange="applyDatePreset('trace')">
+    <select id="trail-status"><option value="">Any status</option><option>ok</option><option>error</option></select>
+    <select id="trail-date-preset" onchange="applyDatePreset('trail')">
       <option value="last_1h">Last 1h</option>
       <option value="last_6h">Last 6h</option>
       <option value="last_24h" selected>Last 24h</option>
       <option value="last_7d">Last 7d</option>
     </select>
-    <input id="trace-q" placeholder="trace_id / routine" style="width:190px">
-    <select id="trace-page-size" onchange="setPageSizeAndReload('traces', this.value, loadTraces)">
+    <input id="trail-q" placeholder="trail_id / routine" style="width:190px">
+    <select id="trail-page-size" onchange="setPageSizeAndReload('trails', this.value, loadTrails)">
       <option value="20">20 / page</option>
       <option value="50" selected>50 / page</option>
       <option value="100">100 / page</option>
     </select>
-    <button class="action" onclick="loadTraces()" data-zh="搜索" data-en="Search">搜索</button>
+    <button class="action" onclick="loadTrails()" data-zh="搜索" data-en="Search">搜索</button>
   </div>
   <table>
-    <thead><tr><th>Trace ID</th><th>Routine</th><th>Status</th><th>Degraded</th><th>Started</th><th>Elapsed</th></tr></thead>
-    <tbody id="traces-tbody"></tbody>
+    <thead><tr><th>Trail ID</th><th>Routine</th><th>Status</th><th>Degraded</th><th>Started</th><th>Elapsed</th></tr></thead>
+    <tbody id="trails-tbody"></tbody>
   </table>
-  <div class="list-foot"><div id="traces-pager" class="pager"></div></div>
+  <div class="list-foot"><div id="trails-pager" class="pager"></div></div>
   <div class="card" style="margin-top:12px">
-    <h3>Trace Detail</h3>
-    <pre id="trace-detail">请选择一条 Trace 记录查看详情。</pre>
-  </div>
-</div>
-
-<!-- STRATEGY CONTROL -->
-<div id="panel-strategies" class="panel">
-  <div class="card">
-    <div class="search-row">
-      <input id="strategy-cluster-filter" placeholder="cluster_id (optional)" style="width:260px">
-      <select id="strategy-stage-filter">
-        <option value="">All stages</option>
-        <option value="champion">champion</option>
-        <option value="challenger">challenger</option>
-        <option value="shadow">shadow</option>
-        <option value="candidate">candidate</option>
-        <option value="retired">retired</option>
-      </select>
-      <input id="strategy-q" placeholder="strategy / cluster / strategy_stage" style="width:220px">
-      <select id="strategy-page-size" onchange="setPageSizeAndReload('strategies', this.value, loadStrategies)">
-        <option value="20" selected>20 / page</option>
-        <option value="50">50 / page</option>
-        <option value="100">100 / page</option>
-      </select>
-      <button class="action" onclick="loadStrategies()" data-zh="刷新" data-en="Refresh">刷新</button>
-    </div>
-    <table>
-      <thead><tr><th>Strategy ID</th><th>Cluster</th><th>Stage</th><th>Risk</th><th>Global</th><th>Samples</th><th>Updated</th><th>Action</th></tr></thead>
-      <tbody id="strategies-tbody"><tr><td colspan="8" style="color:var(--muted)">Loading…</td></tr></tbody>
-    </table>
-    <div class="list-foot"><div id="strategies-pager" class="pager"></div></div>
-  </div>
-  <div class="card">
-    <h3 id="strategy-heading-shadow-report">Shadow 对比报告</h3>
-    <div class="search-row">
-      <input id="shadow-q" placeholder="run / cluster / strategy" style="width:220px">
-      <select id="shadow-page-size" onchange="setPageSizeAndReload('shadow', this.value, loadStrategies)">
-        <option value="20" selected>20 / page</option>
-        <option value="50">50 / page</option>
-        <option value="100">100 / page</option>
-      </select>
-    </div>
-    <table>
-      <thead><tr><th>Run</th><th>Shadow Of</th><th>Cluster</th><th>Shadow</th><th>Champion</th><th>Delta</th><th>UTC</th></tr></thead>
-      <tbody id="shadow-report-tbody"><tr><td colspan="7" style="color:var(--muted)">Loading…</td></tr></tbody>
-    </table>
-    <div class="list-foot"><div id="shadow-pager" class="pager"></div></div>
-  </div>
-  <div class="card">
-    <h3 id="strategy-heading-detail">Strategy 详情</h3>
-    <pre id="strategy-detail">请选择一条 Strategy 记录查看实验与晋升信息。</pre>
-  </div>
-  <div class="card">
-    <h3>Semantic Registry</h3>
-    <pre id="semantics-detail">加载中…</pre>
-  </div>
-  <div class="card">
-    <h3>Semantic Editors</h3>
-    <div class="search-row">
-      <button class="action" onclick="loadSemantics()" data-zh="刷新" data-en="Refresh">刷新</button>
-      <button class="action" style="background:#14532d" onclick="openSemanticCatalogEditor()" data-zh="编辑目录" data-en="Edit Catalog">编辑目录</button>
-      <button class="action" style="background:#14532d" onclick="openSemanticRulesEditor()" data-zh="编辑规则" data-en="Edit Rules">编辑规则</button>
-    </div>
-  </div>
-  <div class="card">
-    <h3>Semantic 配置版本</h3>
-    <div class="search-row">
-      <select id="semantic-version-select"><option value="">Select version</option></select>
-      <button class="action" style="background:#334155" onclick="viewSelectedSemanticVersion()" data-zh="查看版本" data-en="View Version">查看版本</button>
-      <button class="action" style="background:#7f1d1d" onclick="rollbackSelectedSemanticVersion()" data-zh="回滚版本" data-en="Rollback Version">回滚版本</button>
-    </div>
-    <table>
-      <thead><tr><th>Target</th><th>Version</th><th>Changed UTC</th><th>By</th><th>Reason</th><th>Action</th></tr></thead>
-      <tbody id="semantic-versions-tbody"><tr><td colspan="6" style="color:var(--muted)">Loading…</td></tr></tbody>
-    </table>
+    <h3>Trail Detail</h3>
+    <pre id="trail-detail">请选择一条 Trail 记录查看详情。</pre>
   </div>
 </div>
 
@@ -319,11 +246,11 @@
     <div class="search-row model-actions">
       <button class="action" onclick="loadModelControl()" data-zh="刷新" data-en="Refresh">刷新</button>
       <button class="action" style="background:#14532d" onclick="openModelPolicyEditor()" data-zh="编辑 Model Policy" data-en="Edit Policy">Edit Policy</button>
-      <button class="action" style="background:#14532d" onclick="openModelRegistryEditor()" data-zh="编辑注册表" data-en="Edit Registry">编辑注册表</button>
+      <button class="action" style="background:#14532d" onclick="openModelRegistryEditor()" data-zh="编辑 Canon" data-en="Edit Canon">编辑 Canon</button>
     </div>
     <div id="model-config-status" class="mini-stats">
       <div class="mini-stat"><div class="k">Model Policy Keys</div><div class="v" id="model-policy-count">—</div></div>
-      <div class="mini-stat"><div class="k">Registry Models</div><div class="v" id="model-registry-count">—</div></div>
+      <div class="mini-stat"><div class="k">Canon Models</div><div class="v" id="model-registry-count">—</div></div>
       <div class="mini-stat"><div class="k">Default Provider</div><div class="v" id="model-default-provider">—</div></div>
       <div class="mini-stat"><div class="k">Default Model</div><div class="v" id="model-default-model">—</div></div>
     </div>
@@ -337,7 +264,7 @@
         <option value="last_24h" selected>Last 24h</option>
         <option value="last_7d">Last 7d</option>
       </select>
-      <input id="cortex-q" placeholder="provider / model / trace" style="width:200px">
+      <input id="cortex-q" placeholder="provider / model / trail" style="width:200px">
       <select id="cortex-page-size" onchange="setPageSizeAndReload('cortex', this.value, loadCortexUsage)">
         <option value="20" selected>20 / page</option>
         <option value="50">50 / page</option>
@@ -346,7 +273,7 @@
       <button class="action" onclick="loadCortexUsage()" data-zh="搜索" data-en="Search">搜索</button>
     </div>
     <table>
-      <thead><tr><th>Time</th><th>Trace</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Elapsed</th><th>Status</th></tr></thead>
+      <thead><tr><th>Time</th><th>Trail</th><th>Provider</th><th>Model</th><th>In</th><th>Out</th><th>Elapsed</th><th>Status</th></tr></thead>
       <tbody id="cortex-usage-tbody"><tr><td colspan="8" style="color:var(--muted)">尚未加载记录</td></tr></tbody>
     </table>
     <div class="list-foot"><div id="cortex-pager" class="pager"></div></div>
@@ -448,7 +375,7 @@
 <!-- SCHEDULE MANAGER -->
 <div id="panel-schedules" class="panel">
   <div class="card">
-    <h3>Spine Schedules</h3>
+    <h3>Spine Cadence</h3>
     <div class="search-row">
       <input id="schedules-q" placeholder="routine / mode / schedule" style="width:220px">
       <select id="schedules-page-size" onchange="setPageSizeAndReload('schedules', this.value, loadSchedules)">
@@ -458,14 +385,14 @@
       <button class="action" onclick="loadSchedules()" data-zh="刷新" data-en="Refresh">刷新</button>
     </div>
     <table>
-      <thead><tr><th>Routine</th><th>Mode</th><th>Schedule</th><th>Last Run</th><th>Next Run</th><th>Action</th></tr></thead>
+      <thead><tr><th>Routine</th><th>Mode</th><th>Cadence</th><th>Last Run</th><th>Next Run</th><th>Action</th></tr></thead>
       <tbody id="schedules-tbody"></tbody>
     </table>
     <div class="list-foot"><div id="schedules-pager" class="pager"></div></div>
   </div>
   <div class="card">
     <div class="search-row">
-      <h3 style="margin:0">Schedule History</h3>
+      <h3 style="margin:0">Cadence History</h3>
       <select id="schedule-history-routine" onchange="loadScheduleHistory()"><option value="">All routines</option></select>
       <select id="schedule-history-date-preset" onchange="loadScheduleHistory()">
         <option value="all">All time</option>
@@ -487,40 +414,30 @@
     </table>
     <div class="list-foot"><div id="schedule-history-pager" class="pager"></div></div>
   </div>
-  <div class="card">
-    <div class="search-row">
-      <h3 style="margin:0" data-zh="周期 Circuit" data-en="User Circuits">周期 Circuit</h3>
-      <button class="action" onclick="loadCircuits()" data-zh="刷新" data-en="Refresh">刷新</button>
-    </div>
-    <table>
-      <thead><tr><th>名称</th><th>Cron</th><th>类型</th><th>状态</th><th>上次触发</th><th>次数</th></tr></thead>
-      <tbody id="circuits-tbody"><tr><td colspan="6" style="color:var(--muted)">加载中…</td></tr></tbody>
-    </table>
-  </div>
 </div>
 
-<!-- CAMPAIGNS -->
-<div id="panel-campaigns" class="panel">
+<!-- ENDEAVORS -->
+<div id="panel-endeavors" class="panel">
   <div class="card">
-    <h3>Campaign List</h3>
+    <h3>Endeavor List</h3>
     <div class="search-row">
-      <input id="campaign-q" placeholder="campaign / run / campaign_status / campaign_phase" style="width:240px">
-      <select id="campaign-page-size" onchange="setPageSizeAndReload('campaigns', this.value, loadCampaigns)">
+      <input id="endeavor-q" placeholder="endeavor / deed / endeavor_status / endeavor_phase" style="width:240px">
+      <select id="endeavor-page-size" onchange="setPageSizeAndReload('endeavors', this.value, loadEndeavors)">
         <option value="20" selected>20 / page</option>
         <option value="50">50 / page</option>
         <option value="100">100 / page</option>
       </select>
-      <button class="action" onclick="loadCampaigns()" data-zh="刷新" data-en="Refresh">刷新</button>
+      <button class="action" onclick="loadEndeavors()" data-zh="刷新" data-en="Refresh">刷新</button>
     </div>
     <table>
-      <thead><tr><th>Campaign</th><th>Run</th><th>Campaign Status</th><th>Campaign Phase</th><th>Milestone</th><th>Updated</th><th>Action</th></tr></thead>
-      <tbody id="campaigns-tbody"><tr><td colspan="7" style="color:var(--muted)">加载中…</td></tr></tbody>
+      <thead><tr><th>Endeavor</th><th>Deed</th><th>Endeavor Status</th><th>Endeavor Phase</th><th>Passage</th><th>Updated</th><th>Action</th></tr></thead>
+      <tbody id="endeavors-tbody"><tr><td colspan="7" style="color:var(--muted)">加载中…</td></tr></tbody>
     </table>
-    <div class="list-foot"><div id="campaigns-pager" class="pager"></div></div>
+    <div class="list-foot"><div id="endeavors-pager" class="pager"></div></div>
   </div>
   <div class="card">
-    <h3>Campaign Detail</h3>
-    <pre id="campaign-detail">请选择一条 Campaign 记录查看 manifest/milestones。</pre>
+    <h3>Endeavor Detail</h3>
+    <pre id="endeavor-detail">请选择一条 Endeavor 记录查看 manifest/passages。</pre>
   </div>
 </div>
 
@@ -595,14 +512,14 @@
 <script src="./js/core.js"></script>
 <script src="./js/panels/overview_spine.js"></script>
 <script src="./js/panels/lexicon.js"></script>
-<script src="./js/panels/fabric.js"></script>
+<script src="./js/panels/psyche.js"></script>
 <script src="./js/panels/norm.js"></script>
-<script src="./js/panels/traces.js"></script>
-<script src="./js/panels/strategies.js"></script>
+<script src="./js/panels/trails.js"></script>
+
 <script src="./js/panels/model.js"></script>
 <script src="./js/panels/agents.js"></script>
 <script src="./js/panels/schedules.js"></script>
-<script src="./js/panels/campaigns.js"></script>
+<script src="./js/panels/endeavors.js"></script>
 <script src="./js/panels/system.js"></script>
 <script src="./js/bootstrap.js"></script>
 </body>

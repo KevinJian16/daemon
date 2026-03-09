@@ -1,16 +1,16 @@
 async function loadOverview() {
   const d = await api('/console/overview');
-  const gate = d.gate?.status || 'GREEN';
-  const badge = document.getElementById('gate-badge');
-  badge.textContent = gate;
-  badge.className = gate;
-  updateGateLabel(gate);
+  const ward = d.ward?.status || d.gate?.status || 'GREEN';
+  const badge = document.getElementById('ward-badge');
+  badge.textContent = ward;
+  badge.className = ward;
+  updateWardLabel(ward);
   document.getElementById('stat-memory').textContent = d.memory?.total_active ?? '—';
-  document.getElementById('stat-methods').textContent = d.playbook?.by_status?.active ?? '—';
-  document.getElementById('stat-signals').textContent = d.compass?.active_signals ?? '—';
-  document.getElementById('stat-runs').textContent = d.running_runs ?? '—';
-  runningRunsCount = Number(d.running_runs ?? 0);
-  document.getElementById('running-runs').textContent = tx(`${runningRunsCount} 运行中`, `${runningRunsCount} running`);
+  document.getElementById('stat-methods').textContent = d.lore?.by_status?.active ?? '—';
+  document.getElementById('stat-signals').textContent = d.instinct?.active_signals ?? '—';
+  document.getElementById('stat-deeds').textContent = d.running_deeds ?? '—';
+  runningDeedsCount = Number(d.running_deeds ?? 0);
+  document.getElementById('running-deeds').textContent = tx(`${runningDeedsCount} 运行中`, `${runningDeedsCount} running`);
 
   const usage = d.cortex_usage?.by_provider || {};
   let html = `<table><thead><tr><th>${tx('提供方', 'Provider')}</th><th>${tx('调用', 'Calls')}</th><th>${tx('输入 Tokens', 'In Tokens')}</th><th>${tx('输出 Tokens', 'Out Tokens')}</th><th>${tx('错误', 'Errors')}</th></tr></thead><tbody>`;

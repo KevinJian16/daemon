@@ -20,7 +20,6 @@ from typing import Any
 
 from bootstrap import bootstrap
 from daemon_env import load_daemon_env
-from runtime.drive_accounts import DriveAccountRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +61,6 @@ class SystemResetManager:
         self.openclaw_home = self.home / "openclaw"
         self.challenge_path = self.state / "reset_challenge.json"
         self.report_path = self.state / "reset_last_report.json"
-        self._drive_registry = DriveAccountRegistry(self.state)
         self._challenge_cache: dict[str, Any] | None = None
 
     # ── Challenge gate ─────────────────────────────────────────────────────
@@ -562,19 +560,16 @@ class SystemResetManager:
 
         # Common runtime artifacts.
         for rel in [
-            "state/runs",
-            "state/runs_shadow",
+            "state/deeds",
             "state/telemetry",
             "state/traces",
             "state/snapshots",
             "state/tmp",
-            "state/campaigns",
+            "state/endeavors",
             "state/feedback_surveys",
             "state/archive",
             "state/nerve_bridge",
             "state/service_logs",
-            "outcome/manual",
-            "outcome/scheduled",
             "openclaw/runs",
         ]:
             _rm(self.home / rel)
@@ -594,9 +589,9 @@ class SystemResetManager:
             _rm(self.home / rel)
         for p in (self.home / "state").glob("skill_evolution_*.json"):
             _rm(p)
-        _rm(self.home / "state" / "runs.json")
+        _rm(self.home / "state" / "deeds.json")
         _rm(self.home / "state" / "schedule_history.json")
-        _rm(self.home / "state" / "gate.json")
+        _rm(self.home / "state" / "ward.json")
 
         if mode == "strict":
             # Drop runtime sqlite files (including temporal_dev.db).
@@ -609,12 +604,11 @@ class SystemResetManager:
         # Recreate required empty dirs for deterministic baseline.
         for rel in [
             "state",
-            "state/runs",
-            "state/runs_shadow",
+            "state/deeds",
             "state/telemetry",
             "state/traces",
             "state/tmp",
-            "state/campaigns",
+            "state/endeavors",
             "state/feedback_surveys",
             "state/snapshots",
             "state/nerve_bridge/cursors",
@@ -624,56 +618,22 @@ class SystemResetManager:
             (self.home / rel).mkdir(parents=True, exist_ok=True)
 
         # Force empty files that are frequently consumed.
-        _reset_array_file(self.home / "state" / "runs.json")
+        _reset_array_file(self.home / "state" / "deeds.json")
         _reset_array_file(self.home / "state" / "schedule_history.json")
         _reset_array_file(self.home / "state" / "skill_evolution_proposals.json")
         _reset_array_file(self.home / "state" / "skill_evolution_queue.json")
-        _reset_gate(self.home / "state" / "gate.json")
-        self._clean_managed_outcome_root(cleaned)
+        _reset_gate(self.home / "state" / "ward.json")
+        self._clean_managed_offering_root(cleaned)
 
         return cleaned
 
-    def _clean_managed_outcome_root(self, cleaned: dict[str, Any]) -> None:
-        """Reset managed Drive outcome index.
-
-        Only resets ~/My Drive/daemon/outcomes/index.json.
-        User-visible output files (YYYY-MM/ subdirs) are intentionally preserved.
-        """
-        cleaned.setdefault("external", [])
-        try:
-            status = self._drive_registry.integration_status()
-            if not status.get("ok"):
-                cleaned["external"].append(
-                    {
-                        "target": "managed_outcome_root",
-                        "action": "skip",
-                        "reason": str(status.get("error") or "drive_unavailable"),
-                    }
-                )
-                return
-
-            daemon_root = Path(str(status.get("daemon_root") or "")).expanduser().resolve()
-            outcome_root = Path(str(status.get("outcome_root") or "")).expanduser().resolve()
-            outcome_root.relative_to(daemon_root)
-
-            idx = outcome_root / "index.json"
-            idx.parent.mkdir(parents=True, exist_ok=True)
-            idx.write_text("[]", encoding="utf-8")
-            cleaned["external"].append(
-                {
-                    "target": str(outcome_root),
-                    "action": "reset",
-                    "removed": [str(idx)],
-                }
-            )
-        except Exception as exc:
-            cleaned["external"].append(
-                {
-                    "target": "managed_outcome_root",
-                    "action": "error",
-                    "error": str(exc),
-                }
-            )
+    def _clean_managed_offering_root(self, cleaned: dict[str, Any]) -> None:
+        """Reset herald log. Preserves user-visible offerings/YYYY-MM/ subdirs."""
+        herald_log = self.home / "state" / "herald_log.jsonl"
+        herald_log.parent.mkdir(parents=True, exist_ok=True)
+        herald_log.write_text("", encoding="utf-8")
+        cleaned.setdefault("truncated", [])
+        cleaned["truncated"].append(str(herald_log))
 
     def _read_challenge(self) -> dict[str, Any] | None:
         if self._challenge_cache:

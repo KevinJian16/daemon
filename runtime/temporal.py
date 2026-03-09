@@ -25,10 +25,10 @@ class TemporalClient:
         self,
         workflow_id: str,
         plan: dict,
-        run_root: str,
-        workflow_name: str = "GraphDispatchWorkflow",
+        deed_root: str,
+        workflow_name: str = "GraphWillWorkflow",
     ) -> str:
-        """Submit a workflow and return the run_id.
+        """Submit a workflow and return the Temporal run_id.
 
         Temporal dev server may report transient shard/timeout errors right after
         startup; retry a few times before surfacing a hard failure.
@@ -38,7 +38,7 @@ class TemporalClient:
             try:
                 handle: WorkflowHandle = await self._client.start_workflow(
                     workflow_name,
-                    args=[{"plan": plan, "run_root": run_root}],
+                    args=[{"plan": plan, "deed_root": deed_root}],
                     id=workflow_id,
                     task_queue=self._queue,
                 )

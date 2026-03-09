@@ -2,7 +2,7 @@ async function loadSchedules() {
   const q = document.getElementById('schedules-q')?.value?.trim() || '';
   const sizeSel = Number(document.getElementById('schedules-page-size')?.value || 20);
   _listState('schedules', {size: sizeSel}).size = sizeSel;
-  const routines = await api('/console/schedules');
+  const routines = await api('/console/cadence');
   const routineSelect = document.getElementById('schedule-history-routine');
   if (routineSelect) {
     const existing = routineSelect.value || '';
@@ -28,15 +28,15 @@ async function loadSchedules() {
 }
 
 async function editSchedule(routine) {
-  const rows = await api('/console/schedules');
+  const rows = await api('/console/cadence');
   const row = (rows || []).find(r => String(r.routine || '') === String(routine || ''));
   const routineId = String(routine || '');
   if (!routineId || !row) return;
   await openUnifiedEditor({
     key: `schedule:${routineId}`,
-    title: tx('调度编辑器', 'Schedule Editor'),
+    title: tx('节律编辑器', 'Cadence Editor'),
     subtitle: routineId,
-    hint: tx('以 JSON 编辑：{"schedule":"cron/adaptive","enabled":true}', 'Edit as JSON: {"schedule":"cron/adaptive","enabled":true}'),
+    hint: tx('以 JSON 编辑：{"cadence":"cron/adaptive","enabled":true}', 'Edit as JSON: {"cadence":"cron/adaptive","enabled":true}'),
     loadText: async () => JSON.stringify({
       schedule: String(row?.schedule || ''),
       enabled: row?.enabled !== false,
@@ -46,11 +46,11 @@ async function editSchedule(routine) {
       try {
         parsed = JSON.parse(String(text || '{}'));
       } catch (e) {
-        throw new Error(tx('调度 JSON 无效：', 'Invalid schedule JSON: ') + e.message);
+        throw new Error(tx('节律 JSON 无效：', 'Invalid cadence JSON: ') + e.message);
       }
       const schedule = String(parsed?.schedule || '').trim();
       const enabled = parsed?.enabled !== false;
-      await apiWrite('/console/schedules/' + encodeURIComponent(routineId), 'PUT', {
+      await apiWrite('/console/cadence/' + encodeURIComponent(routineId), 'PUT', {
         schedule: schedule || undefined,
         enabled,
       });
@@ -68,7 +68,7 @@ async function loadScheduleHistory() {
   const preset = document.getElementById('schedule-history-date-preset')?.value || 'all';
   const sizeSel = Number(document.getElementById('schedule-history-page-size')?.value || 20);
   _listState('schedule_history', {size: sizeSel}).size = sizeSel;
-  let url = '/console/schedules/history?limit=500';
+  let url = '/console/cadence/history?limit=500';
   const routine = document.getElementById('schedule-history-routine')?.value || '';
   if (routine) url += '&routine=' + encodeURIComponent(routine);
   try {
@@ -107,30 +107,3 @@ async function loadScheduleHistory() {
   }
 }
 
-// ── User Circuits ──────────────────────────────────────────────────────────
-
-async function loadCircuits() {
-  const tbody = document.getElementById('circuits-tbody');
-  if (!tbody) return;
-  try {
-    const circuits = await api('/circuits');
-    if (!circuits || !circuits.length) {
-      tbody.innerHTML = `<tr><td colspan="6" style="color:var(--muted)">${tx('暂无周期 Circuit', 'No circuits')}</td></tr>`;
-      return;
-    }
-    tbody.innerHTML = circuits.map(c => {
-      const status = c.status || 'active';
-      const badge = status === 'active' ? 'ok' : status === 'paused' ? 'degraded' : 'error';
-      return `<tr>
-        <td>${esc(c.run_title||c.name||'')}</td>
-        <td style="color:var(--muted);font-family:monospace">${esc(c.cron||'')}</td>
-        <td style="color:var(--muted)">${esc(c.run_type||'')}</td>
-        <td><span class="badge ${badge}">${status}</span></td>
-        <td style="color:var(--muted)">${c.last_triggered_utc ? fmtTime(c.last_triggered_utc) : '—'}</td>
-        <td style="color:var(--muted)">${c.run_count||0}</td>
-      </tr>`;
-    }).join('');
-  } catch (e) {
-    if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
-  }
-}

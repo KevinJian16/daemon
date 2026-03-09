@@ -10,16 +10,15 @@ function fmtTime(utcStr) {
 
 let activeAgentId = '';
 let activeAgentSkills = [];
-let activePlaybookMethod = null;
+let activeLoreMethod = null;
 let currentNormScope = 'quality';
 let currentNormType = 'default';
 let currentNormVersions = [];
 let currentNormKeys = [];
-let currentSemanticVersions = [];
 let currentModelVersions = [];
 let currentModelPolicy = {};
 let resetChallenge = null;
-let runningRunsCount = 0;
+let runningDeedsCount = 0;
 let unifiedEditorState = {
   open: false,
   dirty: false,
@@ -42,7 +41,7 @@ function _readConsolePanelState() {
     if (!raw) return 'overview';
     const parsed = JSON.parse(raw);
     const panel = String(parsed?.panel || '').trim();
-    const allow = new Set(['overview', 'lexicon', 'spine', 'fabric', 'norm', 'traces', 'strategies', 'model', 'agents', 'skill-evolution', 'schedules', 'campaigns', 'system']);
+    const allow = new Set(['overview', 'lexicon', 'spine', 'psyche', 'norm', 'trails', 'model', 'agents', 'skill-evolution', 'schedules', 'endeavors', 'system']);
     return allow.has(panel) ? panel : 'overview';
   } catch (_) {
     return 'overview';
@@ -77,12 +76,12 @@ function _writeLang(v) {
 let cLang = _readLang();
 _writeLang(cLang);
 function tx(zh, en) { return cLang === 'zh' ? zh : en; }
-let currentFabricView = 'memory';
+let currentPsycheView = 'memory';
 const CONSOLE_STATIC_TEXT = [
   {sel:'#panel-overview .stat:nth-child(1) .lbl', zh:'Memory 单元', en:'Memory Units'},
   {sel:'#panel-overview .stat:nth-child(2) .lbl', zh:'活跃 Recipes', en:'Active Recipes'},
   {sel:'#panel-overview .stat:nth-child(3) .lbl', zh:'Attention 信号', en:'Attention Signals'},
-  {sel:'#panel-overview .stat:nth-child(4) .lbl', zh:'运行中执行', en:'Running Runs'},
+  {sel:'#panel-overview .stat:nth-child(4) .lbl', zh:'运行中 Deeds', en:'Running Deeds'},
   {sel:'#panel-overview .card h3', zh:'今日 Cortex 用量', en:'Cortex Usage Today'},
   {sel:'#panel-spine .card:nth-of-type(1) h3', zh:'Spine 运行态', en:'Spine Runtime'},
   {sel:'#panel-spine .card:nth-of-type(2) h3', zh:'Nerve 事件流', en:'Nerve Event Feed'},
@@ -91,14 +90,9 @@ const CONSOLE_STATIC_TEXT = [
   {sel:'#norm-heading-editor', zh:'Norm 编辑器', en:'Norm Editor'},
   {sel:'#norm-heading-quality', zh:'Norm 质量键', en:'Norm Quality Keys'},
   {sel:'#norm-heading-preferences', zh:'Norm 偏好', en:'Norm Preferences'},
-  {sel:'#norm-heading-budgets', zh:'Norm 预算', en:'Norm Budgets'},
+  {sel:'#norm-heading-rations', zh:'Norm 配额', en:'Norm Rations'},
   {sel:'#norm-heading-versions', zh:'Norm 版本', en:'Norm Versions'},
-  {sel:'#panel-traces .card h3', zh:'Trace 详情', en:'Trace Detail'},
-  {sel:'#strategy-heading-shadow-report', zh:'Shadow 对比报告', en:'Shadow Comparison Report'},
-  {sel:'#strategy-heading-detail', zh:'Strategy 详情', en:'Strategy Detail'},
-  {sel:'#panel-strategies .card:nth-of-type(4) h3', zh:'语义注册表', en:'Semantic Registry'},
-  {sel:'#panel-strategies .card:nth-of-type(5) h3', zh:'语义编辑入口', en:'Semantic Editors'},
-  {sel:'#panel-strategies .card:nth-of-type(6) h3', zh:'Semantic 配置版本', en:'Semantic Config Versions'},
+  {sel:'#panel-trails .card h3', zh:'Trail 详情', en:'Trail Detail'},
   {sel:'#panel-model .card:nth-of-type(2) h3', zh:'模型调用明细（Cortex）', en:'Model Usage Detail (Cortex)'},
   {sel:'#panel-model .card:nth-of-type(3) h3', zh:'模型调用汇总（Cortex）', en:'Model Usage Summary (Cortex)'},
   {sel:'#panel-model .card:nth-of-type(4) h3', zh:'模型用量（聚合）', en:'Model Usage (Aggregated)'},
@@ -107,10 +101,10 @@ const CONSOLE_STATIC_TEXT = [
   {sel:'#panel-agents .card:nth-of-type(2) h3', zh:'Agent 技能', en:'Agent Skills'},
   {sel:'#panel-skill-evolution .card:nth-of-type(1) h3', zh:'Skill 进化提案', en:'Skill Evolution Proposals'},
   {sel:'#panel-skill-evolution .card:nth-of-type(2) h3', zh:'提案详情', en:'Proposal Detail'},
-  {sel:'#panel-schedules .card:nth-of-type(1) h3', zh:'Spine 调度', en:'Spine Schedules'},
-  {sel:'#panel-schedules .card:nth-of-type(2) h3', zh:'调度历史', en:'Schedule History'},
-  {sel:'#panel-campaigns .card:nth-of-type(1) h3', zh:'Campaign 列表', en:'Campaign List'},
-  {sel:'#panel-campaigns .card:nth-of-type(2) h3', zh:'Campaign 详情', en:'Campaign Detail'},
+  {sel:'#panel-schedules .card:nth-of-type(1) h3', zh:'Spine 节律', en:'Spine Cadence'},
+  {sel:'#panel-schedules .card:nth-of-type(2) h3', zh:'节律历史', en:'Cadence History'},
+  {sel:'#panel-endeavors .card:nth-of-type(1) h3', zh:'Endeavor 列表', en:'Endeavor List'},
+  {sel:'#panel-endeavors .card:nth-of-type(2) h3', zh:'Endeavor 详情', en:'Endeavor Detail'},
   {sel:'#panel-system .card:nth-of-type(1) h3', zh:'托管 Drive 存储', en:'Managed Drive Storage'},
   {sel:'#panel-system .card:nth-of-type(2) h3', zh:'系统重置（challenge/confirm 仅本机）', en:'System Reset (Challenge/Confirm = Localhost Only)'},
   {sel:'#panel-system .card:nth-of-type(3) h3', zh:'最近重置报告', en:'Last Reset Report'},
@@ -118,16 +112,13 @@ const CONSOLE_STATIC_TEXT = [
 ];
 const CONSOLE_INPUT_PLACEHOLDERS = [
   {sel:'#lexicon-q', zh:'term / definition', en:'term / definition'},
-  {sel:'#trace-since', zh:'起始 UTC（可选）', en:'since UTC (optional)'},
-  {sel:'#trace-q', zh:'trace_id / routine', en:'trace_id / routine'},
-  {sel:'#cortex-q', zh:'provider / model / trace', en:'provider / model / trace'},
-  {sel:'#strategy-cluster-filter', zh:'cluster_id（可选）', en:'cluster_id (optional)'},
-  {sel:'#strategy-q', zh:'strategy / cluster / strategy_stage', en:'strategy / cluster / strategy_stage'},
-  {sel:'#shadow-q', zh:'run / cluster / strategy', en:'run / cluster / strategy'},
+  {sel:'#trail-since', zh:'起始 UTC（可选）', en:'since UTC (optional)'},
+  {sel:'#trail-q', zh:'trail_id / routine', en:'trail_id / routine'},
+  {sel:'#cortex-q', zh:'provider / model / trail', en:'provider / model / trail'},
   {sel:'#sev-q', zh:'proposal / skill / status', en:'proposal / skill / status'},
   {sel:'#schedules-q', zh:'routine / mode / schedule', en:'routine / mode / schedule'},
   {sel:'#schedule-history-q', zh:'routine / status / detail', en:'routine / status / detail'},
-  {sel:'#campaign-q', zh:'campaign / run / campaign_status / campaign_phase', en:'campaign / run / campaign_status / campaign_phase'},
+  {sel:'#endeavor-q', zh:'endeavor / deed / endeavor_status / endeavor_phase', en:'endeavor / deed / endeavor_status / endeavor_phase'},
   {sel:'#agents-q', zh:'agent / workspace status', en:'agent / workspace status'},
   {sel:'#agent-skills-q', zh:'skill / path / status', en:'skill / path / status'},
   {sel:'#storage-daemon-dir-name', zh:'daemon 目录名（例：daemon）', en:'daemon directory name (e.g. daemon)'},
@@ -138,7 +129,7 @@ function applyConsoleLang() {
   document.title = zh ? 'Daemon 控制台' : 'Daemon Console';
   document.getElementById('c-lang-btn').textContent = zh ? 'EN' : '中';
   document.getElementById('h-title').textContent = zh ? 'Daemon 控制台' : 'Daemon Console';
-  document.getElementById('gate-label').textContent = zh ? '接单中' : 'Accepting';
+  document.getElementById('ward-label').textContent = zh ? '接单中' : 'Accepting';
   document.querySelectorAll('[data-zh][data-en]').forEach(b => {
     b.textContent = zh ? b.dataset.zh : b.dataset.en;
   });
@@ -150,12 +141,12 @@ function applyConsoleLang() {
     const el = document.querySelector(row.sel);
     if (el) el.placeholder = zh ? row.zh : row.en;
   });
-  document.getElementById('running-runs').textContent = tx(`${runningRunsCount} 运行中`, `${runningRunsCount} running`);
+  document.getElementById('running-deeds').textContent = tx(`${runningDeedsCount} 运行中`, `${runningDeedsCount} running`);
   const storageNote = document.getElementById('system-storage-note');
   if (storageNote) {
     storageNote.innerHTML = zh
-      ? '托管结构：<code>My Drive/&lt;daemon_dir_name&gt;/{archive,outcomes}</code>。'
-      : 'Managed structure: <code>My Drive/&lt;daemon_dir_name&gt;/{archive,outcomes}</code>.';
+      ? '托管结构：<code>My Drive/&lt;daemon_dir_name&gt;/{vault,offerings}</code>。'
+      : 'Managed structure: <code>My Drive/&lt;daemon_dir_name&gt;/{vault,offerings}</code>.';
   }
   const resetNote = document.getElementById('system-reset-note');
   if (resetNote) {
@@ -164,12 +155,10 @@ function applyConsoleLang() {
       : 'Reset requires challenge + confirm. Confirm action is one-time and expires automatically.';
   }
   _translateDefaultText('#norm-version-preview', '请选择一个版本进行预览。', 'Select one version to preview.');
-  _translateDefaultText('#trace-detail', '请选择一条 Trace 记录查看详情。', 'Select a trace row to inspect details.');
-  _translateDefaultText('#strategy-detail', '请选择一条 Strategy 记录查看实验与晋升信息。', 'Select a strategy row to inspect experiments/promotions.');
-  _translateDefaultText('#semantics-detail', '加载中…', 'Loading…');
+  _translateDefaultText('#trail-detail', '请选择一条 Trail 记录查看详情。', 'Select a trail row to inspect details.');
   _translateDefaultText('#model-usage-summary', '加载中…', 'Loading…');
   _translateDefaultText('#sev-detail', '请选择一个提案查看详情。', 'Select a proposal to inspect details.');
-  _translateDefaultText('#campaign-detail', '请选择一条 Campaign 记录查看 manifest/milestones。', 'Select a campaign row to inspect manifest/milestones.');
+  _translateDefaultText('#endeavor-detail', '请选择一条 Endeavor 记录查看 manifest/passages。', 'Select an endeavor row to inspect manifest/passages.');
   _translateDefaultText('#storage-status-body', '加载中…', 'Loading…');
   _translateDefaultText('#system-reset-state', '尚未生成重置挑战码。', 'No reset challenge issued.');
   _translateDefaultText('#system-reset-report', '暂无报告。', 'No report.');
@@ -177,19 +166,15 @@ function applyConsoleLang() {
   if (normScope && normScope.options.length >= 3) {
     normScope.options[0].text = 'quality';
     normScope.options[1].text = 'preference';
-    normScope.options[2].text = 'budget';
+    normScope.options[2].text = 'ration';
   }
-  const traceRoutine = document.getElementById('trace-routine');
-  if (traceRoutine && traceRoutine.options.length > 0) {
-    traceRoutine.options[0].text = zh ? '全部 routines' : 'All routines';
+  const trailRoutine = document.getElementById('trail-routine');
+  if (trailRoutine && trailRoutine.options.length > 0) {
+    trailRoutine.options[0].text = zh ? '全部 routines' : 'All routines';
   }
-  const traceStatus = document.getElementById('trace-status');
-  if (traceStatus && traceStatus.options.length > 0) {
-    traceStatus.options[0].text = zh ? '任意状态' : 'Any status';
-  }
-  const strategyStage = document.getElementById('strategy-stage-filter');
-  if (strategyStage && strategyStage.options.length > 0) {
-    strategyStage.options[0].text = zh ? '全部阶段' : 'All stages';
+  const trailStatus = document.getElementById('trail-status');
+  if (trailStatus && trailStatus.options.length > 0) {
+    trailStatus.options[0].text = zh ? '任意状态' : 'Any status';
   }
   const sev = document.getElementById('sev-status');
   if (sev && sev.options.length > 0) {
@@ -199,29 +184,25 @@ function applyConsoleLang() {
   if (normVersionSel && normVersionSel.options.length > 0 && normVersionSel.options[0].value === '') {
     normVersionSel.options[0].text = zh ? '选择版本' : 'Select version';
   }
-  const semanticVersionSel = document.getElementById('semantic-version-select');
-  if (semanticVersionSel && semanticVersionSel.options.length > 0 && semanticVersionSel.options[0].value === '') {
-    semanticVersionSel.options[0].text = zh ? '选择版本' : 'Select version';
-  }
   const modelVersionSel = document.getElementById('model-version-select');
   if (modelVersionSel && modelVersionSel.options.length > 0 && modelVersionSel.options[0].value === '') {
     modelVersionSel.options[0].text = zh ? '选择版本' : 'Select version';
   }
-  const playbookVersionSel = document.getElementById('playbook-version-select');
-  if (playbookVersionSel && playbookVersionSel.options.length > 0 && playbookVersionSel.options[0].value === '') {
-    playbookVersionSel.options[0].text = zh ? '选择版本' : 'Select version';
+  const loreVersionSel = document.getElementById('lore-version-select');
+  if (loreVersionSel && loreVersionSel.options.length > 0 && loreVersionSel.options[0].value === '') {
+    loreVersionSel.options[0].text = zh ? '选择版本' : 'Select version';
   }
   const hrt = document.getElementById('schedule-history-routine');
   if (hrt && hrt.options.length > 0) {
     hrt.options[0].text = zh ? '全部 routines' : 'All routines';
   }
-  const tracePreset = document.getElementById('trace-date-preset');
-  if (tracePreset && tracePreset.options.length >= 5) {
-    tracePreset.options[0].text = zh ? '手动' : 'Manual';
-    tracePreset.options[1].text = zh ? '今天' : 'Today';
-    tracePreset.options[2].text = zh ? '近24小时' : 'Last 24h';
-    tracePreset.options[3].text = zh ? '近7天' : 'Last 7d';
-    tracePreset.options[4].text = zh ? '近30天' : 'Last 30d';
+  const trailPreset = document.getElementById('trail-date-preset');
+  if (trailPreset && trailPreset.options.length >= 5) {
+    trailPreset.options[0].text = zh ? '手动' : 'Manual';
+    trailPreset.options[1].text = zh ? '今天' : 'Today';
+    trailPreset.options[2].text = zh ? '近24小时' : 'Last 24h';
+    trailPreset.options[3].text = zh ? '近7天' : 'Last 7d';
+    trailPreset.options[4].text = zh ? '近30天' : 'Last 30d';
   }
   const cortexPreset = document.getElementById('cortex-date-preset');
   if (cortexPreset && cortexPreset.options.length >= 4) {
@@ -260,11 +241,11 @@ window.addEventListener('storage', (event) => {
   applyConsoleLang();
   refreshAll();
 });
-// Gate label reflects status.
-function updateGateLabel(status) {
+// Ward label reflects status.
+function updateWardLabel(status) {
   const labels = {zh:{GREEN:'接单中',YELLOW:'降级运行',RED:'暂停接单'}, en:{GREEN:'Accepting',YELLOW:'Degraded',RED:'Blocked'}};
   const lbl = (labels[cLang]||labels.zh)[status] || status;
-  document.getElementById('gate-label').textContent = lbl;
+  document.getElementById('ward-label').textContent = lbl;
 }
 
 function _setUnifiedEditorStatus(text) {
@@ -401,15 +382,14 @@ async function _runPanelLoader(panel, opts = {}) {
   if (panel === 'overview') loader = loadOverview;
   else if (panel === 'lexicon') loader = loadLexicon;
   else if (panel === 'spine') loader = loadSpine;
-  else if (panel === 'fabric') loader = () => showFabric(currentFabricView || 'memory');
+  else if (panel === 'psyche') loader = () => showPsyche(currentPsycheView || 'memory');
   else if (panel === 'norm') loader = loadNorm;
-  else if (panel === 'traces') loader = loadTraces;
-  else if (panel === 'strategies') loader = async () => { await loadStrategies(); await loadSemantics(); };
+  else if (panel === 'trails') loader = loadTrails;
   else if (panel === 'model') loader = loadModelControl;
   else if (panel === 'agents') loader = loadAgents;
   else if (panel === 'skill-evolution') loader = loadSkillEvolution;
-  else if (panel === 'schedules') loader = async () => { await loadSchedules(); await loadCircuits(); };
-  else if (panel === 'campaigns') loader = loadCampaigns;
+  else if (panel === 'schedules') loader = loadSchedules;
+  else if (panel === 'endeavors') loader = loadEndeavors;
   else if (panel === 'system') loader = loadSystemResetPanel;
   if (!loader) return;
   st.loading = Promise.resolve()
@@ -502,7 +482,7 @@ function setListPage(key, page, reloadFnName) {
 
 function applyDatePreset(target) {
   if (target === 'cortex') { loadCortexUsage(); return; }
-  if (target === 'trace') { loadTraces(); return; }
+  if (target === 'trail') { loadTrails(); return; }
 }
 
 async function api(path) {

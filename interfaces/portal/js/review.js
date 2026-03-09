@@ -29,8 +29,8 @@ function renderFeedbackHistory(rows){
   }).join('');
 }
 async function showRating(tid){
-  curRunId=tid||curRunId;
-  if(!curRunId) return;
+  curDeedId=tid||curDeedId;
+  if(!curDeedId) return;
   const w=document.getElementById('rating-wrap'); w.style.display='block';
   const qWrap=document.getElementById('q-choices');
   const deepBtn=document.getElementById('rating-deep-btn');
@@ -53,7 +53,7 @@ async function showRating(tid){
   ex.textContent='';
 
   let state={};
-  try{ state=await api('/feedback/'+curRunId+'/state'); }catch(e){ state={}; }
+  try{ state=await api('/feedback/'+curDeedId+'/state'); }catch(e){ state={}; }
   const response=(state&&state.response)||{};
   const history=(state&&Array.isArray(state.history))?state.history:[];
   const submitted=String((state&&state.status)||'').toLowerCase()==='submitted';
@@ -95,7 +95,7 @@ function toggleDeep(){
   refreshRatingSubmitEnabled();
 }
 async function submitRating(){
-  if(!curRunId) return;
+  if(!curDeedId) return;
   const btn=document.getElementById('rating-ok-btn');
   const st=document.getElementById('rating-status');
   btn.disabled=true; st.textContent=t('submitting'); st.className='';
@@ -111,28 +111,28 @@ async function submitRating(){
   }
   if(note) payload.comment=note;
   try{
-    await api('/runs/'+curRunId+'/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    await api('/deeds/'+curDeedId+'/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     st.textContent=t('submitOk'); st.className='ok';
-    await showRating(curRunId);
+    await showRating(curDeedId);
     setTimeout(renderNav,500);
   }catch(e){ st.textContent='✗ '+e.message; btn.disabled=false; }
 }
 async function submitAppend(){
-  if(!curRunId) return;
+  if(!curDeedId) return;
   const note=document.getElementById('append-note').value.trim();
   if(!note) return;
   const btn=document.getElementById('append-ok-btn');
   const st=document.getElementById('append-status');
   btn.disabled=true; st.textContent=t('submitting'); st.className='';
   try{
-    await api('/runs/'+curRunId+'/feedback/append',{
+    await api('/deeds/'+curDeedId+'/feedback/append',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({comment:note, source:'portal'}),
     });
     st.textContent=t('submitOk'); st.className='ok';
     document.getElementById('append-note').value='';
-    await showRating(curRunId);
+    await showRating(curDeedId);
   }catch(e){
     st.textContent='✗ '+e.message;
   }finally{

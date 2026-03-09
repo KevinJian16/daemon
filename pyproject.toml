@@ -30,4 +30,4 @@ testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["daemon*", "fabric*", "spine*", "runtime*", "temporal*", "services*"]
+include = ["daemon*", "psyche*", "spine*", "runtime*", "temporal*", "services*"]

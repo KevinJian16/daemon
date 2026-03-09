@@ -1,4 +1,4 @@
-"""Health/Run/Outcome/Overview routes extracted from services.api."""
+"""Health/Deed/Offering/Overview routes extracted from services.api."""
 from __future__ import annotations
 
 import json
@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from services.state_store import StateStore
+from services.ledger import Ledger
 
 logger = logging.getLogger(__name__)
 
@@ -22,32 +22,32 @@ def register_basic_routes(
     app_started_utc: str,
     ensure_temporal_client: Callable[..., Awaitable[bool]],
     get_temporal_client: Callable[[], Any],
-    store: StateStore,
-    dispatch: Any,
+    ledger: Ledger,
+    will: Any,
     cortex: Any,
     model_policy_path: Path,
     model_registry_path: Path,
     openclaw_home: Path,
     validate_model_registry: Callable[[dict], None],
-    run_view: Callable[[dict], dict],
+    deed_view: Callable[[dict], dict],
     log_portal_event: Callable[[str, dict[str, Any], Request | None], None],
-    require_outcome_root: Callable[[], Path],
+    require_offering_root: Callable[[], Path],
     memory: Any,
-    playbook: Any,
-    compass: Any,
+    lore: Any,
+    instinct: Any,
 ) -> None:
-    def _run_status(row: dict) -> str:
-        return str(row.get("run_status") or "").strip()
+    def _deed_status(row: dict) -> str:
+        return str(row.get("deed_status") or "").strip()
 
-    def _filter_rows_by_run_status(rows: list[dict], run_status: str | None) -> list[dict]:
-        if not run_status:
+    def _filter_rows_by_deed_status(rows: list[dict], deed_status: str | None) -> list[dict]:
+        if not deed_status:
             return rows
-        target = str(run_status).strip().lower()
+        target = str(deed_status).strip().lower()
         if not target:
             return rows
         out: list[dict] = []
         for row in rows:
-            cur = _run_status(row).lower()
+            cur = _deed_status(row).lower()
             if cur == target:
                 out.append(row)
         return out
@@ -56,10 +56,10 @@ def register_basic_routes(
         explicit = str(row.get("phase") or "").strip().lower()
         if explicit in {"running", "awaiting_eval", "history"}:
             return explicit
-        status = _run_status(row).lower()
-        if status in {"running", "queued", "paused", "running_shadow", "cancel_requested", "cancelling"}:
+        deed_st = _deed_status(row).lower()
+        if deed_st in {"running", "queued", "paused", "cancel_requested", "cancelling"}:
             return "running"
-        if status in {"awaiting_eval", "pending_review"}:
+        if deed_st in {"awaiting_eval", "pending_review"}:
             return "awaiting_eval"
         return "history"
 
@@ -71,7 +71,7 @@ def register_basic_routes(
             return rows
         return [row for row in rows if _phase_of(row) == target]
 
-    def _sort_runs(rows: list[dict]) -> list[dict]:
+    def _sort_deeds(rows: list[dict]) -> list[dict]:
         def _ts(row: dict) -> float:
             for key in ("updated_utc", "submitted_utc", "created_utc"):
                 raw = str(row.get(key) or "").strip()
@@ -91,7 +91,7 @@ def register_basic_routes(
         now = datetime.now(timezone.utc)
         changed = False
         for row in rows:
-            status = _run_status(row).lower()
+            status = _deed_status(row).lower()
             if status not in {"awaiting_eval", "pending_review"}:
                 continue
             raw = str(row.get("eval_deadline_utc") or "").strip()
@@ -106,7 +106,7 @@ def register_basic_routes(
                 continue
             if deadline > now:
                 continue
-            row["run_status"] = "completed"
+            row["deed_status"] = "completed"
             row["phase"] = "history"
             row["updated_utc"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
             row["eval_expired_utc"] = row["updated_utc"]
@@ -117,7 +117,7 @@ def register_basic_routes(
     @app.get("/health")
     async def health():
         temporal_connected = bool(await ensure_temporal_client(retries=1, delay_s=0.1))
-        gate = store.load_gate()
+        ward = ledger.load_ward()
         model_registry_valid = False
         if model_registry_path.exists():
             try:
@@ -143,76 +143,78 @@ def register_basic_routes(
         )
         return {
             "ok": True,
-            "gate": gate["status"],
+            "ward": ward["status"],
             "app_started_utc": app_started_utc,
             "dependencies": dependencies,
             "dependencies_ready": dependencies_ready,
         }
 
-    @app.get("/runs")
-    def list_runs(
+    def _expire_and_get_deeds() -> list[dict]:
+        """Load deeds and atomically expire eval windows if any deadlines passed."""
+        expired_any = False
+        def _mutate(deeds: list[dict]) -> None:
+            nonlocal expired_any
+            _, changed = _expire_eval_windows(deeds)
+            expired_any = changed
+        return ledger.mutate_deeds(_mutate)
+
+    @app.get("/deeds")
+    def list_deeds(
         request: Request,
-        run_status: str | None = None,
+        deed_status: str | None = None,
         status: str | None = None,
         phase: str | None = None,
         limit: int = 50,
     ):
-        target_status = run_status if run_status is not None else status
-        rows = store.load_runs()
-        rows, changed = _expire_eval_windows(rows)
-        if changed:
-            store.save_runs(rows)
-        rows = _filter_rows_by_run_status(rows, target_status)
+        target_status = deed_status if deed_status is not None else status
+        rows = _expire_and_get_deeds()
+        rows = _filter_rows_by_deed_status(rows, target_status)
         rows = _filter_rows_by_phase(rows, phase)
-        rows = _sort_runs(rows)
-        result = [run_view(row) for row in rows[: max(1, min(limit, 500))]]
+        rows = _sort_deeds(rows)
+        result = [deed_view(row) for row in rows[: max(1, min(limit, 500))]]
         log_portal_event(
-            "runs_list",
-            {"run_status": target_status, "phase": phase, "count": len(result)},
+            "deeds_list",
+            {"deed_status": target_status, "phase": phase, "count": len(result)},
             request,
         )
         return result
 
-    @app.get("/runs/{run_id}")
-    def get_run(run_id: str, request: Request):
-        rows = store.load_runs()
-        rows, changed = _expire_eval_windows(rows)
-        if changed:
-            store.save_runs(rows)
+    @app.get("/deeds/{deed_id}")
+    def get_deed(deed_id: str, request: Request):
+        rows = _expire_and_get_deeds()
         for row in rows:
-            if str(row.get("run_id") or "") == run_id:
-                log_portal_event("run_get", {"run_id": run_id, "run_status": _run_status(row)}, request)
-                return run_view(row)
-        log_portal_event("run_not_found", {"run_id": run_id}, request)
-        raise HTTPException(status_code=404, detail="run not found")
+            if str(row.get("deed_id") or "") == deed_id:
+                log_portal_event("deed_get", {"deed_id": deed_id, "deed_status": _deed_status(row)}, request)
+                return deed_view(row)
+        log_portal_event("deed_not_found", {"deed_id": deed_id}, request)
+        raise HTTPException(status_code=404, detail="deed not found")
 
-    @app.post("/runs/{run_id}/retry")
-    async def retry_run(run_id: str, request: Request):
-        rows = store.load_runs()
-        row = next((r for r in rows if str(r.get("run_id") or "") == run_id), None)
+    @app.post("/deeds/{deed_id}/retry")
+    async def retry_deed(deed_id: str, request: Request):
+        row = ledger.get_deed(deed_id)
         if not isinstance(row, dict):
-            raise HTTPException(status_code=404, detail="run not found")
+            raise HTTPException(status_code=404, detail="deed not found")
         plan = row.get("plan") if isinstance(row.get("plan"), dict) else {}
         if not plan:
-            raise HTTPException(status_code=409, detail="run_plan_missing")
-        run_status = _run_status(row).lower()
-        if run_status not in {"failed", "failed_submission", "queued", "expired", "replay_exhausted"}:
-            raise HTTPException(status_code=409, detail=f"retry_not_allowed_for_run_status:{run_status}")
-        result = await dispatch.replay(run_id, plan)
-        log_portal_event("run_retry", {"run_id": run_id, "result_ok": bool(result.get("ok"))}, request)
+            raise HTTPException(status_code=409, detail="deed_plan_missing")
+        deed_status = _deed_status(row).lower()
+        if deed_status not in {"failed", "failed_submission", "queued", "expired", "replay_exhausted"}:
+            raise HTTPException(status_code=409, detail=f"retry_not_allowed_for_deed_status:{deed_status}")
+        result = await will.submit(plan)
+        log_portal_event("deed_retry", {"deed_id": deed_id, "result_ok": bool(result.get("ok"))}, request)
         return result
 
-    def _workflow_ids_for_row(run_id: str, row: dict) -> list[str]:
+    def _workflow_ids_for_row(deed_id: str, row: dict) -> list[str]:
         plan = row.get("plan") if isinstance(row.get("plan"), dict) else {}
-        campaign_id = str(row.get("campaign_id") or plan.get("campaign_id") or "")
+        endeavor_id = str(row.get("endeavor_id") or plan.get("endeavor_id") or "")
         workflow_ids: list[str] = []
-        if campaign_id:
-            workflow_ids.append(str(plan.get("_workflow_id") or f"daemon-campaign-{campaign_id}"))
-        workflow_ids.append(str(plan.get("_workflow_id") or f"daemon-{run_id}"))
+        if endeavor_id:
+            workflow_ids.append(str(plan.get("_workflow_id") or f"daemon-endeavor-{endeavor_id}"))
+        workflow_ids.append(str(plan.get("_workflow_id") or f"daemon-{deed_id}"))
         return [wid for wid in workflow_ids if wid]
 
     async def _signal_workflows(
-        run_id: str,
+        deed_id: str,
         row: dict,
         *,
         signal_name: str,
@@ -222,7 +224,7 @@ def register_basic_routes(
         temporal_client = get_temporal_client()
         if not temporal_client:
             raise HTTPException(status_code=503, detail="temporal_unavailable")
-        workflow_ids = _workflow_ids_for_row(run_id, row)
+        workflow_ids = _workflow_ids_for_row(deed_id, row)
         if not workflow_ids:
             raise HTTPException(status_code=409, detail="workflow_id_missing")
 
@@ -236,22 +238,22 @@ def register_basic_routes(
             except Exception as exc:
                 last_error = str(exc)[:240]
         if not accepted_workflow:
-            raise HTTPException(status_code=409, detail={"ok": False, "error": f"run_signal_failed:{last_error}"})
+            raise HTTPException(status_code=409, detail={"ok": False, "error": f"deed_signal_failed:{last_error}"})
         return accepted_workflow
 
-    @app.post("/runs/{run_id}/cancel")
-    async def cancel_run(run_id: str, request: Request):
-        rows = store.load_runs()
-        row = next((r for r in rows if str(r.get("run_id") or "") == run_id), None)
+    @app.post("/deeds/{deed_id}/cancel")
+    async def cancel_deed(deed_id: str, request: Request):
+        # Read-only lookup first (no lock needed).
+        row = ledger.get_deed(deed_id)
         if not isinstance(row, dict):
-            raise HTTPException(status_code=404, detail="run not found")
-        status = _run_status(row).lower()
-        if status in {"completed", "awaiting_eval", "pending_review", "cancelled", "failed"}:
-            raise HTTPException(status_code=409, detail=f"cancel_not_allowed_for_run_status:{status}")
+            raise HTTPException(status_code=404, detail="deed not found")
+        cur_status = _deed_status(row).lower()
+        if cur_status in {"completed", "awaiting_eval", "pending_review", "cancelled", "failed"}:
+            raise HTTPException(status_code=409, detail=f"cancel_not_allowed_for_deed_status:{cur_status}")
 
         await ensure_temporal_client(retries=2, delay_s=0.3)
         temporal_client = get_temporal_client()
-        workflow_ids = _workflow_ids_for_row(run_id, row)
+        workflow_ids = _workflow_ids_for_row(deed_id, row)
 
         cancel_error = ""
         cancel_requested = False
@@ -269,33 +271,37 @@ def register_basic_routes(
                     cancel_error = str(exc)[:240]
 
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        for item in rows:
-            if str(item.get("run_id") or "") != run_id:
-                continue
-            item["run_status"] = "cancelling" if cancel_requested else "cancelled"
-            item["phase"] = "running" if cancel_requested else "history"
-            item["updated_utc"] = now
-            if cancel_error:
-                item["last_error"] = cancel_error
-            break
-        store.save_runs(rows)
-        log_portal_event("run_cancel", {"run_id": run_id, "cancel_error": cancel_error}, request)
+        new_status = "cancelling" if cancel_requested else "cancelled"
+        new_phase = "running" if cancel_requested else "history"
+
+        def _mutate(deeds: list[dict]) -> None:
+            for item in deeds:
+                if str(item.get("deed_id") or "") != deed_id:
+                    continue
+                item["deed_status"] = new_status
+                item["phase"] = new_phase
+                item["updated_utc"] = now
+                if cancel_error:
+                    item["last_error"] = cancel_error
+                break
+
+        ledger.mutate_deeds(_mutate)
+        log_portal_event("deed_cancel", {"deed_id": deed_id, "cancel_error": cancel_error}, request)
         return {
             "ok": True,
-            "run_id": run_id,
-            "run_status": "cancelling" if cancel_requested else "cancelled",
+            "deed_id": deed_id,
+            "deed_status": new_status,
             "cancel_error": cancel_error,
         }
 
-    async def _append_requirement(run_id: str, requirement: str, source: str = "portal") -> dict:
-        rows = store.load_runs()
-        row = next((r for r in rows if str(r.get("run_id") or "") == run_id), None)
+    async def _append_requirement(deed_id: str, requirement: str, source: str = "portal") -> dict:
+        row = ledger.get_deed(deed_id)
         if not isinstance(row, dict):
-            raise HTTPException(status_code=404, detail="run not found")
+            raise HTTPException(status_code=404, detail="deed not found")
         plan = row.get("plan") if isinstance(row.get("plan"), dict) else {}
-        work_scale = str(row.get("work_scale") or plan.get("work_scale") or "").strip().lower()
-        if work_scale == "pulse":
-            raise HTTPException(status_code=409, detail="append_not_supported_for_pulse")
+        complexity = str(row.get("complexity") or plan.get("complexity") or (plan.get("brief") or {}).get("complexity") or "").strip().lower()
+        if complexity == "errand":
+            raise HTTPException(status_code=409, detail="append_not_supported_for_errand")
 
         payload = {
             "text": requirement,
@@ -303,85 +309,89 @@ def register_basic_routes(
             "appended_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         accepted_workflow = await _signal_workflows(
-            run_id,
+            deed_id,
             row,
             signal_name="append_requirement",
             payload=payload,
         )
         return {
             "ok": True,
-            "run_id": run_id,
+            "deed_id": deed_id,
             "workflow_id": accepted_workflow,
             "accepted": True,
         }
 
-    @app.post("/runs/{run_id}/append")
-    async def append_run_requirement(run_id: str, request: Request):
+    @app.post("/deeds/{deed_id}/append")
+    async def append_deed_requirement(deed_id: str, request: Request):
         body = await request.json()
         if not isinstance(body, dict):
             body = {}
         requirement = str(body.get("requirement") or body.get("text") or "").strip()
         if not requirement:
             raise HTTPException(status_code=400, detail="requirement_required")
-        result = await _append_requirement(run_id, requirement, source=str(body.get("source") or "portal"))
+        result = await _append_requirement(deed_id, requirement, source=str(body.get("source") or "portal"))
         log_portal_event(
-            "run_append",
-            {"run_id": run_id, "workflow_id": result.get("workflow_id", ""), "requirement_len": len(requirement)},
+            "deed_append",
+            {"deed_id": deed_id, "workflow_id": result.get("workflow_id", ""), "requirement_len": len(requirement)},
             request,
         )
         return result
 
-    @app.post("/runs/{run_id}/pause")
-    async def pause_run(run_id: str, request: Request):
-        rows = store.load_runs()
-        row = next((r for r in rows if str(r.get("run_id") or "") == run_id), None)
+    @app.post("/deeds/{deed_id}/pause")
+    async def pause_deed(deed_id: str, request: Request):
+        row = ledger.get_deed(deed_id)
         if not isinstance(row, dict):
-            raise HTTPException(status_code=404, detail="run not found")
-        work_scale = str(row.get("work_scale") or (row.get("plan") or {}).get("work_scale") or "").strip().lower()
-        if work_scale == "campaign":
-            raise HTTPException(status_code=409, detail="pause_not_supported_for_campaign")
-        status = _run_status(row).lower()
+            raise HTTPException(status_code=404, detail="deed not found")
+        complexity = str(row.get("complexity") or (row.get("plan") or {}).get("complexity") or ((row.get("plan") or {}).get("brief") or {}).get("complexity") or "").strip().lower()
+        if complexity == "endeavor":
+            raise HTTPException(status_code=409, detail="pause_not_supported_for_endeavor")
+        status = _deed_status(row).lower()
         if status in {"completed", "cancelled", "failed", "awaiting_eval", "pending_review"}:
-            raise HTTPException(status_code=409, detail=f"pause_not_allowed_for_run_status:{status}")
-        workflow_id = await _signal_workflows(run_id, row, signal_name="pause_execution", payload={"source": "portal"})
+            raise HTTPException(status_code=409, detail=f"pause_not_allowed_for_deed_status:{status}")
+        workflow_id = await _signal_workflows(deed_id, row, signal_name="pause_execution", payload={"source": "portal"})
 
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        for item in rows:
-            if str(item.get("run_id") or "") != run_id:
-                continue
-            item["run_status"] = "paused"
-            item["phase"] = "running"
-            item["updated_utc"] = now
-            break
-        store.save_runs(rows)
-        log_portal_event("run_pause", {"run_id": run_id, "workflow_id": workflow_id}, request)
-        return {"ok": True, "run_id": run_id, "run_status": "paused", "workflow_id": workflow_id}
 
-    @app.post("/runs/{run_id}/resume")
-    async def resume_run(run_id: str, request: Request):
-        rows = store.load_runs()
-        row = next((r for r in rows if str(r.get("run_id") or "") == run_id), None)
+        def _mutate(deeds: list[dict]) -> None:
+            for item in deeds:
+                if str(item.get("deed_id") or "") != deed_id:
+                    continue
+                item["deed_status"] = "paused"
+                item["phase"] = "running"
+                item["updated_utc"] = now
+                break
+
+        ledger.mutate_deeds(_mutate)
+        log_portal_event("deed_pause", {"deed_id": deed_id, "workflow_id": workflow_id}, request)
+        return {"ok": True, "deed_id": deed_id, "deed_status": "paused", "workflow_id": workflow_id}
+
+    @app.post("/deeds/{deed_id}/resume")
+    async def resume_deed(deed_id: str, request: Request):
+        row = ledger.get_deed(deed_id)
         if not isinstance(row, dict):
-            raise HTTPException(status_code=404, detail="run not found")
-        work_scale = str(row.get("work_scale") or (row.get("plan") or {}).get("work_scale") or "").strip().lower()
-        if work_scale == "campaign":
-            raise HTTPException(status_code=409, detail="resume_not_supported_for_campaign")
-        workflow_id = await _signal_workflows(run_id, row, signal_name="resume_execution", payload={"source": "portal"})
+            raise HTTPException(status_code=404, detail="deed not found")
+        complexity = str(row.get("complexity") or (row.get("plan") or {}).get("complexity") or ((row.get("plan") or {}).get("brief") or {}).get("complexity") or "").strip().lower()
+        if complexity == "endeavor":
+            raise HTTPException(status_code=409, detail="resume_not_supported_for_endeavor")
+        workflow_id = await _signal_workflows(deed_id, row, signal_name="resume_execution", payload={"source": "portal"})
 
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        for item in rows:
-            if str(item.get("run_id") or "") != run_id:
-                continue
-            item["run_status"] = "running"
-            item["phase"] = "running"
-            item["updated_utc"] = now
-            break
-        store.save_runs(rows)
-        log_portal_event("run_resume", {"run_id": run_id, "workflow_id": workflow_id}, request)
-        return {"ok": True, "run_id": run_id, "run_status": "running", "workflow_id": workflow_id}
 
-    @app.post("/runs/{run_id}/redirect")
-    async def redirect_run(run_id: str, request: Request):
+        def _mutate(deeds: list[dict]) -> None:
+            for item in deeds:
+                if str(item.get("deed_id") or "") != deed_id:
+                    continue
+                item["deed_status"] = "running"
+                item["phase"] = "running"
+                item["updated_utc"] = now
+                break
+
+        ledger.mutate_deeds(_mutate)
+        log_portal_event("deed_resume", {"deed_id": deed_id, "workflow_id": workflow_id}, request)
+        return {"ok": True, "deed_id": deed_id, "deed_status": "running", "workflow_id": workflow_id}
+
+    @app.post("/deeds/{deed_id}/redirect")
+    async def redirect_deed(deed_id: str, request: Request):
         body = await request.json()
         if not isinstance(body, dict):
             body = {}
@@ -389,21 +399,21 @@ def register_basic_routes(
         if not instruction:
             raise HTTPException(status_code=400, detail="instruction_required")
         # Redirect is now a semantic alias of append_requirement.
-        result = await _append_requirement(run_id, instruction, source="portal")
-        log_portal_event("run_redirect", {"run_id": run_id, "instruction_len": len(instruction)}, request)
+        result = await _append_requirement(deed_id, instruction, source="portal")
+        log_portal_event("deed_redirect", {"deed_id": deed_id, "instruction_len": len(instruction)}, request)
         return result
 
-    @app.get("/outcome")
-    def list_outcomes(request: Request, limit: int = 50):
-        outcome_root = require_outcome_root()
-        index = store.load_outcome_index(outcome_root)
-        log_portal_event("outcome_list", {"limit": limit, "count": min(len(index), limit)}, request)
+    @app.get("/offerings")
+    def list_offerings(request: Request, limit: int = 50):
+        offering_root = require_offering_root()
+        index = ledger.load_herald_log()
+        log_portal_event("offering_list", {"limit": limit, "count": min(len(index), limit)}, request)
         return list(reversed(index))[:limit]
 
-    @app.get("/outcome/timeline")
-    def outcome_timeline(request: Request, days: int = 30, limit_per_day: int = 50):
-        outcome_root = require_outcome_root()
-        index = store.load_outcome_index(outcome_root)
+    @app.get("/offerings/timeline")
+    def offering_timeline(request: Request, days: int = 30, limit_per_day: int = 50):
+        offering_root = require_offering_root()
+        index = ledger.load_herald_log()
 
         limit_days = max(1, min(days, 365))
         per_day = max(1, min(limit_per_day, 200))
@@ -416,9 +426,8 @@ def register_basic_routes(
                 {
                     "path": item.get("path", ""),
                     "title": item.get("title", ""),
-                    "run_type": item.get("run_type", ""),
-                    "run_id": item.get("run_id", ""),
-                    "work_scale": item.get("work_scale", ""),
+                    "complexity": item.get("complexity", ""),
+                    "deed_id": item.get("deed_id", ""),
                     "delivered_utc": ts,
                     "day": day_key,
                 }
@@ -434,33 +443,33 @@ def register_basic_routes(
 
         days_sorted = sorted(grouped.keys(), reverse=True)[:limit_days]
         out = [{"day": day, "count": len(grouped.get(day, [])), "items": grouped.get(day, [])} for day in days_sorted]
-        log_portal_event("outcome_timeline", {"days": limit_days, "groups": len(out)}, request)
+        log_portal_event("offering_timeline", {"days": limit_days, "groups": len(out)}, request)
         return {"days": out}
 
-    @app.get("/outcome/{path:path}")
-    def get_outcome_file(path: str, request: Request):
-        outcome_root = require_outcome_root()
-        full = outcome_root / path
+    @app.get("/offerings/{path:path}")
+    def get_offering_file(path: str, request: Request):
+        offering_root = require_offering_root()
+        full = offering_root / path
         try:
-            full.resolve().relative_to(outcome_root.resolve())
+            full.resolve().relative_to(offering_root.resolve())
         except Exception:
-            raise HTTPException(status_code=400, detail="path_outside_outcome_root")
+            raise HTTPException(status_code=400, detail="path_outside_offering_root")
         if not full.exists():
-            log_portal_event("outcome_file_missing", {"path": path}, request)
+            log_portal_event("offering_file_missing", {"path": path}, request)
             raise HTTPException(status_code=404)
-        log_portal_event("outcome_file_access", {"path": path}, request)
+        log_portal_event("offering_file_access", {"path": path}, request)
         return FileResponse(full)
 
     @app.get("/console/overview")
     def console_overview():
-        gate = store.load_gate()
-        runs = store.load_runs()
-        running = [row for row in runs if _run_status(row) == "running"]
+        ward = ledger.load_ward()
+        deeds = ledger.load_deeds()
+        running = [row for row in deeds if _deed_status(row) == "running"]
         return {
-            "gate": gate,
-            "running_runs": len(running),
+            "ward": ward,
+            "running_deeds": len(running),
             "memory": memory.stats(),
-            "playbook": playbook.stats(),
-            "compass": compass.stats(),
+            "lore": lore.stats(),
+            "instinct": instinct.stats(),
             "cortex_usage": cortex.usage_today(),
         }

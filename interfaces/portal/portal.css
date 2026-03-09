@@ -56,9 +56,9 @@ input,textarea{font-family:inherit}
   padding:14px 14px 10px;flex-shrink:0;
 }
 #brand{font-size:14px;font-weight:600;letter-spacing:-.2px;flex:1}
-#gate-dot{width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0;transition:background .3s}
-#gate-dot.yellow{background:var(--amber)}
-#gate-dot.red{background:var(--red)}
+#ward-dot{width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0;transition:background .3s}
+#ward-dot.yellow{background:var(--amber)}
+#ward-dot.red{background:var(--red)}
 
 .icon-btn{
   color:var(--muted);font-size:13px;
@@ -272,7 +272,7 @@ input,textarea{font-family:inherit}
 .prog-track{background:var(--hover);border-radius:4px;height:3px;margin:12px 0;overflow:hidden}
 .prog-fill{height:100%;background:var(--blue);border-radius:4px;transition:width .5s ease}
 
-/* Campaign milestones */
+/* Endeavor passages */
 #ms-timeline{margin-bottom:28px}
 #ms-timeline h3{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
 .ms-row{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)}
@@ -302,39 +302,6 @@ input,textarea{font-family:inherit}
 #output-body pre code{background:none;padding:0}
 #output-body blockquote{border-left:3px solid var(--border);padding-left:14px;color:var(--muted);margin:12px 0}
 #output-body iframe{width:100%;min-height:480px;border:1px solid var(--border);border-radius:var(--r);display:block}
-
-/* ── Circuits ───────────────────────────────────────────── */
-#circuits-wrap{
-  border:1px solid var(--border);
-  border-radius:var(--r);
-  overflow:hidden;
-}
-#circuits-table{
-  width:100%;
-  border-collapse:collapse;
-  table-layout:fixed;
-}
-#circuits-table thead th{
-  text-align:left;
-  font-size:11px;
-  color:var(--muted);
-  background:var(--surface);
-  border-bottom:1px solid var(--border);
-  padding:10px 12px;
-  letter-spacing:.2px;
-}
-#circuits-table tbody td{
-  padding:10px 12px;
-  border-bottom:1px solid var(--border);
-  vertical-align:middle;
-}
-#circuits-table tbody tr:last-child td{border-bottom:none}
-#circuits-table tbody tr.active{background:var(--accent-s)}
-.cir-actions{
-  display:flex;
-  gap:6px;
-  flex-wrap:wrap;
-}
 
 /* ── Rating ─────────────────────────────────────────────── */
 #rating-wrap{margin-top:36px;padding-top:24px;border-top:1px solid var(--border)}
@@ -473,25 +440,6 @@ input,textarea{font-family:inherit}
     line-height: 1.7;
   }
   #output-body iframe { min-height: 320px; }
-  #circuits-table {
-    table-layout:auto;
-  }
-  #circuits-table thead {
-    display:none;
-  }
-  #circuits-table tbody tr{
-    display:block;
-    padding:10px 0;
-  }
-  #circuits-table tbody td{
-    display:block;
-    border-bottom:none;
-    padding:3px 10px;
-  }
-  #circuits-table tbody tr:not(:last-child){
-    border-bottom:1px solid var(--border);
-  }
-
   #q-choices {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

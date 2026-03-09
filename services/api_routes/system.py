@@ -1,9 +1,38 @@
-"""System and integration routes extracted from monolithic services.api."""
+"""System routes extracted from monolithic services.api."""
 from __future__ import annotations
 
+import json
+import logging
+import time
+from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException, Request
+
+logger = logging.getLogger(__name__)
+
+VALID_SYSTEM_STATUSES = {"running", "paused", "restarting", "resetting", "shutdown"}
+VALID_ACTIONS = {"pause", "resume", "shutdown"}
+
+
+def _read_system_status(state_dir: Path) -> dict:
+    path = state_dir / "system_status.json"
+    if not path.exists():
+        return {"status": "running", "updated_utc": "unknown"}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"status": "running", "updated_utc": "unknown"}
+
+
+def _write_system_status(state_dir: Path, status: str, reason: str = "") -> dict:
+    path = state_dir / "system_status.json"
+    utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    data = {"status": status, "updated_utc": utc}
+    if reason:
+        data["reason"] = reason
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return data
 
 
 def register_system_routes(
@@ -11,8 +40,8 @@ def register_system_routes(
     *,
     require_localhost: Callable[[Request], str],
     reset_manager: Any,
-    drive_accounts: Any,
     log_portal_event: Callable[[str, dict[str, Any], Request | None], None],
+    state_dir: Path | None = None,
 ) -> None:
     @app.post("/console/system/reset/challenge")
     async def system_reset_challenge(request: Request):
@@ -80,64 +109,59 @@ def register_system_routes(
 
     @app.get("/console/system/reset/last-report")
     def system_reset_last_report(request: Request):
-        # Read-only report: allow remote Console users after normal auth middleware checks.
-        # Challenge/confirm endpoints remain localhost-only.
         return reset_manager.last_report()
 
-    @app.get("/portal/integrations/drive/status")
-    def drive_status():
-        return drive_accounts.integration_status()
+    # ── System lifecycle (§4.6) ────────────────────────────────────────────
 
-    @app.get("/portal/integrations/drive/files")
-    def drive_files(kind: str = "archive", subpath: str = "", limit: int = 200):
-        result = drive_accounts.list_files(kind=kind, subpath=subpath, limit=limit)
-        if not result.get("ok"):
-            raise HTTPException(status_code=400, detail=result)
-        return result
+    _state = state_dir
 
-    @app.post("/portal/integrations/drive/files/delete")
-    async def drive_delete_file(request: Request):
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        kind = str(body.get("kind") or "archive")
-        path = str(body.get("path") or "").strip()
-        result = drive_accounts.delete_file(kind=kind, rel_path=path)
-        if not result.get("ok"):
-            log_portal_event(
-                "drive_file_delete_failed",
-                {"kind": kind, "path": path, "error": str(result.get("error") or "")},
-                request,
-            )
-            raise HTTPException(status_code=400, detail=result)
-        log_portal_event(
-            "drive_file_deleted",
-            {"kind": kind, "path": path},
-            request,
-        )
-        return result
+    @app.get("/system/status")
+    async def system_status():
+        if not _state:
+            return {"status": "running", "updated_utc": "unknown"}
+        return _read_system_status(_state)
 
-    @app.get("/console/system/storage")
-    def console_storage_status(request: Request):
-        # Read-only storage status: allow remote Console users after normal auth middleware checks.
-        return drive_accounts.integration_status()
-
-    @app.put("/console/system/storage")
-    async def console_storage_update(request: Request):
+    @app.post("/system/{action}")
+    async def system_action(action: str, request: Request):
         require_localhost(request)
+        if not _state:
+            raise HTTPException(500, "state_dir not configured")
+        if action not in VALID_ACTIONS:
+            raise HTTPException(400, f"Invalid action: {action}. Valid: {sorted(VALID_ACTIONS)}")
+
+        current = _read_system_status(_state)
+        current_status = current.get("status", "running")
+
         try:
             body = await request.json()
         except Exception:
             body = {}
         if not isinstance(body, dict):
             body = {}
-        daemon_dir_name = str(body.get("daemon_dir_name") or "").strip()
-        if not daemon_dir_name:
-            raise HTTPException(status_code=400, detail="daemon_dir_name_required")
-        result = drive_accounts.set_daemon_dir_name(daemon_dir_name)
-        if not result.get("ok"):
-            raise HTTPException(status_code=400, detail=result)
-        return result
+        reason = str(body.get("reason") or action)
+
+        if action == "pause":
+            if current_status == "paused":
+                return {"ok": True, "status": "paused", "note": "already paused"}
+            if current_status != "running":
+                raise HTTPException(409, f"Cannot pause from state '{current_status}'")
+            result = _write_system_status(_state, "paused", reason)
+            logger.info("System paused: %s", reason)
+
+        elif action == "resume":
+            if current_status == "running":
+                return {"ok": True, "status": "running", "note": "already running"}
+            if current_status not in {"paused", "restarting"}:
+                raise HTTPException(409, f"Cannot resume from state '{current_status}'")
+            result = _write_system_status(_state, "running", reason)
+            logger.info("System resumed: %s", reason)
+
+        elif action == "shutdown":
+            result = _write_system_status(_state, "shutdown", reason)
+            logger.info("System shutdown requested: %s", reason)
+
+        else:
+            raise HTTPException(400, f"Unhandled action: {action}")
+
+        log_portal_event("system_action", {"action": action, "result": result}, request)
+        return {"ok": True, **result}

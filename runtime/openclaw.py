@@ -66,7 +66,7 @@ class OpenClawAdapter:
             return f"error: {str(e)[:80]}"
 
     def send(self, session_key: str, message: str, agent_id: str | None = None) -> dict:
-        """Spawn an isolated subagent execution for this step."""
+        """Spawn an isolated subagent execution for this move."""
         args: dict[str, Any] = {
             "task": message,
             "runtime": "subagent",
@@ -103,8 +103,31 @@ class OpenClawAdapter:
             return []
         return [self._normalize_message(m) for m in rows if isinstance(m, dict)]
 
-    def session_key(self, agent_id: str, run_id: str, step_id: str) -> str:
-        return f"agent:{agent_id}:run:{run_id}:{step_id}"
+    def session_key(self, agent_id: str, deed_id: str, move_id: str) -> str:
+        return f"agent:{agent_id}:deed:{deed_id}:{move_id}"
+
+    def session_status(self, session_key: str) -> dict:
+        """Check session status via sessions_list, returns abortedLastRun and token counts."""
+        actual_key = self._session_alias.get(session_key, session_key)
+        try:
+            result = self._invoke("sessions_list", {"sessionKey": actual_key})
+            details = self._extract_details(result)
+            sessions = details.get("sessions") or result.get("sessions") or []
+            if isinstance(sessions, list):
+                for s in sessions:
+                    if not isinstance(s, dict):
+                        continue
+                    sk = str(s.get("sessionKey") or s.get("key") or "")
+                    if sk == actual_key or not sk:
+                        return {
+                            "abortedLastRun": bool(s.get("abortedLastRun")),
+                            "contextTokens": int(s.get("contextTokens") or 0),
+                            "totalTokens": int(s.get("totalTokens") or 0),
+                        }
+            return {"abortedLastRun": False, "contextTokens": 0, "totalTokens": 0}
+        except Exception as exc:
+            logger.warning("session_status check failed for %s: %s", actual_key, exc)
+            return {"abortedLastRun": False, "contextTokens": 0, "totalTokens": 0, "error": str(exc)[:100]}
 
     def _invoke(self, tool: str, args: dict) -> dict:
         resp = httpx.post(
@@ -162,7 +185,7 @@ class OpenClawAdapter:
     # ── Snapshot relay ────────────────────────────────────────────────────────
 
     def write_snapshot(self, agent: str, filename: str, content: Any) -> None:
-        """Write a Fabric snapshot file into an Agent's memory directory."""
+        """Write a Psyche snapshot file into an Agent's memory directory."""
         mem_dir = self._home / "workspace" / agent / "memory"
         mem_dir.mkdir(parents=True, exist_ok=True)
         path = mem_dir / filename
@@ -171,9 +194,9 @@ class OpenClawAdapter:
         else:
             path.write_text(str(content))
 
-    def read_agent_output(self, run_path: Path, filename: str) -> Any:
-        """Read a file from an Agent's run output directory."""
-        target = run_path / filename
+    def read_agent_output(self, deed_path: Path, filename: str) -> Any:
+        """Read a file from an Agent's deed output directory."""
+        target = deed_path / filename
         if not target.exists():
             return None
         raw = target.read_text()
@@ -182,7 +205,8 @@ class OpenClawAdapter:
         except json.JSONDecodeError:
             return raw
 
-    def list_runs(self) -> list[Path]:
+    def list_deeds(self) -> list[Path]:
+        """List openclaw execution directories (openclaw/runs/) sorted by recency."""
         runs_dir = self._home / "runs"
         if not runs_dir.exists():
             return []

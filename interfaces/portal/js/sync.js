@@ -1,13 +1,13 @@
 // ── Sync ──────────────────────────────────────────────────
-async function checkGate() {
+async function checkWard() {
   try {
     const d = await api('/health');
-    const g = (d.gate || 'GREEN').toUpperCase();
-    const dot = document.getElementById('gate-dot');
-    dot.className = g === 'RED' ? 'red' : g === 'YELLOW' ? 'yellow' : '';
-    dot.title = 'Gate: ' + g;
+    const w = (d.ward || 'GREEN').toUpperCase();
+    const dot = document.getElementById('ward-dot');
+    dot.className = w === 'RED' ? 'red' : w === 'YELLOW' ? 'yellow' : '';
+    dot.title = 'Ward: ' + w;
   } catch (_) {
-    const dot = document.getElementById('gate-dot');
+    const dot = document.getElementById('ward-dot');
     if (dot) dot.className = 'red';
   }
 }

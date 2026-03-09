@@ -9,29 +9,25 @@ class TestBootstrap:
     def test_bootstrap_creates_dbs(self, tmp_path):
         rep = bootstrap(daemon_home=tmp_path)
         assert (tmp_path / "state" / "memory.db").exists()
-        assert (tmp_path / "state" / "playbook.db").exists()
-        assert (tmp_path / "state" / "compass.db").exists()
+        assert (tmp_path / "state" / "lore.db").exists()
+        assert (tmp_path / "state" / "instinct.db").exists()
 
-    def test_bootstrap_creates_gate(self, tmp_path):
+    def test_bootstrap_creates_ward(self, tmp_path):
         bootstrap(daemon_home=tmp_path)
-        gate = json.loads((tmp_path / "state" / "gate.json").read_text())
-        assert gate["status"] == "GREEN"
+        ward = json.loads((tmp_path / "state" / "ward.json").read_text())
+        assert ward["status"] == "GREEN"
 
-    def test_bootstrap_creates_outcome_index(self, tmp_path):
+    def test_bootstrap_creates_herald_log(self, tmp_path):
         bootstrap(daemon_home=tmp_path)
-        index = json.loads((tmp_path / "outcome" / "index.json").read_text())
-        assert index == []
-
-    def test_bootstrap_seeds_playbook(self, tmp_path):
-        rep = bootstrap(daemon_home=tmp_path)
-        assert rep["fabric"]["playbook"]["methods_seeded"] == 4
+        log_path = tmp_path / "state" / "herald_log.jsonl"
+        assert log_path.exists()
+        assert log_path.read_text() == ""
 
     def test_bootstrap_idempotent(self, tmp_path):
         rep1 = bootstrap(daemon_home=tmp_path)
         rep2 = bootstrap(daemon_home=tmp_path)
-        # Second run: new=False, no re-seeding.
-        assert rep1["fabric"]["playbook"]["methods_seeded"] == 4
-        assert rep2["fabric"]["playbook"]["methods_seeded"] == 0
+        assert rep1["psyche"]["lore"]["new"] is True
+        assert rep2["psyche"]["lore"]["new"] is False
 
     def test_bootstrap_no_openclaw(self, tmp_path):
         rep = bootstrap(daemon_home=tmp_path, openclaw_home=None)
@@ -44,16 +40,16 @@ class TestBootstrap:
 
     def test_validate_openclaw_missing_agents(self, tmp_path):
         cfg = {
-            "agents": {"list": [{"id": "router"}, {"id": "collect"}]},
+            "agents": {"list": [{"id": "counsel"}, {"id": "scout"}]},
             "gateway": {"port": 18789, "auth": {"token": "test"}},
         }
         (tmp_path / "openclaw.json").write_text(json.dumps(cfg))
         result = _validate_openclaw(tmp_path)
         assert any("missing" in w.lower() for w in result["warnings"])
-        assert "build" in result["missing_agents"]
+        assert "artificer" in result["missing_agents"]
 
     def test_validate_openclaw_all_agents_present(self, tmp_path):
-        agents = ["router", "collect", "analyze", "build", "review", "render", "apply"]
+        agents = ["counsel", "scout", "sage", "artificer", "arbiter", "scribe", "envoy"]
         cfg = {"agents": {"list": [{"id": a} for a in agents]}, "gateway": {"port": 18789, "auth": {"token": "t"}}}
         (tmp_path / "openclaw.json").write_text(json.dumps(cfg))
         for a in agents:

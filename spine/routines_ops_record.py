@@ -1,101 +1,69 @@
-"""Spine record routine implementation."""
+"""Spine record routine — write LoreRecord on deed completion."""
 from __future__ import annotations
 
-from typing import Any
+import logging
+
+logger = logging.getLogger(__name__)
 
 
-def run_record(self, run_id: str, plan: dict, step_results: list[dict], outcome: dict) -> dict:
-    with self.tracer.span("spine.record", trigger="nerve:run_completed") as ctx:
-        recipe_name = plan.get("run_type") or "research_report"
-        status = "success" if outcome.get("ok") else "failure"
-        score = float(outcome.get("score", 1.0 if outcome.get("ok") else 0.0))
+def run_record(self, deed_id: str, plan: dict, move_results: list[dict], offering: dict) -> dict:
+    """Record completed deed as a LoreRecord in Lore."""
+    with self.trail.span("spine.record", trigger="nerve:deed_completed") as ctx:
+        success = bool(offering.get("ok"))
+        quality_score = float(offering.get("score", 1.0 if success else 0.0))
 
-        method_id: str | None = None
-        plan_method_id = str(plan.get("method_id") or "").strip()
-        if plan_method_id:
-            method_row = self.playbook.get(plan_method_id)
-            if method_row:
-                method_id = plan_method_id
+        brief = plan.get("brief") or {}
+        objective_text = str(brief.get("objective") or plan.get("objective") or plan.get("title") or "")
+        complexity = str(brief.get("complexity") or plan.get("complexity") or "charge")
 
-        if not method_id:
-            methods = self.playbook.consult(category="dag_pattern")
-            for m in methods:
-                if m["name"] == recipe_name:
-                    method_id = m["method_id"]
-                    break
+        plan_structure = {
+            "moves": plan.get("moves", []),
+        }
+        offering_quality = offering.get("global_score_components") or {}
+        if not offering_quality and quality_score > 0:
+            offering_quality = {"overall": quality_score}
 
-        if method_id:
-            eval_detail = {
-                "run_id": run_id,
-                "steps": len(step_results),
-                "failed_steps": sum(1 for r in step_results if r.get("status") == "error"),
-                "plan_title": str(plan.get("run_title") or plan.get("title") or "")[:100],
-            }
-            self.playbook.evaluate(method_id, run_id, status, score, eval_detail)
-            ctx.step("playbook_eval", {"method_id": method_id, "outcome": status})
+        token_consumption = {}
+        for sr in move_results:
+            provider = str(sr.get("provider") or "unknown")
+            tokens = int(sr.get("tokens_used", 0))
+            if tokens > 0:
+                token_consumption[provider] = token_consumption.get(provider, 0) + tokens
 
-        used_unit_ids: list[str] = plan.get("evidence_unit_ids") or []
-        for uid in used_unit_ids:
-            self.memory.record_usage(uid, run_id, method_id, status)
-        ctx.step("usage_recorded", len(used_unit_ids))
+        duration_s = 0.0
+        for sr in move_results:
+            duration_s += float(sr.get("elapsed_s", 0))
 
-        strategy_id = str(plan.get("strategy_id") or "")
-        cluster_id = str(plan.get("cluster_id") or "")
-        strategy_stage = str(plan.get("strategy_stage") or "")
-        strategy_components: dict[str, Any] = {}
-        strategy_global_score: float | None = None
-        if strategy_id and cluster_id:
-            strategy_components = self._build_global_score_components(step_results, outcome, plan)
-            strategy_global_score = (
-                0.45 * float(strategy_components.get("quality", 0.0))
-                + 0.35 * float(strategy_components.get("stability", 0.0))
-                + 0.10 * float(strategy_components.get("latency", 0.0))
-                + 0.10 * float(strategy_components.get("cost", 0.0))
-            )
-            self.playbook.record_experiment(
-                strategy_id=strategy_id,
-                run_id=run_id,
-                cluster_id=cluster_id,
-                score_components=strategy_components,
-                global_score=strategy_global_score,
-                outcome=status,
-                is_shadow=bool(plan.get("is_shadow", False)),
-            )
-            self._update_run_strategy(
-                run_id=run_id,
-                semantic_cluster=cluster_id,
-                strategy_id=strategy_id,
-                strategy_stage=strategy_stage or "champion",
-                global_score_components=strategy_components,
-                global_score=strategy_global_score,
-                trace_id=ctx.trace_id,
-            )
-            if bool(plan.get("is_shadow")):
-                self._write_shadow_comparison(
-                    run_id=run_id,
-                    shadow_of=str(plan.get("shadow_of") or ""),
-                    cluster_id=cluster_id,
-                    strategy_id=strategy_id,
-                    champion_strategy_id=str(plan.get("shadow_champion_strategy_id") or ""),
-                    global_score=strategy_global_score,
-                    global_components=strategy_components,
-                )
-            ctx.step(
-                "strategy_recorded",
-                {
-                    "strategy_id": strategy_id,
-                    "cluster_id": cluster_id,
-                    "global_score": round(strategy_global_score, 4),
-                },
-            )
+        user_feedback = offering.get("user_feedback") or plan.get("user_feedback")
+        rework_history = plan.get("rework_history")
+
+        objective_embedding = None
+        try:
+            objective_embedding = self.cortex.embed(objective_text)
+        except Exception as exc:
+            logger.warning("Failed to compute objective embedding for deed %s: %s", deed_id, exc)
+
+        record_id = self.lore.record(
+            deed_id=deed_id,
+            objective_text=objective_text,
+            complexity=complexity,
+            move_count=len(move_results),
+            plan_structure=plan_structure,
+            offering_quality=offering_quality,
+            token_consumption=token_consumption,
+            success=success,
+            duration_s=duration_s,
+            user_feedback=user_feedback,
+            rework_history=rework_history,
+            objective_embedding=objective_embedding,
+        )
+        ctx.step("lore_recorded", {"record_id": record_id, "success": success})
 
         result = {
-            "run_id": run_id,
-            "outcome": status,
-            "method_id": method_id,
-            "strategy_id": strategy_id,
-            "semantic_cluster": cluster_id,
-            "global_score": round(strategy_global_score, 4) if strategy_global_score is not None else None,
+            "deed_id": deed_id,
+            "record_id": record_id,
+            "offering": "success" if success else "failure",
+            "quality_score": round(quality_score, 4),
         }
         ctx.set_result(result)
     return result

@@ -67,8 +67,8 @@ function renderStorageStatus(data) {
   const rows = [
     ['Status', data.ready ? '<span style="color:#4ade80">✓ ready</span>' : `<span style="color:#f87171">✗ ${esc(data.error||'not ready')}</span>`],
     ['my_drive_root', esc(data.my_drive_root || '—')],
-    ['archive_root', esc(data.archive_root || '—')],
-    ['outcome_root', esc(data.outcome_root || '—')],
+    ['vault_root', esc(data.vault_root || '—')],
+    ['offering_root', esc(data.offering_root || '—')],
   ];
   body.innerHTML = rows.map(([k, v]) =>
     `<tr><td style="color:var(--muted);padding:4px 0;padding-right:16px;white-space:nowrap">${k}</td><td style="word-break:break-all;padding:4px 0">${v}</td></tr>`

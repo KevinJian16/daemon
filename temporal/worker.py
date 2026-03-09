@@ -16,8 +16,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from daemon_env import load_daemon_env
-from temporal.workflows import GraphDispatchWorkflow
-from temporal.campaign_workflow import CampaignWorkflow
+from temporal.workflows import GraphWillWorkflow
+from temporal.endeavor_workflow import EndeavorWorkflow
 from temporal.activities import DaemonActivities
 
 logger = logging.getLogger(__name__)
@@ -36,15 +36,17 @@ async def start_worker(
     worker = Worker(
         client,
         task_queue=queue,
-        workflows=[GraphDispatchWorkflow, CampaignWorkflow],
+        workflows=[GraphWillWorkflow, EndeavorWorkflow],
         activities=[
-            activities.activity_openclaw_step,
+            activities.activity_openclaw_move,
             activities.activity_spine_routine,
-            activities.activity_finalize_delivery,
-            activities.activity_update_run_status,
-            activities.activity_campaign_bootstrap,
-            activities.activity_campaign_record_milestone,
-            activities.activity_campaign_set_status,
+            activities.activity_finalize_herald,
+            activities.activity_update_deed_status,
+            activities.activity_endeavor_bootstrap,
+            activities.activity_endeavor_record_passage,
+            activities.activity_endeavor_set_status,
+            activities.activity_allocate_retinue,
+            activities.activity_release_retinue,
         ],
         max_concurrent_activities=max_concurrent_activities,
     )

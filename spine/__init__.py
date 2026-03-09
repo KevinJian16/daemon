@@ -1,7 +1,7 @@
 from .nerve import Nerve
-from .trace import Tracer
-from .registry import SpineRegistry
-from .contracts import ContractError, check_contract
+from .trail import Trail
+from .canon import SpineCanon
+from .pact import PactError, check_pact
 from .routines import SpineRoutines
 
-__all__ = ["Nerve", "Tracer", "SpineRegistry", "ContractError", "check_contract", "SpineRoutines"]
+__all__ = ["Nerve", "Trail", "SpineCanon", "PactError", "check_pact", "SpineRoutines"]

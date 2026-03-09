@@ -1,5 +1,5 @@
 async function loadNorm() {
-  const prios = await api('/console/fabric/compass/priorities');
+  const prios = await api('/console/psyche/instinct/priorities');
   document.getElementById('priority-tbody').innerHTML = prios.map((p) =>
     `<tr><td>${p.domain}</td><td>${p.weight}</td><td style="color:var(--muted)">${p.source || 'system'}</td><td style="color:var(--muted)">${fmtTime(p.updated_utc)}</td></tr>`
   ).join('');
@@ -19,7 +19,7 @@ function _normDefaults(scope) {
   const defaults = {
     quality: 'default',
     preference: 'output_language',
-    budget: 'openai_tokens',
+    ration: 'openai_tokens',
   };
   return defaults[scope] || 'default';
 }
@@ -29,9 +29,9 @@ async function _loadNormScopeKeys(scope) {
     const prefs = await api('/console/norm/preferences');
     return (prefs || []).map((p) => String(p.pref_key || '').trim()).filter(Boolean);
   }
-  if (scope === 'budget') {
-    const budgets = await api('/console/norm/budgets');
-    return (budgets || []).map((b) => String(b.resource_type || '').trim()).filter(Boolean);
+  if (scope === 'ration') {
+    const rations = await api('/console/norm/rations');
+    return (rations || []).map((b) => String(b.resource_type || '').trim()).filter(Boolean);
   }
   return ['default', 'research_report', 'daily_brief'];
 }
@@ -107,15 +107,15 @@ function _normDescriptor() {
       rollbackPath: '/console/norm/preferences/' + encodeURIComponent(key) + '/rollback/',
     };
   }
-  if (scope === 'budget') {
+  if (scope === 'ration') {
     return {
       scope,
       key,
-      label: `budget.${key}`,
-      getPath: '/console/norm/budgets/' + encodeURIComponent(key),
-      putPath: '/console/norm/budgets/' + encodeURIComponent(key),
-      versionsPath: '/console/norm/budgets/' + encodeURIComponent(key) + '/versions',
-      rollbackPath: '/console/norm/budgets/' + encodeURIComponent(key) + '/rollback/',
+      label: `ration.${key}`,
+      getPath: '/console/norm/rations/' + encodeURIComponent(key),
+      putPath: '/console/norm/rations/' + encodeURIComponent(key),
+      versionsPath: '/console/norm/rations/' + encodeURIComponent(key) + '/versions',
+      rollbackPath: '/console/norm/rations/' + encodeURIComponent(key) + '/rollback/',
     };
   }
   return {
@@ -135,7 +135,7 @@ function _normEditorContent(scope, value) {
     if (typeof value === 'string') return value;
     return '';
   }
-  if (scope === 'budget') {
+  if (scope === 'ration') {
     const raw = value && typeof value === 'object' ? value : {};
     return JSON.stringify({
       daily_limit: Number(raw.daily_limit || 0),
@@ -151,9 +151,9 @@ function _normWriteBody(scope, rawText) {
   if (scope === 'preference') {
     return {value: String(rawText ?? '')};
   }
-  if (scope === 'budget') {
+  if (scope === 'ration') {
     const text = String(rawText ?? '').trim();
-    if (!text) throw new Error(tx('预算值不能为空', 'Budget value cannot be empty'));
+    if (!text) throw new Error(tx('配额值不能为空', 'Ration value cannot be empty'));
     let dailyLimit = NaN;
     if (/^-?\d+(\.\d+)?$/.test(text)) {
       dailyLimit = Number(text);
@@ -206,12 +206,12 @@ async function saveNormEditor() {
 async function loadNormCatalog() {
   const qualityTbody = document.getElementById('norm-quality-tbody');
   const prefTbody = document.getElementById('norm-pref-tbody');
-  const budgetTbody = document.getElementById('norm-budget-tbody');
+  const rationTbody = document.getElementById('norm-ration-tbody');
   try {
-    const [qualityKeys, prefs, budgets] = await Promise.all([
+    const [qualityKeys, prefs, rations] = await Promise.all([
       _loadNormScopeKeys('quality'),
       api('/console/norm/preferences'),
-      api('/console/norm/budgets'),
+      api('/console/norm/rations'),
     ]);
     if (qualityTbody) {
       qualityTbody.innerHTML = (qualityKeys || []).map((k) => `
@@ -233,21 +233,21 @@ async function loadNormCatalog() {
         </tr>
       `).join('') || `<tr><td colspan="4" style="color:var(--muted)">${tx('暂无偏好配置', 'No preferences')}</td></tr>`;
     }
-    if (budgetTbody) {
-      budgetTbody.innerHTML = (budgets || []).map((b) => `
+    if (rationTbody) {
+      rationTbody.innerHTML = (rations || []).map((b) => `
         <tr>
           <td title="${esc(b.resource_type || '')}">${esc(b.resource_type || '')}</td>
           <td>${Number(b.daily_limit || 0).toLocaleString()}</td>
           <td>${Number(b.current_usage || 0).toLocaleString()}</td>
-          <td class="col-action-cell"><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="editNormKey('budget','${encodeURIComponent(b.resource_type || '')}')">${tx('编辑', 'Edit')}</button></td>
+          <td class="col-action-cell"><button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="editNormKey('ration','${encodeURIComponent(b.resource_type || '')}')">${tx('编辑', 'Edit')}</button></td>
         </tr>
-      `).join('') || `<tr><td colspan="4" style="color:var(--muted)">${tx('暂无预算配置', 'No budgets')}</td></tr>`;
+      `).join('') || `<tr><td colspan="4" style="color:var(--muted)">${tx('暂无配额配置', 'No rations')}</td></tr>`;
     }
     await refreshNormKeyOptions(false);
   } catch (e) {
     if (qualityTbody) qualityTbody.innerHTML = `<tr><td colspan="4" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
     if (prefTbody) prefTbody.innerHTML = `<tr><td colspan="4" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
-    if (budgetTbody) budgetTbody.innerHTML = `<tr><td colspan="4" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
+    if (rationTbody) rationTbody.innerHTML = `<tr><td colspan="4" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
   }
 }
 

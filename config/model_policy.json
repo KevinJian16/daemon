@@ -1,44 +1,18 @@
 {
-  "_comment": "Model routing policy — maps capabilities/clusters to model aliases. Single source of truth consumed by Cortex and OpenClaw via relay-generated snapshot.",
-  "_version": "1.3.0",
-  "_updated": "2026-03-06",
+  "_comment": "Model routing policy — maps agents to model aliases. Single source of truth consumed by Cortex and OpenClaw.",
+  "_version": "2.0.0",
+  "_updated": "2026-03-08",
   "default_alias": "fast",
-  "by_capability": {
-    "intake":        "fast",
-    "record":        "fast",
-    "tend":          "fast",
-    "pulse":         "fast",
-    "judge":         "fast",
-    "relay":         "fast",
-    "witness":       "analysis",
-    "learn":         "analysis",
-    "distill":       "analysis",
-    "focus":         "analysis",
-    "quality_gate":  "review",
-    "rubric_review": "review",
-    "code_execute":  "qwen"
-  },
-  "by_semantic_cluster": {
-    "clst_research_report":     "analysis",
-    "clst_knowledge_synthesis": "glm",
-    "clst_dev_project":         "qwen",
-    "clst_personal_plan":       "fast"
-  },
-  "by_risk_level": {
-    "high":   "review",
-    "medium": "analysis",
-    "low":    "fast"
-  },
   "agent_model_map": {
     "_comment": "Authoritative per-agent OpenClaw model assignment. Mirrors openclaw.json agent overrides.",
-    "router":   "fast",
-    "collect":  "fast",
-    "analyze":  "analysis",
-    "build":    "fast",
-    "review":   "review",
-    "render":   "glm",
-    "apply":    "fast",
-    "opencode": "qwen"
+    "counsel":    "fast",
+    "scout":      "fast",
+    "sage":       "analysis",
+    "artificer":  "fast",
+    "arbiter":    "review",
+    "scribe":     "glm",
+    "envoy":      "fast",
+    "opencode":   "qwen"
   },
   "budget_limits": {
     "minimax_tokens_per_day":   20000000,

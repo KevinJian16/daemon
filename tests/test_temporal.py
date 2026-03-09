@@ -1,19 +1,19 @@
-"""Tests for Temporal workflow DAG logic (unit tests — no Temporal server needed)."""
+"""Tests for Temporal workflow DAG logic (unit tests -- no Temporal server needed)."""
 import pytest
-from temporal.workflows import GraphDispatchWorkflow, RunInput
+from temporal.workflows import GraphWillWorkflow, DeedInput
 
 
-class TestGraphDispatchWorkflow:
+class TestGraphWillWorkflow:
     """Test workflow helper methods that don't require Temporal runtime."""
 
     def setup_method(self):
-        self.wf = GraphDispatchWorkflow()
+        self.wf = GraphWillWorkflow()
 
-    def test_step_id_from_id_field(self):
-        assert self.wf._step_id({"id": "collect_1"}, 0) == "collect_1"
+    def test_move_id_from_id_field(self):
+        assert self.wf._move_id({"id": "scout_1"}, 0) == "scout_1"
 
-    def test_step_id_from_index(self):
-        assert self.wf._step_id({}, 3) == "step_3"
+    def test_move_id_from_index(self):
+        assert self.wf._move_id({}, 3) == "move_3"
 
     def test_deps_from_depends_on(self):
         assert self.wf._deps({"depends_on": ["a", "b"]}) == ["a", "b"]
@@ -22,69 +22,84 @@ class TestGraphDispatchWorkflow:
         assert self.wf._deps({}) == []
 
     def test_agent(self):
-        assert self.wf._agent({"agent": "collect"}) == "collect"
+        assert self.wf._agent({"agent": "scout"}) == "scout"
         assert self.wf._agent({}) == ""
 
     def test_agent_limits_defaults(self):
         limits = self.wf._agent_limits({})
-        assert limits["collect"] == 8
-        assert limits["apply"] == 1
-        assert limits["build"] == 2
+        assert limits["scout"] == 8
+        assert limits["envoy"] == 1
+        assert limits["artificer"] == 2
 
     def test_agent_limits_plan_override(self):
-        limits = self.wf._agent_limits({"agent_concurrency": {"collect": 3}})
-        assert limits["collect"] == 3
-        assert limits["analyze"] == 4  # default preserved
+        limits = self.wf._agent_limits({"agent_concurrency": {"scout": 3}})
+        assert limits["scout"] == 3
+        assert limits["sage"] == 4  # default preserved
 
     def test_timeouts_default(self):
         st, sc = self.wf._timeouts({}, {})
         assert st.total_seconds() == 480
         assert sc.total_seconds() == 510
 
-    def test_timeouts_step_override(self):
+    def test_timeouts_move_override(self):
         st, sc = self.wf._timeouts({}, {"timeout_s": 300})
         assert st.total_seconds() == 300
 
     def test_timeouts_plan_hint(self):
-        st, sc = self.wf._timeouts({"timeout_hints": {"collect": 600}}, {"agent": "collect"})
+        st, sc = self.wf._timeouts({"timeout_hints": {"scout": 600}}, {"agent": "scout"})
         assert st.total_seconds() == 600
 
-    def test_rework_steps_quality_failure(self):
-        step_list = [
-            {"id": "collect", "agent": "collect"},
-            {"id": "analyze", "agent": "analyze"},
-            {"id": "review", "agent": "review"},
-            {"id": "render", "agent": "render"},
+    def test_rework_moves_arbiter_rejected(self):
+        move_list = [
+            {"id": "scout", "agent": "scout"},
+            {"id": "sage", "agent": "sage"},
+            {"id": "arbiter", "agent": "arbiter"},
+            {"id": "scribe", "agent": "scribe"},
         ]
-        steps = self.wf._rework_steps(step_list, "quality_gate_failed", 1)
-        agents = [self.wf._agent(s) for s in steps]
-        assert "review" in agents
-        assert "render" in agents
+        moves = self.wf._rework_moves(move_list, "arbiter_rejected", 1)
+        agents = [self.wf._agent(m) for m in moves]
+        assert "arbiter" in agents
+        assert "scribe" in agents
 
-    def test_rework_steps_collection_failure(self):
-        step_list = [
-            {"id": "collect", "agent": "collect"},
-            {"id": "analyze", "agent": "analyze"},
-            {"id": "render", "agent": "render"},
+    def test_rework_moves_collection_failure(self):
+        move_list = [
+            {"id": "scout", "agent": "scout"},
+            {"id": "sage", "agent": "sage"},
+            {"id": "scribe", "agent": "scribe"},
         ]
-        steps = self.wf._rework_steps(step_list, "brief_items_too_few", 1)
-        agents = [self.wf._agent(s) for s in steps]
-        assert "collect" in agents
+        moves = self.wf._rework_moves(move_list, "glance_items_too_few", 1)
+        agents = [self.wf._agent(m) for m in moves]
+        assert "scout" in agents
 
-    def test_rework_step_ids_get_suffix(self):
-        step_list = [{"id": "render_1", "agent": "render"}]
-        steps = self.wf._rework_steps(step_list, "quality_gate_failed", 2)
-        assert steps[0]["id"] == "render_1_rework_2"
+    def test_rework_move_ids_get_suffix(self):
+        move_list = [{"id": "scribe_1", "agent": "scribe"}]
+        moves = self.wf._rework_moves(move_list, "arbiter_rejected", 2)
+        assert moves[0]["id"] == "scribe_1_rework_2"
 
     def test_rework_instruction_appended(self):
-        step_list = [{"id": "render_1", "agent": "render", "instruction": "Original"}]
-        steps = self.wf._rework_steps(step_list, "quality_gate_failed", 1)
-        assert "Original" in steps[0]["instruction"]
-        assert "Rework" in steps[0]["instruction"]
+        move_list = [{"id": "scribe_1", "agent": "scribe", "instruction": "Original"}]
+        moves = self.wf._rework_moves(move_list, "arbiter_rejected", 1)
+        assert "Original" in moves[0]["instruction"]
+        assert "Rework" in moves[0]["instruction"]
 
-    def test_rework_no_steps_for_empty_dag(self):
-        steps = self.wf._rework_steps([], "quality_gate_failed", 1)
-        assert steps == []
+    def test_rework_no_moves_for_empty_dag(self):
+        moves = self.wf._rework_moves([], "arbiter_rejected", 1)
+        assert moves == []
+
+    def test_last_arbiter_result(self):
+        results = [
+            {"move_id": "scout_1", "status": "ok"},
+            {"move_id": "arbiter_1", "status": "ok", "arbiter_verdict": "pass"},
+        ]
+        arbiter_result = self.wf._last_arbiter_result(results)
+        assert arbiter_result is not None
+        assert arbiter_result["move_id"] == "arbiter_1"
+
+    def test_needs_rework_verdict(self):
+        assert self.wf._needs_rework({"arbiter_verdict": "rework"}) is True
+        assert self.wf._needs_rework({"arbiter_verdict": "pass"}) is False
+        assert self.wf._needs_rework({"status": "rework"}) is True
+        assert self.wf._needs_rework({"status": "ok"}) is False
 
 
 class TestDaemonActivities:
@@ -92,64 +107,34 @@ class TestDaemonActivities:
 
     def setup_method(self, tmp_path_factory):
         import os
-        self.tmp = None  # Will use tmp_path from pytest where needed.
+        self.tmp = None
 
-    def test_structural_check_passes(self, tmp_path):
-        from temporal.activities import DaemonActivities
-        import os
-        os.environ["DAEMON_HOME"] = str(tmp_path)
-        acts = DaemonActivities()
-        profile = {"min_word_count": 5, "forbidden_markers": ["[INTERNAL]"]}
-        result = acts._structural_check("This is a sufficient response here.", profile)
-        assert result["ok"] is True
-
-    def test_structural_check_forbidden_marker(self, tmp_path):
-        from temporal.activities import DaemonActivities
-        import os
-        os.environ["DAEMON_HOME"] = str(tmp_path)
-        acts = DaemonActivities()
-        profile = {"forbidden_markers": ["[INTERNAL]"]}
-        result = acts._structural_check("Some content [INTERNAL] here.", profile)
-        assert result["ok"] is False
-        assert result["error_code"] == "forbidden_marker"
-
-    def test_structural_check_word_count_too_low(self, tmp_path):
-        from temporal.activities import DaemonActivities
-        import os
-        os.environ["DAEMON_HOME"] = str(tmp_path)
-        acts = DaemonActivities()
-        profile = {"min_word_count": 100}
-        result = acts._structural_check("Too short.", profile)
-        assert result["ok"] is False
-        assert result["error_code"] == "word_count_too_low"
-
-    def test_update_run_status_creates_file(self, tmp_path):
+    def test_update_deed_status_creates_file(self, tmp_path):
         from temporal.activities import DaemonActivities
         import os, json
         os.environ["DAEMON_HOME"] = str(tmp_path)
         acts = DaemonActivities()
-        acts._update_run_status("run_001", {"run_id": "t1"}, "completed")
-        recent_runs = json.loads((tmp_path / "state" / "runs.json").read_text())
-        assert any(t["run_id"] == "t1" and t["status"] == "completed" for t in recent_runs)
+        acts._update_deed_status("deed_001", {"deed_id": "t1"}, "running")
+        recent_deeds = json.loads((tmp_path / "state" / "deeds.json").read_text())
+        assert any(t["deed_id"] == "t1" and t["deed_status"] == "running" for t in recent_deeds)
 
-    def test_update_run_status_atomic(self, tmp_path):
+    def test_update_deed_status_atomic(self, tmp_path):
         """Verify no partial write: .tmp file cleaned up."""
         from temporal.activities import DaemonActivities
         import os
         os.environ["DAEMON_HOME"] = str(tmp_path)
         acts = DaemonActivities()
-        acts._update_run_status("run_001", {"run_id": "t1"}, "completed")
-        tmp_candidates = list((tmp_path / "state").glob("runs.json.tmp*"))
+        acts._update_deed_status("deed_001", {"deed_id": "t1"}, "running")
+        tmp_candidates = list((tmp_path / "state").glob("deeds.json.tmp*"))
         assert len(tmp_candidates) == 0
 
-    def test_update_outcome_index(self, tmp_path):
+    def test_update_offering_index(self, tmp_path):
         from temporal.activities import DaemonActivities
-        import os, json
+        import os
         os.environ["DAEMON_HOME"] = str(tmp_path)
-        (tmp_path / "outcome").mkdir()
-        (tmp_path / "outcome" / "index.json").write_text("[]")
+        (tmp_path / "offerings").mkdir()
         acts = DaemonActivities()
-        acts._update_outcome_index(tmp_path / "outcome" / "manual" / "run1", {"title": "T", "run_type": "manual", "run_id": "t1"})
-        index = json.loads((tmp_path / "outcome" / "index.json").read_text())
-        assert len(index) == 1
-        assert index[0]["run_id"] == "t1"
+        acts._update_offering_index(tmp_path / "offerings" / "2026-03" / "deed1", {"title": "T", "complexity": "charge", "deed_id": "t1"})
+        log = acts._ledger.load_herald_log()
+        assert len(log) == 1
+        assert log[0]["deed_id"] == "t1"

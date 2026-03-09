@@ -11,10 +11,10 @@ async function loadModelControl() {
   try {
     const [policy, registry, usage, policyVersions, registryVersions] = await Promise.all([
       api('/console/model-policy'),
-      api('/console/model-registry'),
+      api('/console/model-canon'),
       api('/console/model-usage?limit=1000'),
       api('/console/model-policy/versions?limit=50'),
-      api('/console/model-registry/versions?limit=50'),
+      api('/console/model-canon/versions?limit=50'),
     ]);
     currentModelPolicy = policy || {};
     const policyCount = Object.keys(policy || {}).length;
@@ -84,7 +84,7 @@ async function loadModelControl() {
     if (versionsBody) {
       const rows = [];
       for (const v of (policyVersions || [])) rows.push({target: 'model_policy', ...v});
-      for (const v of (registryVersions || [])) rows.push({target: 'registry', ...v});
+      for (const v of (registryVersions || [])) rows.push({target: 'canon', ...v});
       rows.sort((a, b) => String(b.changed_utc || '').localeCompare(String(a.changed_utc || '')));
       currentModelVersions = rows;
       populateModelVersionSelect(rows);
@@ -188,13 +188,13 @@ async function saveModelRegistry(rawText = '{}') {
   try {
     parsed = JSON.parse(raw);
   } catch (e) {
-    alert(tx('模型注册表 JSON 无效：', 'Registry JSON invalid: ') + e.message);
+    alert(tx('模型 Canon JSON 无效：', 'Canon JSON invalid: ') + e.message);
     return;
   }
   try {
-    await apiWrite('/console/model-registry', 'PUT', parsed);
+    await apiWrite('/console/model-canon', 'PUT', parsed);
   } catch (e) {
-    alert(tx('保存模型注册表失败：', 'Save model registry failed: ') + e.message);
+    alert(tx('保存模型 Canon 失败：', 'Save model canon failed: ') + e.message);
   }
 }
 
@@ -219,12 +219,12 @@ async function openModelPolicyEditor() {
 
 async function openModelRegistryEditor() {
   await openUnifiedEditor({
-    key: 'model:registry',
-    title: tx('模型注册表', 'Model Registry'),
-    subtitle: 'config/model_registry.json',
+    key: 'model:canon',
+    title: tx('模型 Canon', 'Model Canon'),
+    subtitle: 'config/model_canon.json',
     hint: tx('保存后自动刷新模型用量与版本列表。', 'Save refreshes model usage and version list.'),
     loadText: async () => {
-      const data = await api('/console/model-registry');
+      const data = await api('/console/model-canon');
       return JSON.stringify(data || {}, null, 2);
     },
     saveText: async (text) => {
@@ -241,8 +241,8 @@ async function rollbackModelConfigVersion(targetKey, version) {
   const v = Number(version || 0);
   if (!target || !v) return;
   if (!confirm(tx(`确认将模型 ${target} 回滚到版本 ${v} 吗？`, `Rollback model ${target} to version ${v}?`))) return;
-  const endpoint = target === 'registry'
-    ? '/console/model-registry/rollback/' + v
+  const endpoint = target === 'canon'
+    ? '/console/model-canon/rollback/' + v
     : '/console/model-policy/rollback/' + v;
   try {
     await apiWrite(endpoint, 'POST', {});

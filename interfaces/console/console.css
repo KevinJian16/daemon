@@ -39,7 +39,7 @@ header {
   background: var(--surface);
 }
 header h1 { font-size: 14px; font-weight: 600; letter-spacing: -.2px; }
-#gate-badge { padding: 2px 9px; border-radius: 4px; font-size: 10px; font-weight: 600; letter-spacing: .4px; }
+#ward-badge { padding: 2px 9px; border-radius: 4px; font-size: 10px; font-weight: 600; letter-spacing: .4px; }
 .GREEN { background: rgba(21,128,61,.12); color: var(--green); }
 .YELLOW { background: rgba(180,83,9,.12); color: var(--amber); }
 .RED { background: rgba(185,28,28,.12); color: var(--red); }
@@ -364,7 +364,7 @@ textarea.editor:focus { border-color: var(--accent); }
     width: 100%;
     font-size: 13px;
   }
-  #running-runs {
+  #running-deeds {
     width: 100%;
     margin-left: 0 !important;
   }
@@ -419,37 +419,33 @@ textarea.editor:focus { border-color: var(--accent); }
     width: min(96px, 100%);
   }
   /* Dense data tables: keep words/buttons intact with horizontal scroll in-panel */
-  #panel-traces,
-  #panel-strategies .card,
+  #panel-trails,
   #panel-model .card,
   #panel-agents .card,
   #panel-schedules .card,
-  #panel-campaigns .card {
+  #panel-endeavors .card {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
   }
-  #panel-traces > table,
-  #panel-strategies .card > table,
+  #panel-trails > table,
   #panel-model .card > table,
   #panel-agents .card > table,
   #panel-schedules .card > table,
-  #panel-campaigns .card > table {
+  #panel-endeavors .card > table {
     min-width: 720px !important;
     table-layout: auto !important;
     width: max-content;
   }
-  #panel-traces > table th,
-  #panel-traces > table td,
-  #panel-strategies .card > table th,
-  #panel-strategies .card > table td,
+  #panel-trails > table th,
+  #panel-trails > table td,
   #panel-model .card > table th,
   #panel-model .card > table td,
   #panel-agents .card > table th,
   #panel-agents .card > table td,
   #panel-schedules .card > table th,
   #panel-schedules .card > table td,
-  #panel-campaigns .card > table th,
-  #panel-campaigns .card > table td {
+  #panel-endeavors .card > table th,
+  #panel-endeavors .card > table td {
     white-space: nowrap;
     overflow-wrap: normal;
     word-break: keep-all;
@@ -457,22 +453,21 @@ textarea.editor:focus { border-color: var(--accent); }
     overflow: hidden;
     vertical-align: middle;
   }
-  #panel-strategies td .action,
   #panel-model td .action,
   #panel-agents td .action,
   #panel-schedules td .action,
-  #panel-campaigns td .action,
-  #panel-traces td .action {
+  #panel-endeavors td .action,
+  #panel-trails td .action {
     white-space: nowrap;
     word-break: keep-all;
     overflow-wrap: normal;
   }
-  #panel-traces > table th,
-  #panel-traces > table td {
+  #panel-trails > table th,
+  #panel-trails > table td {
     font-size: 10px;
     padding: 5px;
   }
-  #panel-traces .trace-id-btn {
+  #panel-trails .trail-id-btn {
     max-width: 100%;
     white-space: nowrap;
     overflow: hidden;

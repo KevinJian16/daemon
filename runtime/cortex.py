@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from runtime.trace_context import current_trace
+from runtime.trail_context import current_trail
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ def _utc() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-# Provider priorities applied when no Compass routing is available.
+# Provider priorities applied when no Instinct routing is available.
 # MiniMax is first — it is the high-frequency workhorse; Zhipu/Qwen/DeepSeek handle heavy analysis.
 _DEFAULT_PROVIDER_ORDER = ["minimax", "zhipu", "qwen", "deepseek", "openai", "anthropic"]
 
@@ -56,9 +56,9 @@ class CortexError(Exception):
 class Cortex:
     """Unified LLM access layer. Manages provider selection, fallback, token metering, degradation."""
 
-    def __init__(self, compass=None, usage_path: Path | None = None) -> None:
-        # compass: CompassFabric | None — if provided, reads dynamic routing strategy.
-        self._compass = compass
+    def __init__(self, instinct=None, usage_path: Path | None = None) -> None:
+        # instinct: Instinct | None — if provided, reads dynamic routing strategy.
+        self._instinct = instinct
         self._usage: list[dict] = []
         self._clients: dict[str, Any] = {}
         self._usage_path = usage_path or self._default_usage_path()
@@ -129,8 +129,8 @@ class Cortex:
         policy = _load_policy()
         route = policy.get("provider_route") if isinstance(policy.get("provider_route"), list) else []
         ordered = [str(p) for p in route if str(p) in self._clients]
-        if self._compass:
-            primary = self._compass.get_pref("model_primary", "")
+        if self._instinct:
+            primary = self._instinct.get_pref("model_primary", "")
             if primary and primary in self._clients and primary not in ordered:
                 ordered = [primary] + ordered
         for p in _DEFAULT_PROVIDER_ORDER:
@@ -172,7 +172,7 @@ class Cortex:
             t0 = time.time()
             try:
                 result, in_t, out_t = self._call(resolved_provider, prompt, resolved_model, max_tokens, temperature)
-                if not self._budget_admit(resolved_provider, in_t + out_t):
+                if not self._ration_admit(resolved_provider, in_t + out_t):
                     self._record_usage(
                         resolved_provider,
                         resolved_model or resolved_provider,
@@ -180,7 +180,7 @@ class Cortex:
                         out_t,
                         round(time.time() - t0, 2),
                         False,
-                        "provider_budget_exceeded",
+                        "provider_ration_exceeded",
                         prompt_preview=prompt[:300],
                         provider_route=attempted_route,
                     )
@@ -210,13 +210,13 @@ class Cortex:
             raise CortexError("no LLM providers configured")
 
         last_err: Exception | None = None
-        budget_blocked = False
+        ration_blocked = False
         for provider in providers:
             attempted_route.append(provider)
             t0 = time.time()
             try:
                 result, in_tokens, out_tokens = self._call(provider, prompt, resolved_model, max_tokens, temperature)
-                if not self._budget_admit(provider, in_tokens + out_tokens):
+                if not self._ration_admit(provider, in_tokens + out_tokens):
                     elapsed = time.time() - t0
                     self._record_usage(
                         provider,
@@ -225,12 +225,12 @@ class Cortex:
                         out_tokens,
                         elapsed,
                         False,
-                        "provider_budget_exceeded",
+                        "provider_ration_exceeded",
                         prompt_preview=prompt[:300],
                         provider_route=attempted_route,
                     )
-                    budget_blocked = True
-                    last_err = CortexError("provider_budget_exceeded")
+                    ration_blocked = True
+                    last_err = CortexError("provider_ration_exceeded")
                     continue
                 elapsed = time.time() - t0
                 self._record_usage(
@@ -260,10 +260,10 @@ class Cortex:
                 )
                 last_err = e
 
-        if budget_blocked:
+        if ration_blocked:
             route = "->".join(attempted_route)
             raise CortexError(
-                f"provider_budget_exceeded: all candidate providers blocked or failed after budget checks; "
+                f"provider_ration_exceeded: all candidate providers blocked or failed after ration checks; "
                 f"provider_route={route}"
             )
         route = "->".join(attempted_route)
@@ -289,14 +289,20 @@ class Cortex:
         except json.JSONDecodeError as e:
             raise CortexError(f"structured: invalid JSON from LLM: {e}") from e
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        """Return embeddings for a list of texts. Uses first available provider with embed support."""
-        if "openai" in self._clients:
-            client = self._clients["openai"]
-            resp = client.embeddings.create(model="text-embedding-3-small", input=texts)
-            return [item.embedding for item in resp.data]
-        # DeepSeek and MiniMax do not support embeddings; only OpenAI does.
-        raise CortexError("no embedding provider available (need openai)")
+    def embed(self, text: str | list[str]) -> list[float] | list[list[float]]:
+        """Return embedding(s). Single string → single vector; list → list of vectors.
+
+        Provider priority: zhipu (embedding-3) → openai (text-embedding-3-small).
+        """
+        client = self._clients.get("zhipu") or self._clients.get("openai")
+        if client is None:
+            raise CortexError("no embedding provider available (need zhipu or openai)")
+        model = "embedding-3" if "zhipu" in self._clients else "text-embedding-3-small"
+        if isinstance(text, str):
+            resp = client.embeddings.create(model=model, input=[text])
+            return resp.data[0].embedding
+        resp = client.embeddings.create(model=model, input=text)
+        return [item.embedding for item in resp.data]
 
     def try_or_degrade(self, fn: Callable[[], Any], fallback: Callable[[], Any]) -> Any:
         """Try fn(); if Cortex is unavailable or fails, run fallback() instead."""
@@ -324,7 +330,7 @@ class Cortex:
                 by_provider[p]["errors"] += 1
         return {"date": today, "by_provider": by_provider, "total_calls": len(today_usage)}
 
-    def recent_traces(self, limit: int = 20) -> list[dict]:
+    def recent_trails(self, limit: int = 20) -> list[dict]:
         return self._usage[-limit:]
 
     def usage_between(self, since: str | None = None, until: str | None = None, limit: int = 1000) -> list[dict]:
@@ -340,10 +346,10 @@ class Cortex:
                 break
         return list(reversed(items))
 
-    def usage_for_trace(self, trace_id: str, limit: int = 200) -> list[dict]:
-        if not trace_id:
+    def usage_for_trail(self, trail_id: str, limit: int = 200) -> list[dict]:
+        if not trail_id:
             return []
-        items = [u for u in self._usage if str(u.get("trace_id", "")) == str(trace_id)]
+        items = [u for u in self._usage if str(u.get("trail_id", "")) == str(trail_id)]
         return items[-limit:]
 
     # ── Internal ─────────────────────────────────────────────────────────────
@@ -388,7 +394,7 @@ class Cortex:
         # Reasoner responses include reasoning_content + content; we use content (final answer).
         text = resp.choices[0].message.content or ""
         usage = resp.usage
-        # deepseek-reasoner reports reasoning tokens separately; sum all for budget tracking.
+        # deepseek-reasoner reports reasoning tokens separately; sum all for ration tracking.
         in_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
         out_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
         return text, in_tokens, out_tokens
@@ -434,7 +440,7 @@ class Cortex:
         output_preview: str | None = None,
         provider_route: list[str] | None = None,
     ) -> None:
-        trace = current_trace()
+        trail = current_trail()
         entry = {
             "timestamp": _utc(),
             "provider": provider,
@@ -443,8 +449,8 @@ class Cortex:
             "out_tokens": out_t,
             "elapsed_s": round(elapsed, 2),
             "success": success,
-            "trace_id": trace.get("trace_id", ""),
-            "routine": trace.get("routine", ""),
+            "trail_id": trail.get("trail_id", ""),
+            "routine": trail.get("routine", ""),
         }
         if error:
             entry["error"] = error
@@ -461,36 +467,31 @@ class Cortex:
             with self._usage_path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except Exception as exc:
-            logger.warning("Failed to persist cortex usage trace: %s", exc)
+            logger.warning("Failed to persist cortex usage trail: %s", exc)
 
-    def _budget_admit(self, provider: str, tokens: int) -> bool:
-        if not self._compass:
+    def _ration_admit(self, provider: str, tokens: int) -> bool:
+        if not self._instinct:
             return True
         if tokens <= 0:
             return True
         resource_key = f"{provider}_tokens"
-        ok = self._compass.consume_budget(resource_key, tokens)
+        ok = self._instinct.consume_ration(resource_key, tokens)
         if not ok:
-            self._emit_budget_signal(provider, tokens)
+            self._emit_ration_signal(provider, tokens)
         return ok
 
-    def _emit_budget_signal(self, provider: str, tokens: int) -> None:
-        if not self._compass:
+    def _emit_ration_signal(self, provider: str, tokens: int) -> None:
+        if not self._instinct:
             return
         today = time.strftime("%Y-%m-%d", time.gmtime())
-        dedupe_key = f"signal.provider_budget_exceeded.{provider}.{today}"
-        if self._compass.get_pref(dedupe_key, "") == "1":
+        dedupe_key = f"ration_exceeded.{provider}.{today}"
+        if self._instinct.get_pref(dedupe_key, "") == "1":
             return
         try:
-            self._compass.add_signal(
-                domain="model_budget",
-                trend=f"provider_budget_exceeded:{provider}:{tokens}",
-                severity="high",
-                ttl_hours=24,
-            )
-            self._compass.set_pref(dedupe_key, "1", source="system", changed_by="cortex")
+            self._instinct.set_pref(dedupe_key, "1", source="system", changed_by="cortex")
+            logger.warning("Provider ration exceeded: %s (%d tokens)", provider, tokens)
         except Exception as exc:
-            logger.warning("Failed to emit provider budget signal: %s", exc)
+            logger.warning("Failed to record ration signal: %s", exc)
 
     def _load_usage(self) -> None:
         if not self._usage_path.exists():
@@ -498,7 +499,7 @@ class Cortex:
         try:
             lines = self._usage_path.read_text(encoding="utf-8").splitlines()
         except Exception as exc:
-            logger.warning("Failed to read cortex usage trace file: %s", exc)
+            logger.warning("Failed to read cortex usage trail file: %s", exc)
             return
         loaded: list[dict] = []
         for line in lines[-5000:]:

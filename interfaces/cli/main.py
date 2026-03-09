@@ -65,27 +65,27 @@ Daemon CLI
 Usage: daemon <command> [options]
 
 Commands:
-  health                    Show system health and gate status
-  submit <plan.json>        Submit a run plan from file
-  runs [--run-status STATUS] List runs
-  run <run_id>              Show run details
-  outcomes [--limit N]      List recent outcomes
-  chat                      Start interactive chat session
-  spine status              Show Spine routine status
-  spine trigger <routine>   Manually trigger a Spine routine
-  fabric memory             Show Memory Fabric stats
-  fabric playbook           Show active Playbook methods
-  fabric compass            Show Compass priorities + budgets
-  norm get <name>           Show a quality profile
-  norm set <name>           Set quality profile (reads JSON from stdin)
-  traces [--routine R]      Show recent traces
+  health                      Show system health and Ward status
+  submit <plan.json>          Submit a Deed plan from file
+  deeds [--deed-status STATUS] List Deeds
+  deed <deed_id>              Show Deed details
+  offerings [--limit N]       List recent Offerings
+  chat                        Start interactive Voice session
+  spine status                Show Spine routine status
+  spine trigger <routine>     Manually trigger a Spine routine
+  psyche memory               Show Memory Psyche stats
+  psyche lore                 Show active Lore methods
+  psyche instinct             Show Instinct priorities + rations
+  norm get <name>             Show a quality profile
+  norm set <name>             Set quality profile (reads JSON from stdin)
+  trails [--routine R]        Show recent trails
 
 Examples:
   daemon health
   daemon submit plan.json
-  daemon runs --run-status running
-  daemon run run_20260304_a1b2c3
-  daemon outcomes --limit 10
+  daemon deeds --deed-status running
+  daemon deed deed_20260304_a1b2c3
+  daemon offerings --limit 10
   daemon chat
   daemon spine trigger pulse
   daemon norm get research_report
@@ -97,8 +97,8 @@ Examples:
 def cmd_health(args: list[str]) -> None:
     del args
     d = _get("/health")
-    gate = d.get("gate", "?")
-    print(f"Gate: {_fmt_status(gate)}")
+    ward = d.get("ward", "?")
+    print(f"Ward: {_fmt_status(ward)}")
     print(f"API:  ok")
 
 
@@ -116,49 +116,49 @@ def cmd_submit(args: list[str]) -> None:
 
     result = _post("/submit", plan)
     if result.get("ok"):
-        print(f"✓ Submitted: {result.get('run_id')}")
-        if result.get("run_status") == "queued":
-            print("  (queued — Gate is not GREEN)")
+        print(f"✓ Submitted: {result.get('deed_id')}")
+        if result.get("deed_status") == "queued":
+            print("  (queued — Ward is not GREEN)")
     else:
         _die(result.get("error") or "submission failed")
 
 
-def cmd_runs(args: list[str]) -> None:
-    run_status = ""
+def cmd_deeds(args: list[str]) -> None:
+    deed_status = ""
     limit = 50
     i = 0
     while i < len(args):
-        if args[i] == "--run-status" and i + 1 < len(args):
-            run_status = args[i + 1]; i += 2
+        if args[i] == "--deed-status" and i + 1 < len(args):
+            deed_status = args[i + 1]; i += 2
         elif args[i] == "--limit" and i + 1 < len(args):
             limit = int(args[i + 1]); i += 2
         else:
             i += 1
 
-    url = f"/runs?limit={limit}"
-    if run_status:
-        url += f"&run_status={run_status}"
-    runs = _get(url)
-    if not runs:
-        print("No runs found.")
+    url = f"/deeds?limit={limit}"
+    if deed_status:
+        url += f"&deed_status={deed_status}"
+    deeds = _get(url)
+    if not deeds:
+        print("No deeds found.")
         return
     rows = [
-        [t.get("run_id", ""), t.get("run_type", ""), t.get("title", "")[:40],
-         _fmt_status(t.get("run_status", "")), str(t.get("priority", ""))]
-        for t in reversed(runs)
+        [t.get("deed_id", ""), t.get("complexity", ""), t.get("title", "")[:40],
+         _fmt_status(t.get("deed_status", "")), str(t.get("priority", ""))]
+        for t in reversed(deeds)
     ]
-    _table(rows, ["Run ID", "Type", "Title", "Status", "Pri"])
+    _table(rows, ["Deed ID", "Complexity", "Title", "Status", "Pri"])
 
 
-def cmd_run(args: list[str]) -> None:
+def cmd_deed(args: list[str]) -> None:
     if not args:
-        _die("Usage: daemon run <run_id>")
-    run = _get(f"/runs/{args[0]}")
-    for k, v in run.items():
+        _die("Usage: daemon deed <deed_id>")
+    deed = _get(f"/deeds/{args[0]}")
+    for k, v in deed.items():
         print(f"  {k}: {v}")
 
 
-def cmd_outcomes(args: list[str]) -> None:
+def cmd_offerings(args: list[str]) -> None:
     limit = 20
     i = 0
     while i < len(args):
@@ -167,28 +167,28 @@ def cmd_outcomes(args: list[str]) -> None:
         else:
             i += 1
 
-    items = _get(f"/outcome?limit={limit}")
+    items = _get(f"/offerings?limit={limit}")
     if not items:
-        print("No outcomes found.")
+        print("No offerings found.")
         return
     rows = [
-        [o.get("run_id", ""), o.get("title", "")[:50],
-         o.get("run_type", ""), str(o.get("delivered_utc") or "")[:19]]
+        [o.get("deed_id", ""), o.get("title", "")[:50],
+         o.get("complexity", ""), str(o.get("delivered_utc") or "")[:19]]
         for o in items
     ]
-    _table(rows, ["Run ID", "Title", "Type", "Delivered"])
+    _table(rows, ["Deed ID", "Title", "Complexity", "Delivered"])
 
 
 def cmd_chat(args: list[str]) -> None:
-    """Interactive chat session with the Router Agent."""
+    """Interactive Voice session with the Counsel agent."""
     del args
     try:
-        d = _post("/chat/session")
+        d = _post("/voice/session")
     except Exception as e:
         _die(f"Cannot create session: {e}")
 
     sid = d["session_id"]
-    print(f"Chat session: {sid}")
+    print(f"Voice session: {sid}")
     print("Type your message and press Enter. Empty line to quit.\n")
 
     while True:
@@ -201,19 +201,19 @@ def cmd_chat(args: list[str]) -> None:
             break
 
         try:
-            result = _post(f"/chat/{sid}", {"message": msg})
+            result = _post(f"/voice/{sid}", {"message": msg})
             content = result.get("content") or "(no response)"
-            print(f"\nRouter: {content}\n")
+            print(f"\nCounsel: {content}\n")
 
             plan = result.get("plan")
             if plan:
-                print(f"\033[33m[Plan detected]\033[0m")
+                print(f"\033[33m[Design detected]\033[0m")
                 print(json.dumps(plan, ensure_ascii=False, indent=2))
-                ans = input("Submit this plan? [y/N] ").strip().lower()
+                ans = input("Submit this Design? [y/N] ").strip().lower()
                 if ans == "y":
                     sub = _post("/submit", plan)
                     if sub.get("ok"):
-                        print(f"✓ Submitted: {sub.get('run_id')}\n")
+                        print(f"✓ Submitted: {sub.get('deed_id')}\n")
                     else:
                         print(f"✗ Submit failed: {sub.get('error')}\n")
         except Exception as e:
@@ -247,12 +247,12 @@ def cmd_spine(args: list[str]) -> None:
         _die(f"Unknown spine subcommand: {sub}")
 
 
-def cmd_fabric(args: list[str]) -> None:
+def cmd_psyche(args: list[str]) -> None:
     if not args:
-        _die("Usage: daemon fabric <memory|playbook|compass>")
+        _die("Usage: daemon psyche <memory|lore|instinct>")
     sub = args[0]
     if sub == "memory":
-        units = _get("/console/fabric/memory?limit=20")
+        units = _get("/console/psyche/memory?limit=20")
         rows = [
             [u.get("unit_id", "")[:12], u.get("title", "")[:40],
              u.get("domain", ""), u.get("tier", ""),
@@ -260,31 +260,31 @@ def cmd_fabric(args: list[str]) -> None:
             for u in units
         ]
         _table(rows, ["ID", "Title", "Domain", "Tier", "Conf"])
-    elif sub == "playbook":
-        methods = _get("/console/fabric/playbook")
+    elif sub == "lore":
+        methods = _get("/console/psyche/lore")
         rows = [
             [m.get("name", ""), m.get("category", ""),
              f"{(m.get('success_rate') or 0)*100:.1f}%" if m.get('success_rate') is not None else "—",
-             str(m.get("total_runs", 0)), f"v{m.get('version', 1)}"]
+             str(m.get("total_deeds", 0)), f"v{m.get('version', 1)}"]
             for m in methods
         ]
-        _table(rows, ["Name", "Category", "Success", "Runs", "Ver"])
-    elif sub == "compass":
-        prios = _get("/console/fabric/compass/priorities")
+        _table(rows, ["Name", "Category", "Success", "Deeds", "Ver"])
+    elif sub == "instinct":
+        prios = _get("/console/psyche/instinct/priorities")
         print("=== Priorities ===")
         rows = [[p.get("domain", ""), str(p.get("weight", "")), p.get("source", "")] for p in prios]
         _table(rows, ["Domain", "Weight", "Source"])
         print()
-        budgets = _get("/console/fabric/compass/budgets")
-        print("=== Resource Budgets ===")
+        rations = _get("/console/psyche/instinct/rations")
+        print("=== Resource Rations ===")
         brows = [
             [b.get("resource_type", ""),
              f"{b.get('daily_limit', 0):,}", f"{b.get('current_usage', 0):,}"]
-            for b in budgets
+            for b in rations
         ]
         _table(brows, ["Resource", "Daily Limit", "Used Today"])
     else:
-        _die(f"Unknown fabric subcommand: {sub}")
+        _die(f"Unknown psyche subcommand: {sub}")
 
 
 def cmd_norm(args: list[str]) -> None:
@@ -307,7 +307,7 @@ def cmd_norm(args: list[str]) -> None:
         _die(f"Unknown norm subcommand: {sub}")
 
 
-def cmd_traces(args: list[str]) -> None:
+def cmd_trails(args: list[str]) -> None:
     routine = ""
     status = ""
     limit = 20
@@ -322,23 +322,23 @@ def cmd_traces(args: list[str]) -> None:
         else:
             i += 1
 
-    url = f"/console/traces?limit={limit}"
+    url = f"/console/trails?limit={limit}"
     if routine:
         url += f"&routine={routine}"
     if status:
         url += f"&status={status}"
-    traces = _get(url)
-    if not traces:
-        print("No traces found.")
+    trails = _get(url)
+    if not trails:
+        print("No trails found.")
         return
     rows = [
-        [t.get("trace_id", "")[:16], t.get("routine", ""),
+        [t.get("trail_id", "")[:16], t.get("routine", ""),
          _fmt_status(t.get("status", "")),
          "yes" if t.get("degraded") else "—",
          str(t.get("elapsed_s", ""))]
-        for t in traces
+        for t in trails
     ]
-    _table(rows, ["Trace ID", "Routine", "Status", "Degraded", "Elapsed(s)"])
+    _table(rows, ["Trail ID", "Routine", "Status", "Degraded", "Elapsed(s)"])
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -346,14 +346,14 @@ def cmd_traces(args: list[str]) -> None:
 COMMANDS = {
     "health": (cmd_health, 0),
     "submit": (cmd_submit, 1),
-    "runs": (cmd_runs, 0),
-    "run": (cmd_run, 1),
-    "outcomes": (cmd_outcomes, 0),
+    "deeds": (cmd_deeds, 0),
+    "deed": (cmd_deed, 1),
+    "offerings": (cmd_offerings, 0),
     "chat": (cmd_chat, 0),
     "spine": (cmd_spine, 1),
-    "fabric": (cmd_fabric, 1),
+    "psyche": (cmd_psyche, 1),
     "norm": (cmd_norm, 2),
-    "traces": (cmd_traces, 0),
+    "trails": (cmd_trails, 0),
 }
 
 

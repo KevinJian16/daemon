@@ -1,5 +1,5 @@
 // ── History grouped + search ──────────────────────────────
-let histAllOutcomes=[];
+let histAllOfferings=[];
 // Group collapse state: key=groupKey, value=bool collapsed
 const histGroupState={};
 
@@ -44,7 +44,7 @@ function renderHistoryGrouped(items){
     };
     const body=document.createElement('div'); body.className='time-group-body';
     grpItems.forEach(o=>{
-      const el=makeItem(o.run_id,o.title||o.run_id,o.run_type,'completed',o.delivered_utc,()=>openOutcome(o,el));
+      const el=makeItem(o.deed_id,o.title||o.deed_id,o.deed_type,'completed',o.delivered_utc,()=>openOffering(o,el));
       body.appendChild(el);
     });
     grp.appendChild(lbl); grp.appendChild(body);
@@ -55,12 +55,12 @@ function renderHistoryGrouped(items){
 function filterHistory(q){
   const query=(q||'').trim().toLowerCase();
   const container=document.getElementById('history-groups');
-  if(!query){ renderHistoryGrouped(histAllOutcomes); return; }
-  const filtered=histAllOutcomes.filter(o=>(o.title||o.run_id||'').toLowerCase().includes(query));
+  if(!query){ renderHistoryGrouped(histAllOfferings); return; }
+  const filtered=histAllOfferings.filter(o=>(o.title||o.deed_id||'').toLowerCase().includes(query));
   container.innerHTML='';
   if(!filtered.length){ container.innerHTML=`<div class="nav-empty" style="padding:6px 14px">${t('none')}</div>`; return; }
   filtered.forEach(o=>{
-    const el=makeItem(o.run_id,o.title||o.run_id,o.run_type,'completed',o.delivered_utc,()=>openOutcome(o,el));
+    const el=makeItem(o.deed_id,o.title||o.deed_id,o.deed_type,'completed',o.delivered_utc,()=>openOffering(o,el));
     container.appendChild(el);
   });
 }

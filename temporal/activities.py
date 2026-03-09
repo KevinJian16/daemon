@@ -1,4 +1,4 @@
-"""Daemon Activities — Temporal activity implementations for Agent steps and Spine Routines."""
+"""Daemon Activities — Temporal activity implementations for Agent moves and Spine Routines."""
 from __future__ import annotations
 
 import asyncio
@@ -13,23 +13,23 @@ from pathlib import Path
 from typing import Any
 
 from temporalio import activity
-from runtime.drive_accounts import DriveAccountRegistry
-from runtime.event_bridge import EventBridge
+from runtime.ether import Ether
 from runtime.openclaw import OpenClawAdapter
-from temporal.activities_campaign import (
-    run_campaign_bootstrap as _run_campaign_bootstrap_impl,
-    run_campaign_record_milestone as _run_campaign_record_milestone_impl,
-    run_campaign_set_status as _run_campaign_set_status_impl,
+from temporal.activities_endeavor import (
+    run_endeavor_bootstrap as _run_endeavor_bootstrap_impl,
+    run_endeavor_record_passage as _run_endeavor_record_passage_impl,
+    run_endeavor_set_status as _run_endeavor_set_status_impl,
 )
-from temporal.activities_delivery import (
-    run_finalize_delivery as _run_finalize_delivery_impl,
-    run_update_run_status as _run_update_run_status_impl,
+from temporal.activities_herald import (
+    run_finalize_herald as _run_finalize_herald_impl,
+    run_update_deed_status as _run_update_deed_status_impl,
 )
 from temporal.activities_exec import (
-    run_openclaw_step as _run_openclaw_step_impl,
+    run_openclaw_move as _run_openclaw_move_impl,
     run_spine_routine as _run_spine_routine_impl,
 )
-from services.state_store import StateStore
+from runtime.retinue import Retinue
+from services.ledger import Ledger
 
 
 def _utc() -> str:
@@ -52,9 +52,9 @@ class DaemonActivities:
         self._home = _daemon_home()
         self._oc_home = _openclaw_home()
         self._openclaw: OpenClawAdapter | None = None
-        self._drive_registry = DriveAccountRegistry(self._home / "state")
-        self._event_bridge = EventBridge(self._home / "state", source="worker")
-        self._store = StateStore(self._home / "state")
+        self._ether = Ether(self._home / "state", source="worker")
+        self._ledger = Ledger(self._home / "state")
+        self._retinue = Retinue(self._home, self._oc_home)
         try:
             self._openclaw = OpenClawAdapter(self._oc_home)
         except Exception as exc:
@@ -63,67 +63,100 @@ class DaemonActivities:
     def _utc(self) -> str:
         return _utc()
 
-    # ── OpenClaw step ─────────────────────────────────────────────────────────
+    # ── OpenClaw move ─────────────────────────────────────────────────────────
 
-    @activity.defn(name="activity_openclaw_step")
-    async def activity_openclaw_step(self, run_root: str, plan: dict, step: dict) -> dict:
-        """Execute one DAG step through OpenClawAdapter single-channel gateway."""
-        return await _run_openclaw_step_impl(self, run_root, plan, step)
+    @activity.defn(name="activity_openclaw_move")
+    async def activity_openclaw_move(self, deed_root: str, plan: dict, move: dict) -> dict:
+        """Execute one DAG move through OpenClawAdapter single-channel gateway."""
+        return await _run_openclaw_move_impl(self, deed_root, plan, move)
 
     # ── Spine routine ─────────────────────────────────────────────────────────
 
     @activity.defn(name="activity_spine_routine")
-    async def activity_spine_routine(self, run_root: str, plan: dict, routine_name: str) -> dict:
+    async def activity_spine_routine(self, deed_root: str, plan: dict, routine_name: str) -> dict:
         """Execute a Spine Routine directly (no OpenClaw, no LLM unless hybrid)."""
-        return await _run_spine_routine_impl(self, run_root, plan, routine_name)
+        return await _run_spine_routine_impl(self, deed_root, plan, routine_name)
 
-    # ── Delivery finalization ─────────────────────────────────────────────────
+    # ── Herald finalization ─────────────────────────────────────────────────
 
-    @activity.defn(name="activity_finalize_delivery")
-    async def activity_finalize_delivery(self, run_root: str, plan: dict, step_results: list[dict]) -> dict:
-        """Contract quality gate + drift check + archive + bridge emit."""
-        return await _run_finalize_delivery_impl(self, run_root, plan, step_results)
+    @activity.defn(name="activity_finalize_herald")
+    async def activity_finalize_herald(self, deed_root: str, plan: dict, move_results: list[dict]) -> dict:
+        """Archive offering + update herald log + ether emit (pure logistics)."""
+        return await _run_finalize_herald_impl(self, deed_root, plan, move_results)
 
-    # ── Run status ────────────────────────────────────────────────────────────
+    # ── Deed status ────────────────────────────────────────────────────────────
 
-    @activity.defn(name="activity_update_run_status")
-    async def activity_update_run_status(self, run_root: str, plan: dict, run_status: str) -> dict:
-        """Update run status in state/runs.json (append-only for safety)."""
-        return await _run_update_run_status_impl(self, run_root, plan, run_status)
+    @activity.defn(name="activity_update_deed_status")
+    async def activity_update_deed_status(self, deed_root: str, plan: dict, deed_status: str) -> dict:
+        """Update deed status in state/deeds.json (append-only for safety)."""
+        return await _run_update_deed_status_impl(self, deed_root, plan, deed_status)
 
-    # ── Campaign state ────────────────────────────────────────────────────────
+    # ── Endeavor state ────────────────────────────────────────────────────────
 
-    @activity.defn(name="activity_campaign_bootstrap")
-    async def activity_campaign_bootstrap(self, run_root: str, plan: dict) -> dict:
-        """Initialize or refresh campaign manifest and milestone layout."""
-        return await _run_campaign_bootstrap_impl(self, run_root, plan)
+    @activity.defn(name="activity_endeavor_bootstrap")
+    async def activity_endeavor_bootstrap(self, deed_root: str, plan: dict) -> dict:
+        """Initialize or refresh endeavor manifest and passage layout."""
+        return await _run_endeavor_bootstrap_impl(self, deed_root, plan)
 
-    @activity.defn(name="activity_campaign_record_milestone")
-    async def activity_campaign_record_milestone(self, campaign_id: str, milestone_index: int, result: dict) -> dict:
-        """Persist one milestone result and update manifest pointer/status."""
-        return await _run_campaign_record_milestone_impl(self, campaign_id, milestone_index, result)
+    @activity.defn(name="activity_endeavor_record_passage")
+    async def activity_endeavor_record_passage(self, endeavor_id: str, passage_index: int, result: dict) -> dict:
+        """Persist one passage result and update manifest pointer/status."""
+        return await _run_endeavor_record_passage_impl(self, endeavor_id, passage_index, result)
 
-    @activity.defn(name="activity_campaign_set_status")
-    async def activity_campaign_set_status(
+    @activity.defn(name="activity_endeavor_set_status")
+    async def activity_endeavor_set_status(
         self,
-        campaign_id: str,
-        campaign_status: str,
-        campaign_phase: str,
+        endeavor_id: str,
+        endeavor_status: str,
+        endeavor_phase: str,
         extra: dict | None = None,
     ) -> dict:
-        """Update campaign manifest status/phase with mergeable metadata."""
-        return await _run_campaign_set_status_impl(self, campaign_id, campaign_status, campaign_phase, extra)
+        """Update endeavor manifest status/phase with mergeable metadata."""
+        return await _run_endeavor_set_status_impl(self, endeavor_id, endeavor_status, endeavor_phase, extra)
+
+    # ── Retinue management ────────────────────────────────────────────────────
+
+    @activity.defn(name="activity_allocate_retinue")
+    async def activity_allocate_retinue(self, deed_id: str, roles: list[str]) -> dict:
+        """Allocate retinue instances for all agent roles needed by this deed."""
+        allocations: dict[str, str] = {}
+        allocated_ids: list[str] = []
+        try:
+            for role in roles:
+                inst = await asyncio.to_thread(self._retinue.allocate, role, deed_id)
+                allocations[role] = inst["instance_id"]
+                allocated_ids.append(inst["instance_id"])
+        except Exception:
+            for iid in allocated_ids:
+                try:
+                    await asyncio.to_thread(self._retinue.release, iid, deed_id)
+                except Exception as exc:
+                    activity.logger.warning("Rollback release failed for %s: %s", iid, exc)
+            raise
+        return {"ok": True, "retinue_allocations": allocations, "allocated_ids": allocated_ids}
+
+    @activity.defn(name="activity_release_retinue")
+    async def activity_release_retinue(self, deed_id: str, retinue_allocations: dict) -> dict:
+        """Release all retinue instances allocated for this deed."""
+        released: list[str] = []
+        errors: list[dict] = []
+        for role, instance_id in (retinue_allocations or {}).items():
+            try:
+                await asyncio.to_thread(self._retinue.release, str(instance_id), deed_id)
+                released.append(str(instance_id))
+            except Exception as exc:
+                errors.append({"instance_id": str(instance_id), "error": str(exc)[:200]})
+                activity.logger.warning("Failed to release retinue instance %s: %s", instance_id, exc)
+        return {"ok": True, "released": released, "errors": errors}
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _build_step_context(self, run_root: str, plan: dict, step: dict) -> dict:
-        """Attach semantic/strategy/model snapshots as execution context for Agent steps."""
+    def _build_move_context(self, deed_root: str, plan: dict, move: dict) -> dict:
+        """Attach instinct/model snapshots as execution context for Agent moves."""
         snapshots_dir = self._home / "state" / "snapshots"
         context: dict = {}
         for snap_name in (
-            "compass_snapshot.json",
-            "semantic_snapshot.json",
-            "strategy_snapshot.json",
+            "instinct_snapshot.json",
             "model_policy_snapshot.json",
             "model_registry_snapshot.json",
         ):
@@ -133,50 +166,45 @@ class DaemonActivities:
                     context[snap_name.replace(".json", "")] = json.loads(snap_path.read_text())
                 except Exception as exc:
                     activity.logger.warning("Failed to load snapshot %s: %s", snap_name, exc)
-        # Router runtime hints are text by design.
-        hints_path = self._oc_home / "workspace" / "router" / "memory" / "runtime_hints.txt"
+        # Counsel runtime hints are text by design.
+        hints_path = self._oc_home / "workspace" / "counsel" / "memory" / "runtime_hints.txt"
         if hints_path.exists():
             try:
                 context["runtime_hints"] = hints_path.read_text(encoding="utf-8", errors="ignore")[:4000]
             except Exception as exc:
                 activity.logger.warning("Failed to read runtime hints %s: %s", hints_path, exc)
-        # Embed run/strategy contract so Agent sees active semantic + governance context.
+        brief = plan.get("brief") or {}
         context["execution_contract"] = {
-            "run_id": str(plan.get("run_id") or ""),
-            "run_title": str(plan.get("run_title") or plan.get("title") or ""),
-            "cluster_id": str(plan.get("cluster_id") or ""),
-            "semantic_spec": plan.get("semantic_spec") if isinstance(plan.get("semantic_spec"), dict) else {},
-            "strategy_id": str(plan.get("strategy_id") or ""),
-            "strategy_stage": str(plan.get("strategy_stage") or ""),
-            "model_alias": str(plan.get("model_alias") or ""),
-            "is_shadow": bool(plan.get("is_shadow", False)),
-            "capability_id": str(step.get("capability_id") or ""),
-            "quality_contract_id": str(step.get("quality_contract_id") or ""),
+            "deed_id": str(plan.get("deed_id") or ""),
+            "deed_title": str(plan.get("deed_title") or plan.get("title") or ""),
+            "brief": brief,
+            "complexity": str(plan.get("complexity") or brief.get("complexity") or "charge"),
+            "agent_model_map": plan.get("agent_model_map") or {},
         }
-        campaign_context = plan.get("campaign_context") if isinstance(plan.get("campaign_context"), list) else []
-        if campaign_context:
-            context["campaign_context"] = campaign_context[-8:]
+        endeavor_context = plan.get("endeavor_context") if isinstance(plan.get("endeavor_context"), list) else []
+        if endeavor_context:
+            context["endeavor_context"] = endeavor_context[-8:]
         return context
 
     def _apply_context_window_precheck(
         self,
         *,
-        run_root: str,
+        deed_root: str,
         plan: dict,
-        step: dict,
+        move: dict,
         instruction: str,
         context: dict,
     ) -> dict:
-        """Render precheck: compress upstream context if estimated prompt > 70% context window."""
+        """Scribe precheck: compress upstream context if estimated prompt > 70% context window."""
         out = dict(context or {})
-        agent = str(step.get("agent") or "").strip().lower()
-        step_id = str(step.get("id") or step.get("step_id") or "").strip().lower()
-        if agent != "render" and "render" not in step_id:
+        agent = str(move.get("agent") or "").strip().lower()
+        move_id = str(move.get("id") or move.get("move_id") or "").strip().lower()
+        if agent != "scribe" and "scribe" not in move_id:
             return out
 
-        model_window = self._model_context_window(plan, step)
+        model_window = self._model_context_window(plan, move)
         threshold = int(model_window * 0.70)
-        refs = self._collect_upstream_outputs(run_root, str(step.get("id") or ""))
+        refs = self._collect_upstream_outputs(deed_root, str(move.get("id") or ""))
         base_payload_text = f"{instruction}\n\n{json.dumps(out, ensure_ascii=False)}"
         upstream_tokens = sum(self._estimate_tokens(str(r.get("content") or "")) for r in refs)
         estimated_before = self._estimate_tokens(base_payload_text) + upstream_tokens
@@ -191,7 +219,7 @@ class DaemonActivities:
 
         if estimated_before <= threshold:
             out["context_precheck"] = precheck
-            self._write_context_precheck(run_root, str(step.get("id") or "step"), precheck)
+            self._write_context_precheck(deed_root, str(move.get("id") or "move"), precheck)
             return out
 
         compressed = []
@@ -219,11 +247,11 @@ class DaemonActivities:
         )
         precheck["reason"] = "prompt_exceeds_70pct_context_window"
         out["context_precheck"] = precheck
-        self._write_context_precheck(run_root, str(step.get("id") or "step"), precheck)
+        self._write_context_precheck(deed_root, str(move.get("id") or "move"), precheck)
         return out
 
-    def _write_context_precheck(self, run_root: str, step_id: str, payload: dict) -> None:
-        path = Path(run_root) / "steps" / step_id / "context_precheck.json"
+    def _write_context_precheck(self, deed_root: str, move_id: str, payload: dict) -> None:
+        path = Path(deed_root) / "moves" / move_id / "context_precheck.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -231,9 +259,9 @@ class DaemonActivities:
         s = str(text or "")
         return max(1, int(len(s) / 4))
 
-    def _model_context_window(self, plan: dict, step: dict) -> int:
+    def _model_context_window(self, plan: dict, move: dict) -> int:
         alias = (
-            str(step.get("model_alias") or "").strip()
+            str(move.get("model_alias") or "").strip()
             or str(plan.get("model_alias") or "").strip()
             or "fast"
         )
@@ -254,12 +282,12 @@ class DaemonActivities:
                 pass
         return 128000
 
-    def _collect_upstream_outputs(self, run_root: str, current_step_id: str) -> list[dict]:
-        rp = Path(run_root)
+    def _collect_upstream_outputs(self, deed_root: str, current_move_id: str) -> list[dict]:
+        rp = Path(deed_root)
         refs: list[dict] = []
-        for p in sorted(rp.glob("steps/*/output/output.md")):
+        for p in sorted(rp.glob("moves/*/output/output.md")):
             sid = p.parent.parent.name
-            if sid == current_step_id:
+            if sid == current_move_id:
                 continue
             try:
                 content = p.read_text(encoding="utf-8", errors="ignore")
@@ -267,7 +295,7 @@ class DaemonActivities:
                 continue
             refs.append(
                 {
-                    "step_id": sid,
+                    "move_id": sid,
                     "path": str(p),
                     "content": content,
                 }
@@ -276,79 +304,79 @@ class DaemonActivities:
                 break
         return refs
 
-    def _write_step_output(self, run_root: str, step_id: str, content: str) -> str:
-        out_dir = Path(run_root) / "steps" / step_id / "output"
+    def _write_move_output(self, deed_root: str, move_id: str, content: str) -> str:
+        out_dir = Path(deed_root) / "moves" / move_id / "output"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_file = out_dir / "output.md"
         out_file.write_text(content)
         return str(out_file)
 
-    def _step_checkpoint_path(self, run_root: str, step_id: str) -> Path:
-        return Path(run_root) / "steps" / step_id / "output.json"
+    def _move_checkpoint_path(self, deed_root: str, move_id: str) -> Path:
+        return Path(deed_root) / "moves" / move_id / "output.json"
 
-    def _normalized_steps(self, plan: dict) -> list[dict]:
-        steps = plan.get("steps") or plan.get("graph", {}).get("steps") or []
-        if not isinstance(steps, list):
+    def _normalized_moves(self, plan: dict) -> list[dict]:
+        moves = plan.get("moves") or plan.get("graph", {}).get("moves") or []
+        if not isinstance(moves, list):
             return []
         out: list[dict] = []
-        for i, st in enumerate(steps):
+        for i, st in enumerate(moves):
             if not isinstance(st, dict):
                 continue
-            sid = str(st.get("id") or st.get("step_id") or f"step_{i}").strip()
+            sid = str(st.get("id") or st.get("move_id") or f"move_{i}").strip()
             out.append({**st, "id": sid})
         return out
 
-    def _derive_campaign_milestones(self, plan: dict, steps: list[dict]) -> list[dict]:
-        explicit = plan.get("milestones")
-        by_id = {str(st.get("id") or ""): st for st in steps if str(st.get("id") or "")}
-        milestones: list[dict] = []
+    def _derive_endeavor_passages(self, plan: dict, moves: list[dict]) -> list[dict]:
+        explicit = plan.get("passages")
+        by_id = {str(st.get("id") or ""): st for st in moves if str(st.get("id") or "")}
+        passages: list[dict] = []
         if isinstance(explicit, list) and explicit:
             for i, row in enumerate(explicit):
                 if not isinstance(row, dict):
                     continue
-                sid_list = row.get("step_ids") if isinstance(row.get("step_ids"), list) else []
-                selected_steps = [by_id.get(str(sid)) for sid in sid_list if str(sid) in by_id]
-                if not selected_steps:
+                sid_list = row.get("move_ids") if isinstance(row.get("move_ids"), list) else []
+                selected_moves = [by_id.get(str(sid)) for sid in sid_list if str(sid) in by_id]
+                if not selected_moves:
                     continue
-                milestones.append(
+                passages.append(
                     {
-                        "milestone_id": str(row.get("milestone_id") or row.get("id") or f"m{i + 1:02d}"),
-                        "title": str(row.get("title") or f"Milestone {i + 1}"),
+                        "passage_id": str(row.get("passage_id") or row.get("id") or f"m{i + 1:02d}"),
+                        "title": str(row.get("title") or f"Passage {i + 1}"),
                         "expected_output": str(row.get("expected_output") or ""),
                         "input_dependencies": row.get("input_dependencies") if isinstance(row.get("input_dependencies"), list) else [],
-                        "steps": selected_steps,
-                        "objective_rework_budget": int(row.get("objective_rework_budget") or 2),
+                        "moves": selected_moves,
+                        "objective_rework_ration": int(row.get("objective_rework_ration") or 2),
                     }
                 )
-            if milestones:
-                return milestones
+            if passages:
+                return passages
 
-        if not steps:
+        if not moves:
             return []
         probe = plan.get("complexity_probe") if isinstance(plan.get("complexity_probe"), dict) else {}
         estimated_phases = int(probe.get("estimated_phases") or plan.get("estimated_phases") or 4)
-        phases = max(2, min(estimated_phases, len(steps)))
-        chunk = max(1, int(math.ceil(len(steps) / phases)))
-        prev_milestone = ""
-        for i in range(0, len(steps), chunk):
-            chunk_steps = steps[i:i + chunk]
-            idx = len(milestones) + 1
-            milestone_id = f"m{idx:02d}"
-            milestones.append(
+        phases = max(2, min(estimated_phases, len(moves)))
+        chunk = max(1, int(math.ceil(len(moves) / phases)))
+        prev_passage = ""
+        for i in range(0, len(moves), chunk):
+            chunk_moves = moves[i:i + chunk]
+            idx = len(passages) + 1
+            passage_id = f"m{idx:02d}"
+            passages.append(
                 {
-                    "milestone_id": milestone_id,
-                    "title": f"Milestone {idx}",
-                    "expected_output": f"Complete {len(chunk_steps)} campaign steps",
-                    "input_dependencies": [prev_milestone] if prev_milestone else [],
-                    "steps": chunk_steps,
-                    "objective_rework_budget": 2,
+                    "passage_id": passage_id,
+                    "title": f"Passage {idx}",
+                    "expected_output": f"Complete {len(chunk_moves)} endeavor moves",
+                    "input_dependencies": [prev_passage] if prev_passage else [],
+                    "moves": chunk_moves,
+                    "objective_rework_ration": 2,
                 }
             )
-            prev_milestone = milestone_id
-        return milestones
+            prev_passage = passage_id
+        return passages
 
-    def _read_step_checkpoint(self, run_root: str, step_id: str) -> dict | None:
-        path = self._step_checkpoint_path(run_root, step_id)
+    def _read_move_checkpoint(self, deed_root: str, move_id: str) -> dict | None:
+        path = self._move_checkpoint_path(deed_root, move_id)
         if not path.exists():
             return None
         try:
@@ -357,36 +385,33 @@ class DaemonActivities:
             return None
         return payload if isinstance(payload, dict) else None
 
-    def _write_step_checkpoint(self, run_root: str, step_id: str, result: dict) -> None:
-        path = self._step_checkpoint_path(run_root, step_id)
+    def _write_move_checkpoint(self, deed_root: str, move_id: str, result: dict) -> None:
+        path = self._move_checkpoint_path(deed_root, move_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = dict(result or {})
         payload["checkpoint_utc"] = _utc()
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _feedback_survey_path(self, run_id: str) -> Path:
-        return self._home / "state" / "feedback_surveys" / f"{run_id}.json"
+    def _feedback_survey_path(self, deed_id: str) -> Path:
+        return self._home / "state" / "feedback_surveys" / f"{deed_id}.json"
 
-    def _generate_feedback_survey(self, *, plan: dict, outcome_path: Path) -> dict:
-        run_id = str(plan.get("run_id") or "")
-        work_scale = str(plan.get("work_scale") or plan.get("work_scale") or "thread").strip().lower() or "thread"
-        run_type = str(plan.get("run_type") or "")
-        title = str(plan.get("run_title") or plan.get("title") or run_id)[:200]
+    def _generate_feedback_survey(self, *, plan: dict, offering_path: Path) -> dict:
+        deed_id = str(plan.get("deed_id") or "")
+        brief = plan.get("brief") or {}
+        complexity = str(plan.get("complexity") or brief.get("complexity") or "charge").strip().lower() or "charge"
+        title = str(plan.get("deed_title") or plan.get("title") or brief.get("objective", "") or deed_id)[:200]
         channels = ["portal", "telegram"]
-        required = work_scale in {"pulse", "thread", "campaign"}
-        if work_scale == "campaign":
-            survey_type = "campaign_final"
-            prompt = "你对本次 Campaign 最终交付是否满意？"
+        required = complexity in {"errand", "charge", "endeavor"}
+        if complexity == "endeavor":
+            survey_type = "endeavor_final"
+            prompt = "你对本次 Endeavor 最终交付是否满意？"
         else:
-            survey_type = "delivery_final"
+            survey_type = "herald_final"
             prompt = "你对本次任务交付是否满意？"
         return {
-            "survey_id": f"svy_{run_id}",
-            "run_id": run_id,
-            "run_id": run_id,
-            "run_type": run_type,
-            "work_scale": work_scale,
-            "work_scale": work_scale,
+            "survey_id": f"svy_{deed_id}",
+            "deed_id": deed_id,
+            "complexity": complexity,
             "title": title,
             "survey_type": survey_type,
             "prompt": prompt,
@@ -394,42 +419,43 @@ class DaemonActivities:
             "channels": channels,
             "status": "pending",
             "created_utc": _utc(),
-            "outcome_path": str(outcome_path),
+            "offering_path": str(offering_path),
             "questions": [
                 {
                     "key": "overall",
-                    "type": "rating",
-                    "label": "整体满意度",
-                    "scale": [1, 2, 3, 4, 5],
+                    "type": "choice",
+                    "label": "整体评价",
+                    "options": ["satisfactory", "acceptable", "unsatisfactory", "wrong"],
                 },
                 {
-                    "key": "quality",
-                    "type": "choice",
-                    "label": "交付质量评价",
-                    "options": ["符合预期", "部分符合", "不符合"],
-                },
-                {
-                    "key": "next_action",
-                    "type": "choice",
-                    "label": "后续动作建议",
-                    "options": ["继续下一步", "需要补充修改", "暂停"],
+                    "key": "issues",
+                    "type": "multi_choice",
+                    "label": "问题标记（可多选）",
+                    "options": [
+                        "depth_insufficient",
+                        "missing_info",
+                        "format_wrong",
+                        "language_issue",
+                        "factual_error",
+                        "off_topic",
+                    ],
                 },
             ],
         }
 
     def _write_feedback_survey(self, payload: dict) -> None:
-        run_id = str(payload.get("run_id") or "")
-        if not run_id:
+        deed_id = str(payload.get("deed_id") or "")
+        if not deed_id:
             return
-        path = self._feedback_survey_path(run_id)
+        path = self._feedback_survey_path(deed_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _find_render_output(self, run_root: str, step_results: list[dict]) -> Path | None:
-        rp = Path(run_root)
-        # Prefer explicit output_path attached to step results. This is critical for
-        # campaign resume runs where step outputs may come from earlier run_root.
-        for res in reversed(step_results):
+    def _find_scribe_output(self, deed_root: str, move_results: list[dict]) -> Path | None:
+        rp = Path(deed_root)
+        # Prefer explicit output_path attached to move results. This is critical for
+        # endeavor resume deeds where move outputs may come from earlier deed_root.
+        for res in reversed(move_results):
             if not isinstance(res, dict):
                 continue
             outp = str(res.get("output_path") or "").strip()
@@ -438,11 +464,11 @@ class DaemonActivities:
             p = Path(outp)
             if p.exists() and p.is_file():
                 return p
-        # Look for render step output.
-        for res in reversed(step_results):
-            sid = res.get("step_id", "")
-            if "render" in sid.lower():
-                out = rp / "steps" / sid / "output" / "output.md"
+        # Look for scribe move output.
+        for res in reversed(move_results):
+            sid = res.get("move_id", "")
+            if "scribe" in sid.lower():
+                out = rp / "moves" / sid / "output" / "output.md"
                 if out.exists():
                     return out
         # Fallback: any .html or .md file in deliver/ subdirectories.
@@ -452,372 +478,103 @@ class DaemonActivities:
             return candidate
         return None
 
-    def _structural_check(self, content: str, profile: dict) -> dict:
-        """Deterministic structural quality checks — no LLM needed."""
-        # Forbidden markers.
-        for marker in (profile.get("forbidden_markers") or []):
-            if marker.lower() in content.lower():
-                return {"ok": False, "error_code": "forbidden_marker", "detail": f"Contains forbidden marker: {marker}"}
-
-        # Minimum word count.
-        min_words = int(profile.get("min_word_count") or 0)
-        word_count = self._effective_word_count(content)
-        if min_words and word_count < min_words:
-            return {"ok": False, "error_code": "word_count_too_low", "detail": f"{word_count} < {min_words}"}
-
-        min_sections = int(profile.get("min_sections") or 0)
-        if min_sections:
-            sections = [ln for ln in content.splitlines() if ln.strip().startswith("#")]
-            if len(sections) < min_sections:
-                return {"ok": False, "error_code": "sections_too_few", "detail": f"{len(sections)} < {min_sections}"}
-
-        min_items = int(profile.get("min_items") or 0)
-        if min_items:
-            bullet_items = [ln for ln in content.splitlines() if ln.strip().startswith(("-", "*", "1.", "2.", "3."))]
-            if len(bullet_items) < min_items:
-                return {"ok": False, "error_code": "brief_items_too_few", "detail": f"{len(bullet_items)} < {min_items}"}
-
-        min_domain_coverage = int(profile.get("min_domain_coverage") or 0)
-        if min_domain_coverage:
-            domains = set()
-            for ln in content.splitlines():
-                low = ln.lower()
-                if "domain:" in low:
-                    domains.add(low.split("domain:", 1)[1].strip())
-            if len(domains) < min_domain_coverage:
-                return {
-                    "ok": False,
-                    "error_code": "brief_domain_coverage_too_low",
-                    "detail": f"{len(domains)} < {min_domain_coverage}",
-                }
-
-        if bool(profile.get("require_bilingual")):
-            has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in content)
-            has_latin = any("a" <= ch.lower() <= "z" for ch in content)
-            if not (has_cjk and has_latin):
-                return {"ok": False, "error_code": "bilingual_incomplete", "detail": "missing zh/en mixed content"}
-
-        return {"ok": True}
-
-    def _load_quality_contract(self, cluster_id: str, run_type: str) -> dict:
-        contracts_dir = self._home / "config" / "semantics" / "quality_contracts"
-        if cluster_id:
-            p = contracts_dir / f"{cluster_id}.json"
-            if p.exists():
-                try:
-                    return json.loads(p.read_text(encoding="utf-8"))
-                except Exception as exc:
-                    activity.logger.warning("Failed to load quality contract %s: %s", p, exc)
-        if run_type:
-            p = contracts_dir / f"{run_type}.json"
-            if p.exists():
-                try:
-                    return json.loads(p.read_text(encoding="utf-8"))
-                except Exception as exc:
-                    activity.logger.warning("Failed to load quality contract %s: %s", p, exc)
-        return {}
-
-    def _quality_score(self, content: str, plan: dict, step_results: list[dict], contract: dict, profile: dict) -> tuple[float, dict]:
-        weights = contract.get("quality_weights") if isinstance(contract.get("quality_weights"), dict) else {}
-        structural_w = float(weights.get("structural") or 0.50)
-        evidence_w = float(weights.get("evidence_completeness") or 0.30)
-        review_w = float(weights.get("content_review") or 0.20)
-        total = structural_w + evidence_w + review_w
-        if total <= 0:
-            structural_w, evidence_w, review_w = 0.50, 0.30, 0.20
-            total = 1.0
-        structural_w, evidence_w, review_w = structural_w / total, evidence_w / total, review_w / total
-
-        structural = self._structural_score(content, contract, profile)
-        evidence = self._evidence_score(plan, step_results)
-        # Deterministic fallback in activity layer — review score mirrors structural.
-        review = structural
-
-        score = structural_w * structural + evidence_w * evidence + review_w * review
-        components = {
-            "quality": round(score, 4),
-            "structural": round(structural, 4),
-            "evidence_completeness": round(evidence, 4),
-            "content_review": round(review, 4),
-            # stability/latency/cost are filled by spine.record from runtime outcomes.
-            "stability": 1.0,
-            "latency": 1.0,
-            "cost": 1.0,
-            "weights": {
-                "structural": round(structural_w, 4),
-                "evidence_completeness": round(evidence_w, 4),
-                "content_review": round(review_w, 4),
-            },
-        }
-        return score, components
-
-    def _structural_score(self, content: str, contract: dict, profile: dict) -> float:
-        structural = contract.get("structural") if isinstance(contract.get("structural"), dict) else {}
-
-        forbidden = structural.get("forbidden_markers") or profile.get("forbidden_markers") or []
-        for marker in forbidden:
-            if str(marker).lower() in content.lower():
-                return 0.0
-
-        words = self._effective_word_count(content)
-        min_words = int(structural.get("min_word_count") or profile.get("min_word_count") or 0)
-        word_score = min(words / min_words, 1.0) if min_words else 1.0
-
-        sections = [ln for ln in content.splitlines() if ln.strip().startswith("#")]
-        min_sections = int(structural.get("min_sections") or profile.get("min_sections") or 0)
-        section_score = min(len(sections) / min_sections, 1.0) if min_sections else 1.0
-
-        min_items = int(profile.get("min_items") or 0)
-        if min_items:
-            bullets = [ln for ln in content.splitlines() if ln.strip().startswith(("-", "*", "1.", "2.", "3."))]
-            item_score = min(len(bullets) / min_items, 1.0)
-        else:
-            item_score = 1.0
-
-        bilingual = bool(structural.get("bilingual_check") or profile.get("require_bilingual"))
-        if bilingual:
-            has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in content)
-            has_latin = any("a" <= ch.lower() <= "z" for ch in content)
-            bilingual_score = 1.0 if (has_cjk and has_latin) else 0.0
-        else:
-            bilingual_score = 1.0
-
-        return max(0.0, min(1.0, (word_score + section_score + item_score + bilingual_score) / 4.0))
-
-    def _effective_word_count(self, content: str) -> int:
-        """Estimate word count robustly for mixed Chinese/English text.
-
-        - Latin tokens count by word regex.
-        - CJK tokens are approximated as 1 token per 2 Han characters.
-        - Final count uses max(whitespace split, regex estimate) to avoid undercount.
-        """
-        text = str(content or "")
-        whitespace_tokens = len(text.split())
-        latin_tokens = len(re.findall(r"[A-Za-z0-9]+(?:[-_'][A-Za-z0-9]+)*", text))
-        cjk_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
-        cjk_tokens = (cjk_chars + 1) // 2
-        return max(whitespace_tokens, latin_tokens + cjk_tokens)
-
-    def _evidence_score(self, plan: dict, step_results: list[dict]) -> float:
-        evidence_ids = plan.get("evidence_unit_ids")
-        if isinstance(evidence_ids, list) and evidence_ids:
-            target = max(int(plan.get("evidence_target", 5) or 5), 1)
-            return max(0.0, min(1.0, len(evidence_ids) / target))
-
-        if not isinstance(step_results, list) or not step_results:
-            return 0.5
-        steps_with_output = sum(
-            1
-            for r in step_results
-            if isinstance(r, dict) and (r.get("output") or r.get("artifacts") or r.get("evidence"))
-        )
-        target = max(len(step_results) // 2, 1)
-        return max(0.0, min(1.0, steps_with_output / target))
-
-    def _quality_drift_check(self, plan: dict, score: float, contract: dict) -> dict:
-        cfg = contract.get("drift") if isinstance(contract.get("drift"), dict) else {}
-        window = max(5, int(cfg.get("window") or 30))
-        min_samples = max(5, int(cfg.get("min_samples") or 10))
-        max_drop = float(cfg.get("max_drop") or 0.15)
-
-        path = self._home / "state" / "telemetry" / "quality_scores.jsonl"
-        if not path.exists():
-            return {"blocked": False, "reason": "no_history"}
-        cluster_id = str(plan.get("cluster_id") or "")
-        run_type = str(plan.get("run_type") or "")
-        history: list[float] = []
-        try:
-            for line in reversed(path.read_text(encoding="utf-8").splitlines()):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(row, dict):
-                    continue
-                if cluster_id and str(row.get("cluster_id") or "") != cluster_id:
-                    continue
-                if not cluster_id and run_type and str(row.get("run_type") or "") != run_type:
-                    continue
-                try:
-                    history.append(float(row.get("quality_score") or 0.0))
-                except Exception:
-                    continue
-                if len(history) >= window:
-                    break
-        except Exception:
-            return {"blocked": False, "reason": "history_read_failed"}
-        if len(history) < min_samples:
-            return {"blocked": False, "reason": "insufficient_history", "samples": len(history)}
-
-        baseline = sum(history) / len(history)
-        threshold = baseline - max_drop
-        if score < threshold:
-            return {
-                "blocked": True,
-                "reason": "quality_drop_below_baseline",
-                "baseline": round(baseline, 4),
-                "threshold": round(threshold, 4),
-                "current": round(score, 4),
-                "samples": len(history),
-                "detail": f"current={round(score,4)} < baseline={round(baseline,4)}-drop={round(max_drop,4)}",
-            }
-        return {
-            "blocked": False,
-            "reason": "within_baseline",
-            "baseline": round(baseline, 4),
-            "threshold": round(threshold, 4),
-            "samples": len(history),
-        }
-
-    def _append_quality_score(self, plan: dict, score: float, components: dict, drift: dict) -> None:
-        path = self._home / "state" / "telemetry" / "quality_scores.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        row = {
-            "run_id": str(plan.get("run_id") or ""),
-            "cluster_id": str(plan.get("cluster_id") or ""),
-            "run_type": str(plan.get("run_type") or ""),
-            "strategy_id": str(plan.get("strategy_id") or ""),
-            "strategy_stage": str(plan.get("strategy_stage") or ""),
-            "quality_score": round(float(score or 0.0), 4),
-            "global_score_components": components,
-            "drift": drift,
-            "created_utc": _utc(),
-            "is_shadow": bool(plan.get("is_shadow", False)),
-        }
-        try:
-            with path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        except Exception as exc:
-            activity.logger.warning("Failed to write quality score telemetry: %s", exc)
-
-    def _failure_meta(self, plan: dict) -> dict:
-        return {
-            "trace_id": str(plan.get("trace_id") or ""),
-            "strategy_id": str(plan.get("strategy_id") or ""),
-            "semantic_spec": plan.get("semantic_spec") if isinstance(plan.get("semantic_spec"), dict) else {},
-        }
-
-    def _archive_outcome(
+    def _archive_offering(
         self,
-        run_root: str,
+        deed_root: str,
         plan: dict,
-        render_path: Path,
-        step_results: list[dict],
-        outcome_root: Path | None = None,
+        scribe_path: Path,
+        move_results: list[dict],
+        offering_root: Path | None = None,
     ) -> Path:
-        run_type = str(plan.get("run_type") or "manual")
-        run_id = str(plan.get("run_id") or uuid.uuid4().hex[:8])
-        raw_title = str(plan.get("run_title") or plan.get("title") or run_type)
+        deed_id = str(plan.get("deed_id") or uuid.uuid4().hex[:8])
+        brief = plan.get("brief") or {}
+        raw_title = str(
+            plan.get("deed_title") or plan.get("title")
+            or brief.get("objective", "") or "untitled"
+        )
         title = raw_title[:60].replace("/", "-").replace(":", "-").strip()
-        root = outcome_root or self._resolve_outcome_root()
+        root = offering_root or self._resolve_offering_root()
 
-        # Directory: outcomes/YYYY-MM/YYYY-MM-DD HH.MM <title>/
-        # HH.MM instead of HH:MM — colon is not allowed on macOS/Windows FS.
         month_dir = time.strftime("%Y-%m")
         timestamp = time.strftime("%Y-%m-%d %H.%M")
         dest = root / month_dir / f"{timestamp} {title}"
         dest.mkdir(parents=True, exist_ok=True)
 
-        # Copy render output — filename is the title, no internal IDs.
-        suffix = render_path.suffix or ".html"
+        suffix = scribe_path.suffix or ".html"
         safe_title = title[:80]
         dest_file = dest / f"{safe_title}{suffix}"
-        dest_file.write_bytes(render_path.read_bytes())
-
-        # manifest.json stays for system reference but is not the user-facing file.
-        manifest = {
-            "run_id": run_id,
-            "title": raw_title,
-            "run_type": run_type,
-            "run_root": run_root,
-            "steps": len(step_results),
-            "delivered_utc": _utc(),
-        }
-        (dest / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
-        self._generate_pdf_best_effort(dest, render_path)
+        # Clean system markers from scribe output before archiving (Q4.6d).
+        raw_content = scribe_path.read_bytes()
+        if suffix in {".html", ".md", ".txt"}:
+            try:
+                cleaned = self._clean_system_markers(raw_content.decode("utf-8", errors="replace"))
+                dest_file.write_text(cleaned, encoding="utf-8")
+            except Exception:
+                dest_file.write_bytes(raw_content)
+        else:
+            dest_file.write_bytes(raw_content)
+        self._generate_pdf_best_effort(dest, scribe_path)
 
         return dest
 
-    def _archive_shadow_outcome(self, run_root: str, plan: dict, render_path: Path, step_results: list[dict]) -> Path:
-        run_id = str(plan.get("run_id") or uuid.uuid4().hex[:8])
-        shadow_of = str(plan.get("shadow_of") or "")
-        strategy_id = str(plan.get("strategy_id") or "")
-        dest = self._home / "state" / "shadow_outcomes" / run_id
-        dest.mkdir(parents=True, exist_ok=True)
+    # Forbidden system markers that must never appear in delivered offerings (Q4.6d).
+    _SYSTEM_MARKER_PATTERNS = [
+        r"\[DONE\]",
+        r"\[COMPLETE\]",
+        r"\[complete\]",
+        r"\[done\]",
+        r"run complete",
+        r"completed successfully",
+        r"<!-- ?system[^>]*-->",
+        r"\[system:?[^\]]*\]",
+        r"<system-note>.*?</system-note>",
+        r"---\s*internal notes?\s*---.*?---\s*end\s*---",
+    ]
 
-        suffix = render_path.suffix or ".html"
-        dest_file = dest / f"report{suffix}"
-        dest_file.write_text(render_path.read_text())
-        manifest = {
-            "run_id": run_id,
-            "shadow_of": shadow_of,
-            "strategy_id": strategy_id,
-            "run_type": str(plan.get("run_type") or ""),
-            "run_root": run_root,
-            "steps": len(step_results),
-            "delivered_utc": _utc(),
-            "is_shadow": True,
-        }
-        (dest / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
-        self._generate_pdf_best_effort(dest, render_path)
-        self._append_shadow_audit(manifest)
-        return dest
+    def _clean_system_markers(self, text: str) -> str:
+        """Remove internal system markers from rendered output before archiving."""
+        for pattern in self._SYSTEM_MARKER_PATTERNS:
+            text = re.sub(pattern, "", text, flags=re.IGNORECASE | re.DOTALL)
+        # Collapse runs of blank lines left by marker removal.
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
 
-    def _append_shadow_audit(self, manifest: dict) -> None:
-        path = self._home / "state" / "telemetry" / "shadow_delivery.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
+    def _update_offering_index(self, offering_path: Path, plan: dict, offering_root: Path | None = None) -> None:
+        root = offering_root or self._resolve_offering_root()
         try:
-            with path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(manifest, ensure_ascii=False) + "\n")
-        except Exception as exc:
-            activity.logger.warning("Failed to append shadow audit: %s", exc)
-
-    def _update_outcome_index(self, outcome_path: Path, plan: dict, outcome_root: Path | None = None) -> None:
-        root = outcome_root or self._resolve_outcome_root()
-        index = self._store.load_outcome_index(root)
-        try:
-            rel_path = str(outcome_path.relative_to(root))
+            rel_path = str(offering_path.relative_to(root))
         except Exception:
-            rel_path = str(outcome_path)
+            rel_path = str(offering_path)
+        brief = plan.get("brief") or {}
+        complexity = str(plan.get("complexity") or brief.get("complexity") or "charge")
         entry = {
             "path": rel_path,
-            "drive_path": rel_path,  # run_id → drive_path mapping for Portal lookup
-            "title": plan.get("run_title", plan.get("title", "")),
-            "run_type": plan.get("run_type", "manual"),
-            "run_id": plan.get("run_id", ""),
-            "work_scale": plan.get("work_scale", ""),
+            "title": plan.get("deed_title", plan.get("title", "")),
+            "complexity": complexity,
+            "deed_id": plan.get("deed_id", ""),
             "delivered_utc": _utc(),
         }
-        index.append(entry)
-        self._store.save_outcome_index(root, index, max_items=1000)
+        self._ledger.append_herald_log(entry)
 
-    def _resolve_outcome_root(self) -> Path:
-        resolved = self._drive_registry.resolve_outcome_root()
-        if not resolved.get("ok"):
-            raise RuntimeError(f"drive_outcome_unavailable: {resolved.get('error', '')}")
-        root = Path(str(resolved.get("outcome_root") or "")).expanduser()
+    def _resolve_offering_root(self) -> Path:
+        root = self._home / "offerings"
         root.mkdir(parents=True, exist_ok=True)
         return root
 
-    def _update_run_status(self, run_root: str, plan: dict, run_status: str, outcome_path: str | None = None) -> None:
-        runs = self._store.load_runs()
-        run_id = str(plan.get("run_id") or "")
-        work_scale = str(plan.get("work_scale") or "")
+    def _update_deed_status(self, deed_root: str, plan: dict, deed_status: str, offering_path: str | None = None) -> None:
+        deed_id = str(plan.get("deed_id") or "")
+        brief = plan.get("brief") or {}
+        complexity = str(plan.get("complexity") or brief.get("complexity") or "charge")
         last_error = str(plan.get("last_error") or "")
         now_utc = _utc()
-        requested_status = str(run_status or "").strip()
+        requested_status = str(deed_status or "").strip()
         final_status = requested_status
         phase = "history"
-        if requested_status in {"running", "queued", "paused", "running_shadow", "cancel_requested", "cancelling"}:
+        if requested_status in {"running", "queued", "paused", "cancel_requested", "cancelling"}:
             phase = "running"
         elif requested_status in {"awaiting_eval", "pending_review"}:
             phase = "awaiting_eval"
         elif requested_status == "completed":
-            # Eval window is optional and non-blocking for completion semantics.
-            # We keep run in awaiting_eval phase until timeout or feedback submit.
             final_status = "awaiting_eval"
             phase = "awaiting_eval"
 
@@ -830,61 +587,67 @@ class DaemonActivities:
             "%Y-%m-%dT%H:%M:%SZ",
             time.gmtime(time.time() + int(eval_window_hours * 3600)),
         )
-        for row in runs:
-            if row.get("run_id") == run_id:
-                row["run_status"] = final_status
-                row["phase"] = phase
-                row["updated_utc"] = now_utc
-                row["run_id"] = run_id
-                row["run_title"] = str(plan.get("run_title") or plan.get("title") or row.get("run_title") or "")
-                row["title"] = row.get("run_title") or row.get("title") or ""
-                if work_scale:
-                    row["work_scale"] = work_scale
-                if plan.get("campaign_id"):
-                    row["campaign_id"] = str(plan.get("campaign_id") or "")
-                if last_error:
-                    row["last_error"] = last_error
-                if outcome_path:
-                    row["outcome_path"] = outcome_path
-                if final_status == "awaiting_eval":
-                    row["exec_completed_utc"] = now_utc
-                    row["eval_window_hours"] = eval_window_hours
-                    row["eval_deadline_utc"] = deadline_utc
-                elif final_status in {"completed", "completed_shadow", "failed", "cancelled"}:
-                    row.pop("eval_deadline_utc", None)
-                break
-        else:
-            row = {
-                "run_id": run_id,
-                "run_title": str(plan.get("run_title") or plan.get("title") or run_id),
-                "title": str(plan.get("run_title") or plan.get("title") or run_id),
-                "work_scale": work_scale,
-                "campaign_id": str(plan.get("campaign_id") or ""),
-                "run_status": final_status,
-                "phase": phase,
-                "updated_utc": now_utc,
-                "run_root": run_root,
-            }
-            if last_error:
-                row["last_error"] = last_error
-            if outcome_path:
-                row["outcome_path"] = outcome_path
-            if final_status == "awaiting_eval":
-                row["exec_completed_utc"] = now_utc
-                row["eval_window_hours"] = eval_window_hours
-                row["eval_deadline_utc"] = deadline_utc
-            runs.append(row)
-        self._store.save_runs(runs)
 
-    def _generate_pdf_best_effort(self, outcome_dir: Path, render_path: Path) -> None:
-        pdf_path = outcome_dir / "report.pdf"
+        def _mutate(deeds: list[dict]) -> None:
+            for row in deeds:
+                if row.get("deed_id") == deed_id:
+                    row["deed_status"] = final_status
+                    row["phase"] = phase
+                    row["updated_utc"] = now_utc
+                    row["deed_id"] = deed_id
+                    row["complexity"] = complexity
+                    row["deed_title"] = str(
+                        plan.get("deed_title") or plan.get("title")
+                        or brief.get("objective", "")
+                        or row.get("deed_title") or ""
+                    )
+                    row["title"] = row.get("deed_title") or row.get("title") or ""
+                    if plan.get("endeavor_id"):
+                        row["endeavor_id"] = str(plan.get("endeavor_id") or "")
+                    if last_error:
+                        row["last_error"] = last_error
+                    if offering_path:
+                        row["offering_path"] = offering_path
+                    if final_status == "awaiting_eval":
+                        row["exec_completed_utc"] = now_utc
+                        row["eval_window_hours"] = eval_window_hours
+                        row["eval_deadline_utc"] = deadline_utc
+                    elif final_status in {"completed", "failed", "cancelled"}:
+                        row.pop("eval_deadline_utc", None)
+                    break
+            else:
+                new_row: dict = {
+                    "deed_id": deed_id,
+                    "deed_title": str(plan.get("deed_title") or plan.get("title") or brief.get("objective", "") or deed_id),
+                    "title": str(plan.get("deed_title") or plan.get("title") or brief.get("objective", "") or deed_id),
+                    "complexity": complexity,
+                    "endeavor_id": str(plan.get("endeavor_id") or ""),
+                    "deed_status": final_status,
+                    "phase": phase,
+                    "updated_utc": now_utc,
+                    "deed_root": deed_root,
+                }
+                if last_error:
+                    new_row["last_error"] = last_error
+                if offering_path:
+                    new_row["offering_path"] = offering_path
+                if final_status == "awaiting_eval":
+                    new_row["exec_completed_utc"] = now_utc
+                    new_row["eval_window_hours"] = eval_window_hours
+                    new_row["eval_deadline_utc"] = deadline_utc
+                deeds.append(new_row)
+
+        self._ledger.mutate_deeds(_mutate)
+
+    def _generate_pdf_best_effort(self, offering_dir: Path, scribe_path: Path) -> None:
+        pdf_path = offering_dir / "report.pdf"
         try:
-            text = render_path.read_text(encoding="utf-8", errors="ignore")
-            if render_path.suffix.lower() == ".html":
+            text = scribe_path.read_text(encoding="utf-8", errors="ignore")
+            if scribe_path.suffix.lower() == ".html":
                 text = self._html_to_text(text)
             self._write_simple_pdf(text, pdf_path)
         except Exception as exc:
-            activity.logger.warning("PDF best-effort generation failed for %s: %s", render_path, exc)
+            activity.logger.warning("PDF best-effort generation failed for %s: %s", scribe_path, exc)
 
     def _html_to_text(self, html: str) -> str:
         cleaned = re.sub(r"<script[\\s\\S]*?</script>", " ", html, flags=re.IGNORECASE)

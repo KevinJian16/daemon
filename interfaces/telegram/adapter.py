@@ -96,66 +96,49 @@ def _chat_id() -> int:
     return int(raw)
 
 
-def _run_title(payload: dict[str, Any]) -> str:
-    return str(payload.get("run_title") or payload.get("title") or payload.get("run_type") or "运行")
+def _deed_title(payload: dict[str, Any]) -> str:
+    return str(payload.get("deed_title") or payload.get("title") or "任务")
 
 
 def _notify_text(event: str, payload: dict[str, Any]) -> str:
     def _title() -> str:
-        return _run_title(payload)
+        return _deed_title(payload)
 
-    if event == "run_started":
-        scale = str(payload.get("work_scale") or "thread").strip().lower()
-        if scale == "pulse":
-            return f'Pulse 已开始 · "{_title()}"'
-        if scale == "campaign":
-            return f'Campaign 已开始 · "{_title()}"'
-        return f'Thread 已开始 · "{_title()}"'
+    if event == "deed_started":
+        return f'已开始 · "{_title()}"'
 
-    if event == "run_completed":
-        scale = str(payload.get("work_scale") or "thread").strip().lower()
-        if str(payload.get("circuit_id") or "").strip():
-            return f'Circuit 实例完成 · "{_title()}" · 请去 Portal 评价'
-        if scale == "pulse":
-            return f'Pulse 完成 · "{_title()}" · 请去 Portal 评价'
-        if scale == "campaign":
-            return f'Campaign 完成 · "{_title()}" · 请去 Portal 查看'
-        return f'Thread 完成 · "{_title()}" · 请去 Portal 评价'
+    if event == "deed_completed":
+        summary = str(payload.get("summary") or "").strip()
+        portal_link = str(payload.get("portal_link") or "").strip()
+        parts = [f'做好了。\n\n{summary}' if summary else f'做好了 · "{_title()}"']
+        if portal_link:
+            parts.append(f'\n\n完整结果：{portal_link}')
+        return "".join(parts)
 
-    if event == "run_failed":
+    if event == "deed_failed":
         error = str(payload.get("error") or payload.get("last_error") or "未知错误")
-        return f'运行失败 · "{_title()}" · {error[:160]}'
+        return f'失败 · "{_title()}" · {error[:160]}'
 
-    if event == "milestone_done":
-        idx = payload.get("milestone_idx", "?")
-        return f'Campaign 里程碑 {idx} 完成 · "{_title()}" · 请去 Portal 查看'
+    if event == "passage_completed":
+        idx = payload.get("passage_idx", "?")
+        return f'阶段 {idx} 完成 · "{_title()}" · 请去 Portal 查看'
 
-    if event == "campaign_plan_ready":
-        return f'Campaign 计划已生成 · "{_title()}" · 请去 Portal 确认'
+    if event == "deed_paused":
+        return f'已暂停 · "{_title()}" · 请去 Portal 继续'
 
-    if event == "run_paused":
-        return f'运行已暂停 · "{_title()}" · 请去 Portal 继续'
+    if event == "deed_rework_exhausted":
+        return f'需要处理 · "{_title()}" · 请去 Portal 查看'
+
+    if event == "ward_changed":
+        ward_status = str(payload.get("ward_status") or "").strip()
+        return f'系统状态变化 · Ward: {ward_status}'
+
+    if event == "eval_expiring":
+        return f'反馈即将过期 · "{_title()}" · 请去 Portal 评价'
 
     if event == "skill_evolution_digest":
         proposals = payload.get("proposals") if isinstance(payload.get("proposals"), list) else []
         return f"Skill Evolution 提案累计 {len(proposals)} 条 · 请去 Portal 查看"
-
-    if event == "campaign_auto_advanced":
-        idx = payload.get("milestone_idx", "?")
-        return f'Campaign 里程碑已自动推进（无操作）· "{_title()}"'
-
-    if event == "campaign_status":
-        status = str(payload.get("campaign_status") or "").strip().lower()
-        phase = str(payload.get("campaign_phase") or "").strip().lower()
-        idx = int(payload.get("current_milestone_index") or 0)
-        if status == "awaiting_intervention" or phase == "milestone_failed":
-            return f'Campaign 里程碑失败 · "{_title()}" · 请去 Portal 处理'
-        if status == "completed" or phase == "finished":
-            return f'Campaign 完成 · "{_title()}" · 请去 Portal 查看'
-        return f'Campaign 状态更新 · "{_title()}" · milestone {idx}'
-
-    if event == "feedback_survey":
-        return f'请评价本次结果 · "{_title()}" · 请去 Portal 处理'
 
     return f'系统通知 · "{_title()}" · {event}'
 

@@ -7,7 +7,7 @@
       "alias": "fast",
       "provider": "minimax",
       "model_id": "MiniMax-M2.5",
-      "description": "High-frequency workhorse: router/collect/build-agent/apply orchestration, dialog, intake, relay, judge, record, tend, pulse",
+      "description": "High-frequency workhorse: counsel/scout/artificer/envoy orchestration, voice, intake, relay, judge, record, tend, pulse",
       "context_window": 1000000,
       "supports_temperature": true
     },
@@ -15,7 +15,7 @@
       "alias": "analysis",
       "provider": "deepseek",
       "model_id": "deepseek-reasoner",
-      "description": "Deep reasoning: analyze agent — witness, learn, distill, focus, clst_research_report. Note: 65K context, no temperature.",
+      "description": "Deep reasoning: sage agent — witness, learn, distill, focus, clst_research_report. Note: 65K context, no temperature.",
       "context_window": 65536,
       "supports_temperature": false
     },
@@ -23,7 +23,7 @@
       "alias": "review",
       "provider": "qwen",
       "model_id": "qwen-max",
-      "description": "Quality gate and rubric scoring: review agent — quality_gate_hard, review_mentor_rubric. Strong structured output, bilingual.",
+      "description": "Quality gate and rubric scoring: arbiter agent — quality_gate_hard, review_mentor_rubric. Strong structured output, bilingual.",
       "context_window": 32768,
       "supports_temperature": true
     },
@@ -31,7 +31,7 @@
       "alias": "glm",
       "provider": "zhipu",
       "model_id": "glm-z1-flash",
-      "description": "Bilingual rendering: render agent — formal writing, zh/en split, clst_knowledge_synthesis. 128K context.",
+      "description": "Bilingual rendering: scribe agent — formal writing, zh/en split, clst_knowledge_synthesis. 128K context.",
       "context_window": 128000,
       "supports_temperature": true
     },
@@ -50,6 +50,14 @@
       "description": "Fallback when primary provider unavailable",
       "context_window": 1000000,
       "supports_temperature": true
+    },
+    {
+      "alias": "embedding",
+      "provider": "zhipu",
+      "model_id": "embedding-3",
+      "description": "Text embedding for Lore similarity search and Memory semantic retrieval. 1024 dimensions, bilingual zh/en.",
+      "context_window": 8192,
+      "supports_temperature": false
     }
   ]
 }
