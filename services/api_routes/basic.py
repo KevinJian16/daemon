@@ -35,6 +35,10 @@ def register_basic_routes(
     memory: Any,
     lore: Any,
     instinct: Any,
+    dominion_writ: Any,
+    append_deed_message: Callable[..., dict[str, Any]],
+    load_deed_messages: Callable[[str, int], list[dict]],
+    schedule_broadcast: Callable[[str, dict[str, Any]], None],
 ) -> None:
     def _deed_status(row: dict) -> str:
         return str(row.get("deed_status") or "").strip()
@@ -110,6 +114,7 @@ def register_basic_routes(
             row["phase"] = "history"
             row["updated_utc"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
             row["eval_expired_utc"] = row["updated_utc"]
+            row["feedback_expired"] = True
             row.pop("eval_deadline_utc", None)
             changed = True
         return rows, changed
@@ -337,6 +342,41 @@ def register_basic_routes(
         )
         return result
 
+    @app.get("/deeds/{deed_id}/messages")
+    def get_deed_messages(deed_id: str, request: Request, limit: int = 200):
+        row = ledger.get_deed(deed_id)
+        if not isinstance(row, dict):
+            raise HTTPException(status_code=404, detail="deed not found")
+        messages = load_deed_messages(deed_id, limit)
+        log_portal_event("deed_messages", {"deed_id": deed_id, "count": len(messages)}, request)
+        return messages
+
+    @app.post("/deeds/{deed_id}/message")
+    async def post_deed_message(deed_id: str, request: Request):
+        row = ledger.get_deed(deed_id)
+        if not isinstance(row, dict):
+            raise HTTPException(status_code=404, detail="deed not found")
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+        text = str(body.get("text") or body.get("message") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="message_required")
+        append_deed_message(deed_id, role="user", content=text, event="user_message", meta={"source": str(body.get("source") or "portal")})
+        complexity = str(row.get("complexity") or ((row.get("plan") or {}).get("complexity") if isinstance(row.get("plan"), dict) else "") or "").strip().lower()
+        deed_status = _deed_status(row).lower()
+        paused = False
+        workflow_id = ""
+        if deed_status in {"running", "queued"} and complexity != "errand":
+            # Adjusting a live deed should preserve state before replanning.
+            workflow_id = await _signal_workflows(deed_id, row, signal_name="pause_execution", payload={"source": "portal_message"})
+            paused = True
+            await _append_requirement(deed_id, text, source=str(body.get("source") or "portal_message"))
+        payload = {"deed_id": deed_id, "content": text, "paused": paused, "workflow_id": workflow_id}
+        schedule_broadcast("deed_message", {"deed_id": deed_id, "role": "user", "content": text, "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+        log_portal_event("deed_message", payload, request)
+        return {"ok": True, **payload}
+
     @app.post("/deeds/{deed_id}/pause")
     async def pause_deed(deed_id: str, request: Request):
         row = ledger.get_deed(deed_id)
@@ -410,6 +450,71 @@ def register_basic_routes(
         log_portal_event("offering_list", {"limit": limit, "count": min(len(index), limit)}, request)
         return list(reversed(index))[:limit]
 
+    def _offering_entry_for_deed(deed_id: str) -> dict | None:
+        for entry in reversed(ledger.load_herald_log()):
+            if str(entry.get("deed_id") or "") == deed_id:
+                return entry
+        return None
+
+    def _offering_files_payload(offering_path: Path, offering_root: Path, *, deed_id: str = "") -> list[dict]:
+        items: list[dict] = []
+        for file_path in sorted(offering_path.rglob("*")):
+            if not file_path.is_file():
+                continue
+            rel = str(file_path.relative_to(offering_path))
+            ext = file_path.suffix.lower()
+            preview_type = "text"
+            if ext == ".pdf":
+                preview_type = "pdf"
+            elif ext in {".html", ".htm"}:
+                preview_type = "html"
+            elif ext in {".py", ".ts", ".tsx", ".js", ".jsx", ".diff"}:
+                preview_type = "code"
+            if deed_id:
+                download_path = f"/offerings/{deed_id}/files/{rel}"
+            else:
+                download_path = f"/offerings/{str(file_path.relative_to(offering_root))}"
+            items.append(
+                {
+                    "name": file_path.name,
+                    "relative_path": rel,
+                    "preview_type": preview_type,
+                    "size_bytes": int(file_path.stat().st_size),
+                    "download_path": download_path,
+                }
+            )
+        return items
+
+    @app.get("/offerings/{deed_id}/files")
+    def deed_offering_files(deed_id: str, request: Request):
+        offering_root = require_offering_root()
+        entry = _offering_entry_for_deed(deed_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail="offering not found")
+        offering_path = offering_root / str(entry.get("path") or "")
+        if not offering_path.exists():
+            raise HTTPException(status_code=404, detail="offering_path_missing")
+        files = _offering_files_payload(offering_path, offering_root, deed_id=deed_id)
+        log_portal_event("offering_files", {"deed_id": deed_id, "count": len(files)}, request)
+        return {"deed_id": deed_id, "offering_path": str(entry.get("path") or ""), "files": files}
+
+    @app.get("/offerings/{deed_id}/files/{filename:path}")
+    def deed_offering_file(deed_id: str, filename: str, request: Request):
+        offering_root = require_offering_root()
+        entry = _offering_entry_for_deed(deed_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail="offering not found")
+        base = offering_root / str(entry.get("path") or "")
+        full = base / filename
+        try:
+            full.resolve().relative_to(base.resolve())
+        except Exception:
+            raise HTTPException(status_code=400, detail="path_outside_offering_root")
+        if not full.exists():
+            raise HTTPException(status_code=404, detail="offering_file_not_found")
+        log_portal_event("offering_file_access", {"deed_id": deed_id, "filename": filename}, request)
+        return FileResponse(full)
+
     @app.get("/offerings/timeline")
     def offering_timeline(request: Request, days: int = 30, limit_per_day: int = 50):
         offering_root = require_offering_root()
@@ -459,6 +564,14 @@ def register_basic_routes(
             raise HTTPException(status_code=404)
         log_portal_event("offering_file_access", {"path": path}, request)
         return FileResponse(full)
+
+    @app.get("/offering")
+    def list_offerings_legacy(request: Request, limit: int = 50):
+        return list_offerings(request, limit)
+
+    @app.get("/offering/{path:path}")
+    def get_offering_file_legacy(path: str, request: Request):
+        return get_offering_file(path, request)
 
     @app.get("/console/overview")
     def console_overview():

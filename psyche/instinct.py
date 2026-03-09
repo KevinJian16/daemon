@@ -58,7 +58,10 @@ BOOTSTRAP_PREFERENCES: list[dict] = [
     {"pref_key": "default_depth",        "value": "study",    "source": "default"},
     {"pref_key": "default_format",       "value": "markdown", "source": "default"},
     {"pref_key": "default_language",     "value": "bilingual","source": "default"},
-    {"pref_key": "pool_size_n",          "value": "24",       "source": "default"},
+    {"pref_key": "retinue_size_n",       "value": "24",       "source": "default"},
+    {"pref_key": "provider_daily_limits","value": "{\"minimax\":20000000,\"qwen\":10000000,\"zhipu\":5000000,\"deepseek\":5000000}", "source": "default"},
+    {"pref_key": "deed_ration_ratio",    "value": "0.75",     "source": "default"},
+    {"pref_key": "output_languages",     "value": "[\"zh\",\"en\"]", "source": "default"},
     {"pref_key": "telegram_enabled",     "value": "true",     "source": "default"},
     {"pref_key": "pdf_enabled",          "value": "true",     "source": "default"},
 ]
@@ -104,6 +107,18 @@ class InstinctPsyche:
                 "INSERT OR IGNORE INTO preferences (pref_key, value, confidence, sample_count, updated_utc, source) "
                 "VALUES (?,?,0.0,0,?,?)",
                 (p["pref_key"], str(p["value"]), now, str(p.get("source", "default"))),
+            )
+        legacy_pool = conn.execute(
+            "SELECT value FROM preferences WHERE pref_key='pool_size_n'"
+        ).fetchone()
+        retinue_size = conn.execute(
+            "SELECT value FROM preferences WHERE pref_key='retinue_size_n'"
+        ).fetchone()
+        if legacy_pool and not retinue_size:
+            conn.execute(
+                "INSERT OR IGNORE INTO preferences (pref_key, value, confidence, sample_count, updated_utc, source) "
+                "VALUES (?,?,0.0,0,?,?)",
+                ("retinue_size_n", str(legacy_pool["value"]), now, "migration"),
             )
         tomorrow = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 86400))
         for b in BOOTSTRAP_RATIONS:

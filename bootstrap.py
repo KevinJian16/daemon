@@ -212,7 +212,7 @@ def bootstrap(daemon_home: Path | None = None, openclaw_home: Path | None | obje
             report["warnings"].extend(val["warnings"])
 
         # ── Retinue registration ──────────────────────────────────────
-        retinue_status_file = home / "state" / "retinue_status.json"
+        retinue_status_file = home / "state" / "pool_status.json"
         if not retinue_status_file.exists() or force:
             retinue_size = int(instinct.get_pref("retinue_size_n", str(DEFAULT_POOL_SIZE)))
             retinue_report = register_retinue_instances(oc_home, home, pool_size=retinue_size)
@@ -220,7 +220,7 @@ def bootstrap(daemon_home: Path | None = None, openclaw_home: Path | None | obje
             if not retinue_report.get("ok"):
                 report["warnings"].append(f"Retinue registration issue: {retinue_report.get('error', 'unknown')}")
         else:
-            report["retinue"] = {"skipped": True, "reason": "retinue_status.json already exists"}
+            report["retinue"] = {"skipped": True, "reason": "pool_status.json already exists"}
     else:
         report["openclaw_validation"] = {"skipped": True, "reason": "OPENCLAW_HOME not set"}
         report["warnings"].append("OPENCLAW_HOME not set — OpenClaw validation skipped")

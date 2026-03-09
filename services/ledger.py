@@ -29,6 +29,8 @@ class Ledger:
         self.deeds_path = self.state_dir / "deeds.json"
         self.ward_path = self.state_dir / "ward.json"
         self.schedule_history_path = self.state_dir / "schedule_history.json"
+        self.console_audit_path = self.state_dir / "console_audit.jsonl"
+        self.daily_stats_path = self.state_dir / "daily_stats.jsonl"
 
     @classmethod
     def _lock_for(cls, path: Path) -> threading.Lock:
@@ -188,40 +190,11 @@ class Ledger:
 
     def append_herald_log(self, entry: dict) -> None:
         """Append a single herald record to the JSONL log (cross-process safe)."""
-        path = self.herald_log_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(entry, ensure_ascii=False) + "\n"
-        lock = self._lock_for(path)
-        with lock:
-            lock_path = path.with_suffix(".lock")
-            with open(lock_path, "a+") as fd:
-                fcntl.flock(fd, fcntl.LOCK_EX)
-                try:
-                    with open(path, "a", encoding="utf-8") as f:
-                        f.write(line)
-                finally:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
+        self.append_jsonl(self.herald_log_path, entry)
 
     def load_herald_log(self, *, max_items: int = 2000) -> list[dict]:
         """Read the herald log, returning the most recent entries."""
-        path = self.herald_log_path
-        if not path.exists():
-            return []
-        rows: list[dict] = []
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                    if isinstance(obj, dict):
-                        rows.append(obj)
-                except json.JSONDecodeError:
-                    continue
-        except Exception as exc:
-            logger.warning("Failed to read herald log %s: %s", path, exc)
-        return rows[-max(1, max_items):]
+        return self.load_jsonl(self.herald_log_path, max_items=max_items)
 
     # ── Notification failure queue (JSONL, append-only) ─────────────────────
 
@@ -231,43 +204,14 @@ class Ledger:
 
     def enqueue_failed_notification(self, entry: dict) -> None:
         """Persist a failed notification for later retry."""
-        path = self.notify_queue_path
-        path.parent.mkdir(parents=True, exist_ok=True)
         row = dict(entry)
         row.setdefault("queued_utc", _utc())
         row.setdefault("retry_count", 0)
-        line = json.dumps(row, ensure_ascii=False) + "\n"
-        lock = self._lock_for(path)
-        with lock:
-            lock_path = path.with_suffix(".lock")
-            with open(lock_path, "a+") as fd:
-                fcntl.flock(fd, fcntl.LOCK_EX)
-                try:
-                    with open(path, "a", encoding="utf-8") as f:
-                        f.write(line)
-                finally:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
+        self.append_jsonl(self.notify_queue_path, row)
 
     def load_notify_queue(self) -> list[dict]:
         """Read all pending failed notifications."""
-        path = self.notify_queue_path
-        if not path.exists():
-            return []
-        rows: list[dict] = []
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                    if isinstance(obj, dict):
-                        rows.append(obj)
-                except json.JSONDecodeError:
-                    continue
-        except Exception as exc:
-            logger.warning("Failed to read notify queue %s: %s", path, exc)
-        return rows
+        return self.load_jsonl(self.notify_queue_path, max_items=5000)
 
     def clear_notify_queue(self) -> None:
         """Clear the notification failure queue after successful retry."""
@@ -297,3 +241,56 @@ class Ledger:
 
     def save_json(self, filename: str, data: Any) -> None:
         self._write_json(self.state_dir / filename, data)
+
+    # ── JSONL helpers ──────────────────────────────────────────────────────
+
+    def append_jsonl(self, path: Path, entry: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(entry, ensure_ascii=False) + "\n"
+        lock = self._lock_for(path)
+        with lock:
+            lock_path = path.with_suffix(".lock")
+            with open(lock_path, "a+") as fd:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                try:
+                    with open(path, "a", encoding="utf-8") as f:
+                        f.write(line)
+                finally:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+
+    def load_jsonl(self, path: Path, *, max_items: int = 2000) -> list[dict]:
+        if not path.exists():
+            return []
+        rows: list[dict] = []
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict):
+                        rows.append(obj)
+                except json.JSONDecodeError:
+                    continue
+        except Exception as exc:
+            logger.warning("Failed to read jsonl %s: %s", path, exc)
+        return rows[-max(1, int(max_items)):]
+
+    # ── Console audit / daily stats ───────────────────────────────────────
+
+    def append_console_audit(self, entry: dict) -> None:
+        row = dict(entry)
+        row.setdefault("created_utc", _utc())
+        self.append_jsonl(self.console_audit_path, row)
+
+    def load_console_audit(self, *, max_items: int = 1000) -> list[dict]:
+        return self.load_jsonl(self.console_audit_path, max_items=max_items)
+
+    def append_daily_stats(self, entry: dict) -> None:
+        row = dict(entry)
+        row.setdefault("created_utc", _utc())
+        self.append_jsonl(self.daily_stats_path, row)
+
+    def load_daily_stats(self, *, max_items: int = 365) -> list[dict]:
+        return self.load_jsonl(self.daily_stats_path, max_items=max_items)

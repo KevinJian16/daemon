@@ -68,6 +68,12 @@ def run_tend(self) -> dict:
         notify_queue_cleaned = _clean_notify_queue(self.state_dir, max_age_days=3)
         ctx.step("notify_queue_cleaned", notify_queue_cleaned)
 
+        console_audit_cleaned = _clean_old_console_audit(self.state_dir, max_age_days=90)
+        ctx.step("console_audit_cleaned", console_audit_cleaned)
+
+        daily_stats = _write_daily_stats(self)
+        ctx.step("daily_stats_written", daily_stats)
+
         _state_git_commit(self.state_dir)
         ctx.step("state_git_committed")
 
@@ -79,6 +85,8 @@ def run_tend(self) -> dict:
             "rations_checked": True,
             "herald_log_rotated": herald_log_rotated,
             "notify_queue_cleaned": notify_queue_cleaned,
+            "console_audit_cleaned": console_audit_cleaned,
+            "daily_stats_written": bool(daily_stats),
             "state_committed": True,
             "backup": backup_result,
         }
@@ -92,6 +100,9 @@ def run_curate(self) -> dict:
         vaulted = _vault_completed_deeds(self)
         ctx.step("deeds_vaulted", vaulted)
 
+        lore_decay = self.lore.decay()
+        ctx.step("lore_decay", lore_decay)
+
         expired = _expire_old_vaults(self)
         ctx.step("vaults_expired", expired)
 
@@ -100,6 +111,7 @@ def run_curate(self) -> dict:
 
         result = {
             "deeds_vaulted": vaulted,
+            "lore_decay_removed": lore_decay.get("removed", 0),
             "vaults_expired": expired,
             "deed_roots_cleaned": cleaned,
         }
@@ -135,23 +147,38 @@ def _vault_completed_deeds(self) -> int:
 
     drive_vault = Path.home() / "My Drive" / "daemon" / "vault"
     vaulted = 0
+    deed_rows = {
+        str(row.get("deed_id") or ""): row
+        for row in self._store.load_deeds()
+        if isinstance(row, dict)
+    }
 
     for deed_dir in deeds_dir.iterdir():
         if not deed_dir.is_dir():
             continue
+        deed_id = deed_dir.name
+        deed_row = deed_rows.get(deed_id, {})
         status_file = deed_dir / "status.json"
-        if not status_file.exists():
-            continue
-        try:
-            status = json.loads(status_file.read_text())
-        except Exception:
-            continue
+        status = deed_row if isinstance(deed_row, dict) else {}
+        if status_file.exists():
+            try:
+                raw_status = json.loads(status_file.read_text())
+                if isinstance(raw_status, dict):
+                    status.update(raw_status)
+            except Exception:
+                pass
 
-        deed_status = str(status.get("status") or "")
+        deed_status = str(status.get("deed_status") or status.get("status") or "")
         if deed_status not in {"completed", "failed", "cancelled"}:
             continue
 
-        completed_utc = str(status.get("completed_utc") or status.get("updated_utc") or "")
+        completed_utc = str(
+            status.get("completed_utc")
+            or status.get("eval_submitted_utc")
+            or status.get("eval_expired_utc")
+            or status.get("updated_utc")
+            or ""
+        )
         if not completed_utc:
             continue
 
@@ -159,7 +186,6 @@ def _vault_completed_deeds(self) -> int:
         if age_days < 1:
             continue
 
-        deed_id = deed_dir.name
         month = completed_utc[:7]
         dest = drive_vault / month / deed_id
         try:
@@ -178,10 +204,11 @@ def _vault_completed_deeds(self) -> int:
             if moves_src.exists():
                 shutil.copytree(moves_src, dest / "moves", dirs_exist_ok=True)
 
-            for f in ["plan.json", "status.json"]:
-                src = deed_dir / f
-                if src.exists():
-                    shutil.copy2(src, dest / f)
+            design = status.get("plan") if isinstance(status.get("plan"), dict) else {}
+            if design:
+                (dest / "design.json").write_text(json.dumps(design, ensure_ascii=False, indent=2), encoding="utf-8")
+            if status:
+                (dest / "status.json").write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
 
             vaulted += 1
         except Exception as exc:
@@ -229,26 +256,33 @@ def _clean_old_deed_roots(self) -> int:
     cutoff = time.time() - 7 * 86400
     drive_vault = Path.home() / "My Drive" / "daemon" / "vault"
     cleaned = 0
+    deed_rows = {
+        str(row.get("deed_id") or ""): row
+        for row in self._store.load_deeds()
+        if isinstance(row, dict)
+    }
 
     for deed_dir in deeds_dir.iterdir():
         if not deed_dir.is_dir():
             continue
+        deed_id = deed_dir.name
+        status = deed_rows.get(deed_id, {}) if isinstance(deed_rows.get(deed_id, {}), dict) else {}
         status_file = deed_dir / "status.json"
-        if not status_file.exists():
-            continue
-        try:
-            status = json.loads(status_file.read_text())
-        except Exception:
-            continue
+        if status_file.exists():
+            try:
+                raw_status = json.loads(status_file.read_text())
+                if isinstance(raw_status, dict):
+                    status.update(raw_status)
+            except Exception:
+                pass
 
-        deed_status = str(status.get("status") or "")
+        deed_status = str(status.get("deed_status") or status.get("status") or "")
         if deed_status not in {"completed", "failed", "cancelled"}:
             continue
 
         if deed_dir.stat().st_mtime > cutoff:
             continue
 
-        deed_id = deed_dir.name
         in_vault = any(drive_vault.glob(f"*/{deed_id}")) if drive_vault.exists() else False
         if not in_vault and deed_status == "completed":
             continue
@@ -338,6 +372,62 @@ def _clean_notify_queue(state_dir: Path, max_age_days: int = 3) -> int:
         return 0
 
 
+def _clean_old_console_audit(state_dir: Path, max_age_days: int = 90) -> int:
+    path = state_dir / "console_audit.jsonl"
+    if not path.exists():
+        return 0
+    try:
+        cutoff = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(time.time() - max_age_days * 86400),
+        )
+        rows = []
+        dropped = 0
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                dropped += 1
+                continue
+            ts = str(obj.get("created_utc") or "")
+            if ts and ts < cutoff:
+                dropped += 1
+                continue
+            rows.append(obj)
+        path.write_text(
+            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+        return dropped
+    except Exception as exc:
+        logger.warning("Console audit cleanup failed: %s", exc)
+        return 0
+
+
+def _write_daily_stats(self) -> dict:
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    existing = self._store.load_daily_stats(max_items=30)
+    if any(str(row.get("date") or "") == today for row in existing):
+        return {}
+    deeds = self._store.load_deeds()
+    herald = self._store.load_herald_log(max_items=5000)
+    health = self._store.load_json("system_health.json", {})
+    row = {
+        "date": today,
+        "deeds_total": len(deeds),
+        "deeds_running": sum(1 for d in deeds if str(d.get("deed_status") or "") in {"running", "queued", "paused", "cancelling"}),
+        "deeds_awaiting_eval": sum(1 for d in deeds if str(d.get("deed_status") or "") in {"awaiting_eval", "pending_review"}),
+        "offerings_total": len(herald),
+        "avg_quality": float((health or {}).get("avg_quality") or 0.0),
+        "success_rate": float((health or {}).get("success_rate") or 0.0),
+    }
+    self._store.append_daily_stats(row)
+    return row
+
+
 def _backup_state(home: Path) -> dict:
     """Snapshot critical state files to state/backups/. Keep last 7."""
     state_dir = home / "state"
@@ -349,7 +439,7 @@ def _backup_state(home: Path) -> dict:
     dest.mkdir(parents=True, exist_ok=True)
 
     files_to_backup = [
-        "deeds.json", "ward.json", "cadence_history.json",
+        "deeds.json", "ward.json", "schedule_history.json",
         "herald_log.jsonl", "instinct.db",
     ]
     copied = 0

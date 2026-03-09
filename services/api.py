@@ -8,12 +8,13 @@ import logging
 import os
 import secrets
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from psyche.memory import MemoryPsyche
@@ -35,7 +36,8 @@ from services.api_routes.chat import register_chat_routes
 from services.api_routes.console_agents_skill import register_console_agents_skill_routes
 from services.api_routes.console_observe import register_console_observe_routes
 from services.api_routes.console_norm import register_console_norm_routes
-from services.api_routes.console_spine_fabric import register_console_spine_fabric_routes
+from services.api_routes.console_admin import register_console_admin_routes
+from services.api_routes.console_spine_psyche import register_console_spine_psyche_routes
 from services.api_routes.feedback import register_feedback_routes
 from services.api_routes.submit import register_submit_route
 from services.api_routes.system import register_system_routes
@@ -74,6 +76,28 @@ def _temporal_config() -> dict[str, Any]:
     return {"host": host, "port": port, "namespace": namespace, "queue": queue}
 
 
+class WebSocketHub:
+    def __init__(self) -> None:
+        self._connections: set[WebSocket] = set()
+
+    async def connect(self, ws: WebSocket) -> None:
+        await ws.accept()
+        self._connections.add(ws)
+
+    def disconnect(self, ws: WebSocket) -> None:
+        self._connections.discard(ws)
+
+    async def broadcast(self, message: dict[str, Any]) -> None:
+        stale: list[WebSocket] = []
+        for ws in list(self._connections):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                stale.append(ws)
+        for ws in stale:
+            self.disconnect(ws)
+
+
 
 def create_app() -> FastAPI:
     # Ensure runtime entrypoint can read .env without relying on shell exports.
@@ -93,7 +117,7 @@ def create_app() -> FastAPI:
     nerve = Nerve()
     trail = Trail(state / "trails")
     if not str(instinct.get_pref("eval_window_hours", "") or "").strip():
-        instinct.set_pref("eval_window_hours", "2", source="system", changed_by="bootstrap")
+        instinct.set_pref("eval_window_hours", "48", source="system", changed_by="bootstrap")
 
     # Initialize Spine.
     registry_path = home / "config" / "spine_registry.json"
@@ -104,12 +128,12 @@ def create_app() -> FastAPI:
         daemon_home=home, openclaw_home=oc_home,
     )
     # Initialize Services.
-    will = Will(lore, instinct, nerve, state, cortex=cortex)
+    dominion_writ = DominionWritManager(state_dir=state, nerve=nerve, ledger=ledger)
+    will = Will(lore, instinct, nerve, state, cortex=cortex, dominion_writ_manager=dominion_writ)
     cadence = Cadence(canon, routines, instinct, nerve, state, will=will)
-    voice = VoiceService(instinct, oc_home)
+    voice = VoiceService(instinct, oc_home, dominion_writ_manager=dominion_writ, cortex=cortex)
     reset_manager = SystemResetManager(home)
     ether = Ether(state, source="api")
-    dominion_writ = DominionWritManager(state_dir=state, nerve=nerve, ledger=ledger)
     telemetry_dir = state / "telemetry"
     telemetry_dir.mkdir(parents=True, exist_ok=True)
     portal_events_path = telemetry_dir / "portal_events.jsonl"
@@ -120,6 +144,7 @@ def create_app() -> FastAPI:
     model_policy_path = home / "config" / "model_policy.json"
     model_registry_path = home / "config" / "model_registry.json"
     app_started_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    ws_hub = WebSocketHub()
 
     app = FastAPI(title="Daemon API", version="0.1.0")
 
@@ -253,6 +278,7 @@ p{
     temporal_client: TemporalClient | None = None
     bridge_task: asyncio.Task | None = None
     bridge_running = True
+    runtime_loop: asyncio.AbstractEventLoop | None = None
 
     async def _ensure_temporal_client(retries: int = 1, delay_s: float = 0.5) -> bool:
         nonlocal temporal_client
@@ -285,7 +311,8 @@ p{
 
     @app.on_event("startup")
     async def _startup():
-        nonlocal bridge_task, bridge_running
+        nonlocal bridge_task, bridge_running, runtime_loop
+        runtime_loop = asyncio.get_running_loop()
         # Keep OpenClaw on daemon canonical topology (no legacy main default).
         norm = normalize_openclaw_config(oc_home)
         if norm.get("updated"):
@@ -305,6 +332,7 @@ p{
         trigger_count = dominion_writ.register_all_triggers()
         if trigger_count:
             logger.info("Registered %d active Writ triggers", trigger_count)
+        _register_runtime_handlers()
         await cadence.start()
         bridge_running = True
         bridge_task = asyncio.create_task(_bridge_loop())
@@ -371,6 +399,16 @@ p{
                                 )
                             except Exception as exc:
                                 logger.warning("Endeavor passage telegram notify error: %s", exc)
+                            passage_payload = {
+                                "endeavor_id": str(payload.get("endeavor_id") or ""),
+                                "deed_id": str(payload.get("deed_id") or ""),
+                                "passage_idx": int(payload.get("passage_index") or 0) + 1,
+                                "passage_status": str(payload.get("passage_status") or ""),
+                                "summary": str(payload.get("summary") or ""),
+                                "next_passage_title": str(payload.get("next_passage_title") or ""),
+                                "deed_title": str(payload.get("title") or payload.get("endeavor_id") or ""),
+                            }
+                            nerve.emit("passage_completed", passage_payload)
                         if event_name == "endeavor_status_changed":
                             _append_jsonl(
                                 telemetry_dir / "endeavor_progress.jsonl",
@@ -391,6 +429,19 @@ p{
                                     )
                                 except Exception as exc:
                                     logger.warning("Endeavor status telegram notify error: %s", exc)
+                        if event_name in {
+                            "deed_completed",
+                            "deed_failed",
+                            "deed_rework_exhausted",
+                            "eval_expiring",
+                            "ward_changed",
+                            "dominion_progress_update",
+                            "dominion_goal_candidate_completed",
+                        }:
+                            try:
+                                await _notify_via_adapter(event_name, payload)
+                            except Exception as exc:
+                                logger.warning("Telegram notify error event=%s: %s", event_name, exc)
                         payload = {**payload, "_ether_event_id": evt.get("event_id"), "_ether_event": event_name}
                         nerve.emit(event_name, payload)
                         await asyncio.to_thread(
@@ -414,6 +465,85 @@ p{
     def _utc() -> str:
         import time
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    def _schedule_task(coro) -> None:
+        if runtime_loop is None:
+            return
+        runtime_loop.call_soon_threadsafe(asyncio.create_task, coro)
+
+    def _message_log_path(deed_id: str) -> Path:
+        return state / "deeds" / deed_id / "messages.jsonl"
+
+    def _append_deed_message(
+        deed_id: str,
+        *,
+        role: str,
+        content: str,
+        event: str = "",
+        meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        row = {
+            "deed_id": deed_id,
+            "role": role,
+            "content": content,
+            "event": event,
+            "created_utc": _utc(),
+            "meta": meta or {},
+        }
+        ledger.append_jsonl(_message_log_path(deed_id), row)
+        return row
+
+    def _load_deed_messages(deed_id: str, limit: int = 200) -> list[dict]:
+        return ledger.load_jsonl(_message_log_path(deed_id), max_items=max(1, min(limit, 1000)))
+
+    async def _broadcast_event(event: str, payload: dict[str, Any]) -> None:
+        await ws_hub.broadcast({"event": event, "payload": payload, "created_utc": _utc()})
+
+    def _progress_text(event: str, payload: dict[str, Any]) -> str:
+        move_label = str(payload.get("move_label") or payload.get("move_id") or payload.get("passage_title") or "").strip()
+        if event == "deed_progress":
+            phase = str(payload.get("phase") or "").strip()
+            if phase == "started":
+                return f"开始处理：{move_label or '当前 Move'}"
+            if phase == "waiting":
+                return f"正在等待结果：{move_label or '当前 Move'}"
+            if phase == "completed":
+                return f"已完成：{move_label or '当前 Move'}"
+            if phase == "degraded":
+                return f"遇到异常，已降级处理：{move_label or '当前 Move'}"
+        if event == "deed_completed":
+            return str(payload.get("summary") or "任务已完成。")
+        if event == "deed_failed":
+            return f"任务失败：{str(payload.get('error') or payload.get('last_error') or '未知错误')[:180]}"
+        if event == "passage_completed":
+            summary = str(payload.get("summary") or "").strip()
+            next_step = str(payload.get("next_passage_title") or "").strip()
+            text = summary or f"Passage {int(payload.get('passage_idx') or 0)} 已完成。"
+            if next_step:
+                text += f"\n下一阶段：{next_step}"
+            return text
+        return ""
+
+    def _record_ws_message(event: str, payload: dict[str, Any]) -> None:
+        deed_id = str(payload.get("deed_id") or "").strip()
+        if not deed_id:
+            return
+        content = _progress_text(event, payload)
+        if not content:
+            return
+        row = _append_deed_message(deed_id, role="assistant", content=content, event=event, meta=payload)
+        _schedule_task(_broadcast_event("deed_message", row))
+
+    def _audit_console(action: str, target: str, before: Any, after: Any) -> None:
+        ledger.append_console_audit(
+            {
+                "action": action,
+                "target": target,
+                "before": before,
+                "after": after,
+                "actor": "console",
+            }
+        )
 
     def _log_portal_event(event: str, payload: dict[str, Any], request: Request | None = None) -> None:
         rec = {
@@ -477,9 +607,16 @@ p{
         if endeavor_id:
             out.setdefault("endeavor_id", endeavor_id)
         out.setdefault("global_score_components", plan.get("global_score_components") or {})
-        out.setdefault("eval_window_hours", plan.get("eval_window_hours", 2))
+        out.setdefault("eval_window_hours", plan.get("eval_window_hours", 48))
         out.setdefault("exec_completed_utc", out.get("exec_completed_utc", ""))
         out.setdefault("eval_deadline_utc", out.get("eval_deadline_utc", ""))
+        dominion_id = str(out.get("dominion_id") or plan.get("dominion_id") or "")
+        if dominion_id:
+            dominion = dominion_writ.get_dominion(dominion_id)
+            if dominion:
+                out["group_label"] = str(dominion.get("objective") or deed_title)
+        else:
+            out.setdefault("group_label", "Independent")
         return out
 
     def _write_json_list(path: Path, items: list[dict]) -> None:
@@ -614,6 +751,116 @@ p{
                 "current_passage_index": int(payload.get("current_passage_index") or 0),
             },
         )
+
+    def _render_template_value(value: Any, ctx: dict[str, Any]) -> Any:
+        if isinstance(value, str):
+            class _SafeDict(dict):
+                def __missing__(self, key):
+                    return "{" + key + "}"
+            try:
+                return value.format_map(_SafeDict(ctx))
+            except Exception:
+                return value
+        if isinstance(value, list):
+            return [_render_template_value(item, ctx) for item in value]
+        if isinstance(value, dict):
+            return {str(k): _render_template_value(v, ctx) for k, v in value.items()}
+        return value
+
+    def _build_writ_context(payload: dict[str, Any]) -> dict[str, Any]:
+        writ_id = str(payload.get("writ_id") or "")
+        dominion_id = str(payload.get("dominion_id") or "")
+        brief_template = payload.get("brief_template") if isinstance(payload.get("brief_template"), dict) else {}
+        trigger_payload = payload.get("trigger_payload") if isinstance(payload.get("trigger_payload"), dict) else {}
+        trigger_utc = str(trigger_payload.get("tick_utc") or _utc())
+        objective_text = str(brief_template.get("objective") or "")
+        memory_hits = memory.search_by_tags(
+            [f"dominion_id:{dominion_id}", f"writ_id:{writ_id}"],
+            limit=3,
+            dominion_id=dominion_id or None,
+        )
+        lore_hits = lore.list_records(dominion_id=dominion_id or None, writ_id=writ_id or None, limit=3)
+        recent_deeds = dominion_writ.recent_deed_summaries(writ_id, limit=3) if writ_id else []
+        dominion = dominion_writ.get_dominion(dominion_id) if dominion_id else None
+        return {
+            "date": trigger_utc[:10],
+            "tick_utc": trigger_utc,
+            "trigger_event": str(payload.get("trigger_event") or ""),
+            "dominion_objective": str((dominion or {}).get("objective") or ""),
+            "recent_titles": " / ".join(str(row.get("title") or "") for row in recent_deeds if row.get("title")),
+            "recent_summary": "\n".join(
+                f"- {row.get('title') or row.get('deed_id')}: {row.get('status') or ''}"
+                for row in recent_deeds
+            ),
+            "memory_summary": "\n".join(str(row.get("content") or "")[:240] for row in memory_hits),
+            "lore_summary": "\n".join(str(row.get("objective_text") or "")[:160] for row in lore_hits),
+            "writ_id": writ_id,
+            "dominion_id": dominion_id,
+            "objective": objective_text,
+        }
+
+    async def _consume_writ_trigger(payload: dict[str, Any]) -> None:
+        brief_template = payload.get("brief_template") if isinstance(payload.get("brief_template"), dict) else {}
+        ctx = _build_writ_context(payload)
+        rendered = _render_template_value(brief_template, ctx)
+        objective = str(rendered.get("objective") or brief_template.get("objective") or "").strip()
+        if not objective:
+            objective = f"Writ {str(payload.get('writ_id') or '')}"
+        plan = {
+            "brief": {
+                "objective": objective,
+                "complexity": str(rendered.get("complexity") or "charge"),
+                "language": str(rendered.get("language") or "bilingual"),
+                "format": str(rendered.get("format") or "markdown"),
+                "depth": str(rendered.get("depth") or "study"),
+                "references": rendered.get("references") if isinstance(rendered.get("references"), list) else [],
+                "quality_hints": rendered.get("quality_hints") if isinstance(rendered.get("quality_hints"), list) else [],
+            },
+            "moves": rendered.get("moves") if isinstance(rendered.get("moves"), list) else [
+                {"id": "scout_auto", "agent": "scout", "instruction": objective},
+                {"id": "sage_auto", "agent": "sage", "depends_on": ["scout_auto"], "instruction": f"Analyze and synthesize: {objective}"},
+                {"id": "scribe_auto", "agent": "scribe", "depends_on": ["sage_auto"], "instruction": f"Write the final offering: {objective}"},
+            ],
+            "metadata": {
+                "source": "writ_trigger",
+                "writ_id": str(payload.get("writ_id") or ""),
+                "dominion_id": str(payload.get("dominion_id") or ""),
+                "trigger_event": str(payload.get("trigger_event") or ""),
+            },
+        }
+        result = await will.submit(plan)
+        if result.get("ok") and result.get("deed_id"):
+            dominion_writ.record_writ_triggered(str(payload.get("writ_id") or ""), str(result.get("deed_id") or ""))
+        else:
+            logger.warning("Writ trigger submit failed for %s: %s", payload.get("writ_id"), result)
+
+    def _register_runtime_handlers() -> None:
+        ws_events = {
+            "deed_completed",
+            "deed_failed",
+            "deed_progress",
+            "deed_message",
+            "passage_completed",
+            "ward_changed",
+            "eval_expiring",
+            "dominion_progress_update",
+            "dominion_goal_candidate_completed",
+        }
+
+        def _make_ws_handler(event_name: str):
+            def _handler(payload: dict) -> None:
+                row = payload if isinstance(payload, dict) else {}
+                _schedule_task(_broadcast_event(event_name, row))
+                _record_ws_message(event_name, row)
+            return _handler
+
+        for event_name in ws_events:
+            nerve.on(event_name, _make_ws_handler(event_name))
+
+        def _writ_handler(payload: dict) -> None:
+            _schedule_task(_consume_writ_trigger(payload if isinstance(payload, dict) else {}))
+
+        nerve.on("writ_trigger_ready", _writ_handler)
 
     def _endeavor_root(endeavor_id: str | None = None) -> Path:
         root = state / "endeavors"
@@ -1043,6 +1290,10 @@ p{
         memory=memory,
         lore=lore,
         instinct=instinct,
+        dominion_writ=dominion_writ,
+        append_deed_message=_append_deed_message,
+        load_deed_messages=_load_deed_messages,
+        schedule_broadcast=lambda event, payload: _schedule_task(_broadcast_event(event, payload)),
     )
 
     def _require_localhost(request: Request) -> str:
@@ -1092,8 +1343,10 @@ p{
     console_ctx.validate_model_policy = _validate_model_policy
     console_ctx.model_registry_aliases = _model_registry_aliases
     console_ctx.sync_instinct_provider_rations_from_policy = _sync_instinct_provider_rations_from_policy
+    console_ctx.audit_console = _audit_console
 
-    register_console_spine_fabric_routes(app, ctx=console_ctx)
+    register_console_admin_routes(app, ctx=console_ctx)
+    register_console_spine_psyche_routes(app, ctx=console_ctx)
     register_console_norm_routes(app, ctx=console_ctx)
     register_console_observe_routes(app, ctx=console_ctx)
     register_console_agents_skill_routes(app, ctx=console_ctx)
@@ -1120,6 +1373,23 @@ p{
     register_endeavor_routes(app, ctx=endeavor_ctx)
     register_chat_routes(app, voice=voice, log_portal_event=_log_portal_event)
     register_track_routes(app, dominion_writ)
+
+    @app.websocket("/ws")
+    async def websocket_events(ws: WebSocket):
+        await ws_hub.connect(ws)
+        try:
+            await ws.send_json({"event": "connected", "payload": {"app_started_utc": app_started_utc}, "created_utc": _utc()})
+            while True:
+                try:
+                    msg = await asyncio.wait_for(ws.receive_text(), timeout=20)
+                    if msg == "ping":
+                        await ws.send_json({"event": "pong", "payload": {}, "created_utc": _utc()})
+                except asyncio.TimeoutError:
+                    await ws.send_json({"event": "ping", "payload": {}, "created_utc": _utc()})
+        except WebSocketDisconnect:
+            pass
+        finally:
+            ws_hub.disconnect(ws)
 
     # ── User feedback (Portal) ────────────────────────────────────────────────
 
@@ -1310,23 +1580,10 @@ p{
                 f"aspects={json.dumps(aspects, ensure_ascii=False)}"
             )
             try:
-                memory.intake(
-                    [
-                        {
-                            "title": f"Endeavor feedback {deed_id}",
-                            "domain": "user_feedback",
-                            "tier": "deep",
-                            "confidence": 1.0,
-                            "summary_zh": summary_zh,
-                            "summary_en": summary_en,
-                            "provider": "user",
-                            "source_type": "human",
-                            "source_agent": "user",
-                        }
-                    ],
-                    actor=f"{source}.feedback",
-                    source_type="human",
-                    source_agent="user",
+                memory.add(
+                    content=f"{summary_zh}\n\n{summary_en}",
+                    tags=["domain:user_feedback", "tier:deep", "source_type:human", "source_agent:user", f"deed_id:{deed_id}"],
+                    source=f"{source}.feedback",
                 )
             except Exception as exc:
                 logger.warning("Failed to store endeavor feedback into memory: %s", exc)
@@ -1408,6 +1665,7 @@ p{
                         row["phase"] = "history"
                         row["updated_utc"] = now
                         row["eval_submitted_utc"] = now
+                        row["feedback_expired"] = False
                         row.pop("eval_deadline_utc", None)
                     break
 

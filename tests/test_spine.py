@@ -139,8 +139,8 @@ class TestSpineCanon:
     def test_by_trigger(self):
         reg_path = Path(__file__).parent.parent / "config" / "spine_registry.json"
         canon = SpineCanon(reg_path)
-        triggered = canon.by_trigger("scout_completed")
-        assert any(r.name == "spine.intake" for r in triggered)
+        triggered = canon.by_trigger("deed_completed")
+        assert any(r.name == "spine.record" for r in triggered)
 
 
 # -- Spine Routines ------------------------------------------------------------

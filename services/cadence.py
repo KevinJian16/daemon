@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
+import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -48,6 +50,7 @@ class Cadence:
         self._task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._handlers_registered = False
+        self._last_cadence_tick_minute = ""
         self._overrides_path = self._state / "schedules.json"
         self._overrides = self._load_overrides()
         self._history = self._load_history()
@@ -107,12 +110,28 @@ class Cadence:
             logger.info("Routine %s skipped: %s", routine_name, dep_reason)
             return {"ok": False, "routine": routine_name, "trigger": trigger, "skipped": True, "reason": dep_reason}
 
+        degrade_mode = self._resolve_degraded_mode(rdef)
+        if degrade_mode == "skip":
+            reason = "degraded_mode_skip"
+            self._append_history(routine_name, trigger, "ok", {"skipped": True, "reason": reason})
+            self._routines.log_execution(routine_method_name, "ok", {"skipped": True, "reason": reason}, 0)
+            return {"ok": True, "routine": routine_name, "trigger": trigger, "result": {"skipped": True, "reason": reason}}
+
         try:
             context = self._pact_context()
             for resource in rdef.reads:
                 check_pact(routine_name, "pre", resource, context)
             start_ts = time.time()
-            result = self._invoke_method(routine_method_name, routine_method, payload)
+            call_payload = dict(payload or {})
+            if degrade_mode:
+                call_payload["_degraded_mode"] = degrade_mode
+            timeout_s = self._resolve_timeout_s(rdef)
+            result = self._invoke_with_timeout(
+                routine_method_name,
+                routine_method,
+                call_payload or None,
+                timeout_s=timeout_s,
+            )
             duration = time.time() - start_ts
             for resource in rdef.writes:
                 check_pact(routine_name, "post", resource, context)
@@ -151,12 +170,31 @@ class Cadence:
                     "deed_id": deed_id,
                 }
             return routine_method(deed_id=deed_id, plan=plan, move_results=move_results, offering=offering)
+        if routine_method_name == "learn":
+            payload = payload or {}
+            return routine_method(deed_id=str(payload.get("deed_id") or "") or None)
         return routine_method()
+
+    def _invoke_with_timeout(
+        self,
+        routine_method_name: str,
+        routine_method: Any,
+        payload: dict | None,
+        *,
+        timeout_s: int,
+    ) -> dict:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            fut = executor.submit(self._invoke_method, routine_method_name, routine_method, payload)
+            try:
+                return fut.result(timeout=max(1, int(timeout_s)))
+            except concurrent.futures.TimeoutError as exc:
+                raise TimeoutError(f"routine_timeout_after_{timeout_s}s") from exc
 
     async def _loop_main(self) -> None:
         """Main cadence loop."""
         while self._running:
             now = time.time()
+            self._emit_cadence_tick_if_due()
             for rdef in self._canon.all():
                 schedule = self._effective_schedule(rdef.name, rdef.schedule)
                 if not self._is_enabled(rdef.name) or not schedule:
@@ -361,12 +399,38 @@ class Cadence:
             interval = rhythm_s
         interval = max(60, interval)
 
-        # Queue-depth adaptive tuning: idle -> shorter interval, busy -> longer interval.
+        # Queue depth.
         running_count = self._running_deeds_count()
         if running_count <= 0:
             interval = int(interval * 0.6)
         elif running_count > 3:
             interval = int(interval * 1.5)
+
+        # User activity: active portal usage shortens adaptive cycles.
+        activity_score = self._recent_portal_activity_score()
+        if activity_score >= 10:
+            interval = int(interval * 0.75)
+        elif activity_score <= 1:
+            interval = int(interval * 1.15)
+
+        # Recent quality trend: low quality increases witness/focus frequency.
+        avg_quality = self._recent_avg_quality()
+        if avg_quality and avg_quality < 0.65:
+            interval = int(interval * 0.8)
+        elif avg_quality and avg_quality > 0.85:
+            interval = int(interval * 1.05)
+
+        # Error rate: more routine failures => shorten the loop.
+        error_rate = self._recent_schedule_error_rate()
+        if error_rate >= 0.3:
+            interval = int(interval * 0.7)
+        elif error_rate >= 0.15:
+            interval = int(interval * 0.85)
+
+        # Time-of-day awareness: nights are slower when there is no user activity.
+        hour = datetime.now(timezone.utc).hour
+        if hour in {0, 1, 2, 3, 4, 5} and activity_score <= 2:
+            interval = int(interval * 1.2)
 
         if min_s:
             interval = max(interval, min_s)
@@ -553,16 +617,23 @@ class Cadence:
             return None
 
     def _retry_failed_notifications(self) -> None:
-        """Retry queued failed notifications (best-effort, max 3 retries)."""
+        """Retry queued failed notifications with exponential backoff and local fallbacks."""
         ledger = self._ledger
         queue = ledger.load_notify_queue()
         if not queue:
             return
         remaining: list[dict] = []
+        now = datetime.now(timezone.utc)
         for entry in queue:
             retry_count = int(entry.get("retry_count") or 0)
+            next_retry = self._parse_utc_iso(str(entry.get("next_retry_utc") or ""))
+            if next_retry and next_retry > now:
+                remaining.append(entry)
+                continue
             if retry_count >= 3:
                 logger.warning("Notification dropped after 3 retries: %s", entry.get("channel"))
+                self._desktop_notify(str(entry.get("event") or "notification_failed"), entry.get("payload") or {})
+                self._alert_log_notify("notification_failed", entry.get("payload") or {}, reason="retry_exhausted")
                 continue
             channel = str(entry.get("channel") or "")
             if channel == "telegram":
@@ -573,8 +644,14 @@ class Cadence:
                     httpx.post(f"{adapter_url}/notify", json=payload, timeout=10)
                     logger.info("Notification retry succeeded for %s", entry.get("payload", {}).get("payload", {}).get("deed_id", ""))
                 except Exception as exc:
-                    entry["retry_count"] = retry_count + 1
+                    next_count = retry_count + 1
+                    delay_s = min(3600, 60 * (2 ** retry_count))
+                    entry["retry_count"] = next_count
                     entry["last_retry_error"] = str(exc)[:200]
+                    entry["next_retry_utc"] = datetime.fromtimestamp(
+                        now.timestamp() + delay_s,
+                        timezone.utc,
+                    ).strftime("%Y-%m-%dT%H:%M:%SZ")
                     remaining.append(entry)
             else:
                 remaining.append(entry)
@@ -583,6 +660,7 @@ class Cadence:
     def _tick_eval_windows(self) -> None:
         now = datetime.now(timezone.utc)
         expired: list[dict] = []
+        expiring: list[dict] = []
 
         def _mutate(deeds: list[dict]) -> None:
             for row in deeds:
@@ -592,24 +670,44 @@ class Cadence:
                 deadline = self._parse_utc_iso(str(row.get("eval_deadline_utc") or ""))
                 if deadline is None:
                     continue
+                remaining_s = (deadline - now).total_seconds()
+                if 0 < remaining_s <= 12 * 3600 and not row.get("eval_expiring_notified_utc"):
+                    row["eval_expiring_notified_utc"] = self._utc_now_iso()
+                    expiring.append(dict(row))
                 if deadline > now:
                     continue
                 row["deed_status"] = "completed"
                 row["phase"] = "history"
                 row["updated_utc"] = self._utc_now_iso()
                 row["eval_expired_utc"] = row["updated_utc"]
+                row["feedback_expired"] = True
                 row.pop("eval_deadline_utc", None)
                 expired.append(dict(row))
 
         self._ledger.mutate_deeds(_mutate)
+        for row in expiring:
+            try:
+                self._nerve.emit(
+                    "eval_expiring",
+                    {
+                        "deed_id": str(row.get("deed_id") or ""),
+                        "deed_title": str(row.get("deed_title") or row.get("title") or ""),
+                        "complexity": str(row.get("complexity") or ""),
+                        "eval_deadline_utc": str(row.get("eval_deadline_utc") or ""),
+                    },
+                )
+            except Exception:
+                continue
         for row in expired:
             try:
                 self._nerve.emit(
                     "deed_eval_expired",
                     {
                         "deed_id": str(row.get("deed_id") or ""),
+                        "deed_title": str(row.get("deed_title") or row.get("title") or ""),
                         "complexity": str(row.get("complexity") or ""),
                         "endeavor_id": str(row.get("endeavor_id") or ""),
+                        "feedback_expired": True,
                     },
                 )
             except Exception:
@@ -623,3 +721,87 @@ class Cadence:
             return value
         except Exception:
             return None
+
+    def _emit_cadence_tick_if_due(self) -> None:
+        minute_key = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M")
+        if minute_key == self._last_cadence_tick_minute:
+            return
+        self._last_cadence_tick_minute = minute_key
+        self._nerve.emit(
+            "cadence.tick",
+            {
+                "tick_utc": self._utc_now_iso(),
+                "tick_minute": minute_key,
+            },
+        )
+
+    def _resolve_timeout_s(self, rdef) -> int:
+        raw = int(getattr(rdef, "timeout_s", 0) or 0)
+        if raw > 0:
+            return raw
+        return 300 if getattr(rdef, "is_hybrid", False) else 120
+
+    def _resolve_degraded_mode(self, rdef) -> str | None:
+        mode = str(getattr(rdef, "degraded_mode", "") or "").strip()
+        if not mode:
+            return None
+        ward = self._ward_status()
+        cortex_ok = bool(getattr(self._routines, "cortex", None) and self._routines.cortex.is_available())
+        if ward == "GREEN" and cortex_ok:
+            return None
+        return mode
+
+    def _recent_portal_activity_score(self) -> int:
+        path = self._state / "telemetry" / "portal_events.jsonl"
+        rows = self._ledger.load_jsonl(path, max_items=500)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+        score = 0
+        for row in rows:
+            ts = self._parse_utc_iso(str(row.get("created_utc") or ""))
+            if not ts or ts < cutoff:
+                continue
+            event = str(row.get("event") or "")
+            if event in {"voice_message", "submit_requested", "deed_message", "deed_append"}:
+                score += 2
+            else:
+                score += 1
+        return score
+
+    def _recent_avg_quality(self) -> float:
+        health = self._ledger.load_json("system_health.json", {})
+        try:
+            return float((health or {}).get("avg_quality") or 0.0)
+        except Exception:
+            return 0.0
+
+    def _recent_schedule_error_rate(self) -> float:
+        rows = self._history[-50:]
+        if not rows:
+            return 0.0
+        errors = sum(1 for row in rows if str(row.get("status") or "") not in {"ok"})
+        return errors / max(len(rows), 1)
+
+    def _desktop_notify(self, event: str, payload: dict) -> None:
+        title = "Daemon"
+        message = f"{event}: {str((payload or {}).get('deed_title') or (payload or {}).get('deed_id') or '')}".strip(": ")
+        try:
+            subprocess.run(
+                ["osascript", "-e", f'display notification "{message[:180]}" with title "{title}"'],
+                check=False,
+                capture_output=True,
+                timeout=10,
+            )
+        except Exception:
+            return
+
+    def _alert_log_notify(self, event: str, payload: dict, *, reason: str) -> None:
+        alerts_dir = self._state.parent / "alerts"
+        alerts_dir.mkdir(parents=True, exist_ok=True)
+        path = alerts_dir / "notification_fallback.log"
+        record = {
+            "event": event,
+            "payload": payload,
+            "reason": reason,
+            "created_utc": self._utc_now_iso(),
+        }
+        self._ledger.append_jsonl(path, record)

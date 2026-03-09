@@ -9,7 +9,7 @@ Phases:
   1. Instinct — system preferences + rations
   2. Memory   — initial knowledge units (architecture, best practices)
   3. Lore     — simulate baseline Deed records for experience retrieval
-  4. Spine    — witness → learn → focus → judge → relay cycles
+  4. Spine    — pulse → witness → learn → distill → focus → relay cycles
   5. Summary  — print learned state overview
 """
 from __future__ import annotations
@@ -120,15 +120,33 @@ def warmup_memory(memory: MemoryPsyche) -> list[str]:
         {
             "title": "Spine Routine Execution Schedule",
             "domain": "system", "tier": "deep",
-            "summary_zh": "Spine例程调度：pulse（5分钟）、intake（15分钟）、relay（30分钟）、tend（1小时）、witness/learn/focus/judge（较低频）。所有例程通过SpineRoutines类执行，结果写入Trail span。",
-            "summary_en": "Spine routine cadence: pulse (5min), intake (15min), relay (30min), tend (1h), witness/learn/focus/judge (lower frequency). All via SpineRoutines class, results traced to Trail spans.",
+            "summary_zh": "Spine例程调度：pulse（10分钟）、relay（4小时）、tend（每日）、witness/learn/distill/focus/curate（较低频）。所有例程通过SpineRoutines类执行，结果写入Trail span。",
+            "summary_en": "Spine routine cadence: pulse (10min), relay (every 4h), tend (daily), witness/learn/distill/focus/curate (lower frequency). All via SpineRoutines class, results traced to Trail spans.",
             "confidence": 0.9, "provider": "warmup", "url": "",
         },
     ]
 
-    result = memory.intake(units, actor="warmup")
-    print(f"      {result['inserted']} units inserted, {result['skipped']} skipped.")
-    return result["unit_ids"]
+    inserted = 0
+    skipped = 0
+    unit_ids: list[str] = []
+    for unit in units:
+        title = str(unit.get("title") or "").strip()
+        domain = str(unit.get("domain") or "system").strip()
+        existing = memory.query(domain=domain, keyword=title, limit=1) if title else []
+        if existing:
+            skipped += 1
+            continue
+        content = f"{title}\n\n{unit.get('summary_zh', '')}\n\n{unit.get('summary_en', '')}".strip()
+        tags = [
+            f"domain:{domain}",
+            f"tier:{str(unit.get('tier') or 'deep')}",
+            "source_type:warmup",
+            "source_agent:warmup",
+        ]
+        unit_ids.append(memory.add(content=content, tags=tags, source="warmup"))
+        inserted += 1
+    print(f"      {inserted} units inserted, {skipped} skipped.")
+    return unit_ids
 
 
 # ── Phase 3: Lore ─────────────────────────────────────────────────────────
@@ -182,7 +200,7 @@ def warmup_lore(lore: LorePsyche) -> None:
             objective_text=sim["objective"],
             complexity=sim["complexity"],
             move_count=len(sim["moves"]),
-            design_structure={"moves": sim["moves"]},
+            plan_structure={"moves": sim["moves"]},
             offering_quality={"quality_score": sim["quality"]},
             token_consumption={"total_tokens": 50000},
             success=sim["success"],
@@ -198,6 +216,9 @@ def warmup_lore(lore: LorePsyche) -> None:
 def run_spine_cycles(routines: SpineRoutines) -> None:
     print("  [4] Spine — running governance cycles")
 
+    r = routines.pulse()
+    print(f"      pulse:   ward={r.get('ward','?')}")
+
     r = routines.witness()
     if r.get("skipped"):
         print(f"      witness: skipped ({r.get('reason','?')})")
@@ -207,11 +228,11 @@ def run_spine_cycles(routines: SpineRoutines) -> None:
     r = routines.learn()
     print(f"      learn:   candidates={r.get('candidates_added',0)}, proposals={r.get('proposals',0)}, degraded={r.get('degraded',False)}")
 
+    r = routines.distill()
+    print(f"      distill: decayed={r.get('decayed',0)}, evicted={r.get('evicted',0)}, merged={r.get('merged',0)}")
+
     r = routines.focus()
     print(f"      focus:   signals={r.get('signals_analyzed',0)}, adjusted={r.get('adjusted',0)}, degraded={r.get('degraded',False)}")
-
-    r = routines.judge()
-    print(f"      judge:   promoted={r.get('promoted',0)}, retired={r.get('retired',0)}")
 
     r = routines.relay()
     print(f"      relay:   snapshots={r.get('snapshots',0)}, skill_index={r.get('skill_index',False)}, model_policy={r.get('model_policy_snapshot',False)}")

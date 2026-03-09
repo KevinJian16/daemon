@@ -11,6 +11,7 @@ class RoutineDefinition:
         self.name = name
         self.mode: str = data["mode"]
         self.schedule: str | None = data.get("schedule")
+        self.timeout_s: int | None = data.get("timeout_s")
         self.nerve_triggers: list[str] = data.get("nerve_triggers", [])
         self.reads: list[str] = data.get("reads", [])
         self.writes: list[str] = data.get("writes", [])
@@ -30,6 +31,7 @@ class RoutineDefinition:
             "name": self.name,
             "mode": self.mode,
             "schedule": self.schedule,
+            "timeout_s": self.timeout_s,
             "nerve_triggers": self.nerve_triggers,
             "reads": self.reads,
             "writes": self.writes,

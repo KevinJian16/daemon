@@ -376,6 +376,17 @@ class SpineRoutines:
         5. Report outcome via Nerve
         """
         self._record_diag_attempt(routine_name)
+        try:
+            status_path = self.state_dir / "schedules.json"
+            current = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else {}
+            if not isinstance(current, dict):
+                current = {}
+            override = current.get(f"spine.{routine_name}", {}) if isinstance(current.get(f"spine.{routine_name}"), dict) else {}
+            override["enabled"] = False
+            current[f"spine.{routine_name}"] = override
+            status_path.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            logger.warning("Failed to pause routine %s before auto-diagnosis: %s", routine_name, exc)
         self.nerve.emit("auto_diagnosis_started", {"routine": routine_name, "timestamp_utc": _utc()})
 
         # Gather failure context from spine_log.
@@ -429,6 +440,17 @@ class SpineRoutines:
             "verified": verified,
             "timestamp_utc": _utc(),
         }
+        try:
+            status_path = self.state_dir / "schedules.json"
+            current = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else {}
+            if not isinstance(current, dict):
+                current = {}
+            override = current.get(f"spine.{routine_name}", {}) if isinstance(current.get(f"spine.{routine_name}"), dict) else {}
+            override["enabled"] = True
+            current[f"spine.{routine_name}"] = override
+            status_path.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            logger.warning("Failed to resume routine %s after auto-diagnosis: %s", routine_name, exc)
         self.nerve.emit("auto_diagnosis_completed", result)
         logger.info("Auto-diagnosis for %s: %s (verified=%s)", routine_name, status, verified)
         return result

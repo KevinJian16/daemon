@@ -55,10 +55,20 @@ class DaemonActivities:
         self._ether = Ether(self._home / "state", source="worker")
         self._ledger = Ledger(self._home / "state")
         self._retinue = Retinue(self._home, self._oc_home)
+        self._instinct = None
+        self._cortex = None
         try:
             self._openclaw = OpenClawAdapter(self._oc_home)
         except Exception as exc:
             activity.logger.warning("Failed to initialize OpenClawAdapter from %s: %s", self._oc_home, exc)
+        try:
+            from psyche.instinct import InstinctPsyche
+            from runtime.cortex import Cortex
+
+            self._instinct = InstinctPsyche(self._home / "state" / "instinct.db")
+            self._cortex = Cortex(self._instinct)
+        except Exception as exc:
+            activity.logger.warning("Failed to initialize worker Cortex: %s", exc)
 
     def _utc(self) -> str:
         return _utc()
@@ -174,13 +184,32 @@ class DaemonActivities:
             except Exception as exc:
                 activity.logger.warning("Failed to read runtime hints %s: %s", hints_path, exc)
         brief = plan.get("brief") or {}
+        metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
+        dominion_id = str(plan.get("dominion_id") or metadata.get("dominion_id") or "").strip()
+        writ_id = str(plan.get("writ_id") or metadata.get("writ_id") or "").strip()
         context["execution_contract"] = {
             "deed_id": str(plan.get("deed_id") or ""),
             "deed_title": str(plan.get("deed_title") or plan.get("title") or ""),
             "brief": brief,
             "complexity": str(plan.get("complexity") or brief.get("complexity") or "charge"),
             "agent_model_map": plan.get("agent_model_map") or {},
+            "dominion_id": dominion_id,
+            "writ_id": writ_id,
+            "review_emphasis": plan.get("review_emphasis") or {},
         }
+        coordination = self._coordination_context(dominion_id=dominion_id, writ_id=writ_id)
+        if coordination:
+            context["coordination_context"] = coordination
+        recent_deeds = self._recent_deed_context(
+            current_deed_id=str(plan.get("deed_id") or ""),
+            dominion_id=dominion_id,
+            writ_id=writ_id,
+        )
+        if recent_deeds:
+            context["recent_deeds"] = recent_deeds
+        memory_context = self._memory_context(dominion_id=dominion_id, writ_id=writ_id)
+        if memory_context:
+            context["memory_context"] = memory_context
         endeavor_context = plan.get("endeavor_context") if isinstance(plan.get("endeavor_context"), list) else []
         if endeavor_context:
             context["endeavor_context"] = endeavor_context[-8:]
@@ -304,6 +333,116 @@ class DaemonActivities:
                 break
         return refs
 
+    def _coordination_context(self, *, dominion_id: str, writ_id: str) -> dict:
+        out: dict[str, Any] = {}
+        state_dir = self._home / "state"
+        if dominion_id:
+            try:
+                dominions = json.loads((state_dir / "dominions.json").read_text(encoding="utf-8"))
+            except Exception:
+                dominions = []
+            if isinstance(dominions, list):
+                for row in dominions:
+                    if not isinstance(row, dict):
+                        continue
+                    if str(row.get("dominion_id") or "") != dominion_id:
+                        continue
+                    out["dominion"] = {
+                        "dominion_id": dominion_id,
+                        "objective": str(row.get("objective") or ""),
+                        "status": str(row.get("status") or ""),
+                        "progress_notes": list(row.get("progress_notes") or [])[-5:],
+                    }
+                    break
+        if writ_id:
+            try:
+                writs = json.loads((state_dir / "writs.json").read_text(encoding="utf-8"))
+            except Exception:
+                writs = []
+            if isinstance(writs, list):
+                for row in writs:
+                    if not isinstance(row, dict):
+                        continue
+                    if str(row.get("writ_id") or "") != writ_id:
+                        continue
+                    out["writ"] = {
+                        "writ_id": writ_id,
+                        "label": str(row.get("label") or ""),
+                        "status": str(row.get("status") or ""),
+                        "trigger": row.get("trigger") if isinstance(row.get("trigger"), dict) else {},
+                        "deed_history": list(row.get("deed_history") or [])[-5:],
+                    }
+                    break
+        return out
+
+    def _recent_deed_context(
+        self,
+        *,
+        current_deed_id: str,
+        dominion_id: str,
+        writ_id: str,
+        limit: int = 3,
+    ) -> list[dict]:
+        rows = self._ledger.load_deeds()
+        scoped: list[dict] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            deed_id = str(row.get("deed_id") or "")
+            if not deed_id or deed_id == current_deed_id:
+                continue
+            if writ_id and str(row.get("writ_id") or "") != writ_id:
+                continue
+            if dominion_id and str(row.get("dominion_id") or "") != dominion_id:
+                continue
+            scoped.append(row)
+        scoped.sort(key=lambda row: str(row.get("updated_utc") or row.get("submitted_utc") or ""), reverse=True)
+        return [
+            {
+                "deed_id": str(row.get("deed_id") or ""),
+                "title": str(row.get("deed_title") or row.get("title") or row.get("objective") or ""),
+                "status": str(row.get("deed_status") or ""),
+                "summary": str(row.get("last_error") or ""),
+                "updated_utc": str(row.get("updated_utc") or row.get("submitted_utc") or ""),
+            }
+            for row in scoped[: max(1, min(limit, 8))]
+        ]
+
+    def _memory_context(self, *, dominion_id: str, writ_id: str, limit: int = 3) -> list[dict]:
+        try:
+            from psyche.memory import MemoryPsyche
+
+            memory = MemoryPsyche(self._home / "state" / "memory.db")
+        except Exception:
+            return []
+
+        hits: list[dict] = []
+        seen: set[str] = set()
+
+        def _merge(rows: list[dict]) -> None:
+            for row in rows:
+                entry_id = str(row.get("entry_id") or "")
+                if not entry_id or entry_id in seen:
+                    continue
+                seen.add(entry_id)
+                hits.append(row)
+                if len(hits) >= limit:
+                    return
+
+        if writ_id:
+            _merge(memory.search_by_tags([f"writ_id:{writ_id}"], limit=limit, dominion_id=dominion_id or None))
+        if len(hits) < limit and dominion_id:
+            _merge(memory.search_by_tags([f"dominion_id:{dominion_id}"], limit=limit, dominion_id=dominion_id))
+
+        return [
+            {
+                "entry_id": str(row.get("entry_id") or ""),
+                "content": str(row.get("content") or "")[:320],
+                "tags": row.get("tags") if isinstance(row.get("tags"), list) else [],
+            }
+            for row in hits[: max(1, min(limit, 8))]
+        ]
+
     def _write_move_output(self, deed_root: str, move_id: str, content: str) -> str:
         out_dir = Path(deed_root) / "moves" / move_id / "output"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -391,6 +530,147 @@ class DaemonActivities:
         payload = dict(result or {})
         payload["checkpoint_utc"] = _utc()
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _quality_check_path(self, deed_root: str) -> Path:
+        return Path(deed_root) / "quality_check.json"
+
+    def _write_quality_check(self, deed_root: str, payload: dict) -> None:
+        path = self._quality_check_path(deed_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _render_offering_text(self, scribe_path: Path) -> tuple[str, str]:
+        raw_text = scribe_path.read_text(encoding="utf-8", errors="ignore")
+        if scribe_path.suffix.lower() == ".html":
+            return raw_text, self._html_to_text(raw_text)
+        return raw_text, raw_text
+
+    def _section_count(self, scribe_path: Path, raw_text: str, rendered_text: str) -> int:
+        if scribe_path.suffix.lower() == ".html":
+            html_headers = re.findall(r"<h[1-6][^>]*>.*?</h[1-6]>", raw_text, flags=re.IGNORECASE | re.DOTALL)
+            if html_headers:
+                return len(html_headers)
+        markdown_headers = re.findall(r"(?m)^\s{0,3}(?:#{1,6}\s+.+|\d+[.)]\s+.+)$", raw_text)
+        if markdown_headers:
+            return len(markdown_headers)
+        chunks = [part for part in re.split(r"\n\s*\n", rendered_text) if part.strip()]
+        return max(1, min(len(chunks), 12)) if chunks else 0
+
+    def _content_review_score(
+        self,
+        *,
+        rendered_text: str,
+        brief: dict,
+        review_emphasis: Any,
+        fallback_score: float,
+    ) -> tuple[float, str]:
+        if not self._cortex or not self._cortex.is_available():
+            return fallback_score, "fallback_structural"
+        prompt = (
+            "Evaluate the following offering on a 0.0-1.0 scale for overall content quality.\n"
+            "Return JSON only: {\"score\": 0.0-1.0, \"reason\": \"short text\"}.\n\n"
+            f"Objective: {str(brief.get('objective') or '')[:200]}\n"
+            f"Language: {str(brief.get('language') or '')}\n"
+            f"Format: {str(brief.get('format') or '')}\n"
+            f"Depth: {str(brief.get('depth') or '')}\n"
+            f"Review emphasis: {json.dumps(review_emphasis, ensure_ascii=False)[:400]}\n\n"
+            f"Offering excerpt:\n{rendered_text[:4000]}"
+        )
+        try:
+            raw = self._cortex.complete(prompt, model="review", max_tokens=180, temperature=0.2).strip()
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start >= 0 and end > start:
+                payload = json.loads(raw[start:end + 1])
+                score = float(payload.get("score"))
+                score = max(0.0, min(score, 1.0))
+                return score, str(payload.get("reason") or "llm_review")
+        except Exception as exc:
+            activity.logger.warning("Worker quality content review failed: %s", exc)
+        return fallback_score, "fallback_structural"
+
+    def _quality_floor_check(self, deed_root: str, plan: dict, scribe_path: Path, move_results: list[dict]) -> dict:
+        brief = plan.get("brief") if isinstance(plan.get("brief"), dict) else {}
+        profile = plan.get("quality_profile") if isinstance(plan.get("quality_profile"), dict) else {}
+        raw_text, rendered_text = self._render_offering_text(scribe_path)
+        cleaned_text = self._clean_system_markers(rendered_text)
+        words = re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]", cleaned_text)
+        word_count = len(words)
+        section_count = self._section_count(scribe_path, raw_text, cleaned_text)
+        min_words = max(1, int(profile.get("min_word_count") or 800))
+        min_sections = max(1, int(profile.get("min_sections") or 3))
+        expected_format = str(brief.get("format") or "").strip().lower()
+        actual_ext = scribe_path.suffix.lower()
+        format_score = 1.0
+        if "html" in expected_format and actual_ext not in {".html", ".htm"}:
+            format_score = 0.6
+        elif "markdown" in expected_format and actual_ext not in {".md", ".markdown", ".txt"}:
+            format_score = 0.6
+
+        forbidden_markers = [str(x) for x in profile.get("forbidden_markers") or [] if str(x).strip()]
+        marker_hits = [marker for marker in forbidden_markers if marker.lower() in raw_text.lower()]
+        word_score = min(1.0, word_count / max(min_words, 1))
+        section_score = min(1.0, section_count / max(min_sections, 1))
+        marker_penalty = 0.0 if marker_hits else 1.0
+        structural_score = max(
+            0.0,
+            min(1.0, (word_score * 0.45 + section_score * 0.35 + format_score * 0.20) * marker_penalty),
+        )
+
+        references = brief.get("references") if isinstance(brief.get("references"), list) else []
+        if references:
+            lowered = cleaned_text.lower()
+            matched = 0
+            for ref in references:
+                ref_text = str(ref or "").strip().lower()
+                if not ref_text:
+                    continue
+                tokens = [tok for tok in re.split(r"\W+", ref_text) if len(tok) >= 4][:3]
+                if ref_text in lowered or any(tok in lowered for tok in tokens):
+                    matched += 1
+            evidence_score = matched / max(len(references), 1)
+        else:
+            supporting_moves = [
+                row for row in move_results
+                if isinstance(row, dict)
+                and any(tag in str(row.get("move_id") or "").lower() for tag in ("scout", "sage", "arbiter"))
+            ]
+            evidence_score = 1.0 if supporting_moves else 0.7
+
+        content_review, review_reason = self._content_review_score(
+            rendered_text=cleaned_text,
+            brief=brief,
+            review_emphasis=profile.get("review_emphasis") or plan.get("review_emphasis") or {},
+            fallback_score=structural_score,
+        )
+
+        overall_score = round(structural_score * 0.50 + evidence_score * 0.30 + content_review * 0.20, 4)
+        min_quality_score = float(profile.get("min_quality_score") or 0.6)
+        ok = bool(not marker_hits and overall_score >= min_quality_score)
+        reason = ""
+        if marker_hits:
+            reason = "forbidden_markers_present"
+        elif overall_score < min_quality_score:
+            reason = "quality_floor_not_met"
+        result = {
+            "ok": ok,
+            "reason": reason,
+            "score": overall_score,
+            "min_quality_score": min_quality_score,
+            "components": {
+                "structural": round(structural_score, 4),
+                "evidence_completeness": round(evidence_score, 4),
+                "content_review": round(content_review, 4),
+            },
+            "content_review_reason": review_reason,
+            "word_count": word_count,
+            "section_count": section_count,
+            "artifact_extension": actual_ext,
+            "forbidden_marker_hits": marker_hits,
+            "checked_utc": _utc(),
+        }
+        self._write_quality_check(deed_root, result)
+        return result
 
     def _feedback_survey_path(self, deed_id: str) -> Path:
         return self._home / "state" / "feedback_surveys" / f"{deed_id}.json"
@@ -546,12 +826,16 @@ class DaemonActivities:
         except Exception:
             rel_path = str(offering_path)
         brief = plan.get("brief") or {}
+        metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
         complexity = str(plan.get("complexity") or brief.get("complexity") or "charge")
         entry = {
             "path": rel_path,
             "title": plan.get("deed_title", plan.get("title", "")),
             "complexity": complexity,
             "deed_id": plan.get("deed_id", ""),
+            "dominion_id": plan.get("dominion_id") or metadata.get("dominion_id", ""),
+            "writ_id": plan.get("writ_id") or metadata.get("writ_id", ""),
+            "score": ((plan.get("_quality_check") or {}).get("score") if isinstance(plan.get("_quality_check"), dict) else None),
             "delivered_utc": _utc(),
         }
         self._ledger.append_herald_log(entry)
@@ -564,6 +848,7 @@ class DaemonActivities:
     def _update_deed_status(self, deed_root: str, plan: dict, deed_status: str, offering_path: str | None = None) -> None:
         deed_id = str(plan.get("deed_id") or "")
         brief = plan.get("brief") or {}
+        metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
         complexity = str(plan.get("complexity") or brief.get("complexity") or "charge")
         last_error = str(plan.get("last_error") or "")
         now_utc = _utc()
@@ -579,9 +864,9 @@ class DaemonActivities:
             phase = "awaiting_eval"
 
         try:
-            eval_window_hours = float(plan.get("eval_window_hours") or 2.0)
+            eval_window_hours = float(plan.get("eval_window_hours") or 48.0)
         except Exception:
-            eval_window_hours = 2.0
+            eval_window_hours = 48.0
         eval_window_hours = max(0.25, min(eval_window_hours, 168.0))
         deadline_utc = time.strftime(
             "%Y-%m-%dT%H:%M:%SZ",
@@ -602,6 +887,8 @@ class DaemonActivities:
                         or row.get("deed_title") or ""
                     )
                     row["title"] = row.get("deed_title") or row.get("title") or ""
+                    row["dominion_id"] = plan.get("dominion_id") or metadata.get("dominion_id", "")
+                    row["writ_id"] = plan.get("writ_id") or metadata.get("writ_id", "")
                     if plan.get("endeavor_id"):
                         row["endeavor_id"] = str(plan.get("endeavor_id") or "")
                     if last_error:
@@ -626,6 +913,8 @@ class DaemonActivities:
                     "phase": phase,
                     "updated_utc": now_utc,
                     "deed_root": deed_root,
+                    "dominion_id": plan.get("dominion_id") or metadata.get("dominion_id", ""),
+                    "writ_id": plan.get("writ_id") or metadata.get("writ_id", ""),
                 }
                 if last_error:
                     new_row["last_error"] = last_error

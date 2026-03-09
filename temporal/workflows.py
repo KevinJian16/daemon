@@ -268,6 +268,11 @@ class GraphWillWorkflow:
                 arbiter_result = self._last_arbiter_result(ordered)
                 if not (arbiter_result and self._needs_rework(arbiter_result)):
                     break
+            if arbiter_result and self._needs_rework(arbiter_result):
+                err_msg = f"rework_exhausted:{str(arbiter_result.get('rework_reason') or 'arbiter_rejected')}"
+                await _mark_failure(err_msg[:200])
+                await self._release_retinue_safe(deed_id, retinue_allocations)
+                raise ApplicationError("rework_exhausted", non_retryable=True)
 
         # Herald handoff (pure logistics — always succeeds if scribe output exists).
         herald = await workflow.execute_activity(

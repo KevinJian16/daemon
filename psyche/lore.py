@@ -37,6 +37,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS records (
     record_id           TEXT PRIMARY KEY,
     deed_id             TEXT NOT NULL UNIQUE,
+    dominion_id         TEXT,
+    writ_id             TEXT,
     objective_text      TEXT NOT NULL,
     objective_embedding BLOB,
     complexity          TEXT NOT NULL,
@@ -122,6 +124,15 @@ class LorePsyche:
     def _init_db(self) -> None:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            self._ensure_columns(conn)
+
+    def _ensure_columns(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute("PRAGMA table_info(records)").fetchall()
+        cols = {str(row["name"]) for row in rows}
+        if "dominion_id" not in cols:
+            conn.execute("ALTER TABLE records ADD COLUMN dominion_id TEXT")
+        if "writ_id" not in cols:
+            conn.execute("ALTER TABLE records ADD COLUMN writ_id TEXT")
 
     def record(
         self,
@@ -137,18 +148,20 @@ class LorePsyche:
         user_feedback: dict | None = None,
         rework_history: dict | None = None,
         objective_embedding: list[float] | None = None,
+        dominion_id: str | None = None,
+        writ_id: str | None = None,
     ) -> str:
         record_id = _new_id()
         now = _utc()
         with self._conn() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO records "
-                "(record_id, deed_id, objective_text, objective_embedding, complexity, move_count, "
+                "(record_id, deed_id, dominion_id, writ_id, objective_text, objective_embedding, complexity, move_count, "
                 "plan_structure, offering_quality, token_consumption, success, duration_s, "
                 "user_feedback, rework_history, created_utc) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    record_id, deed_id, objective_text,
+                    record_id, deed_id, str(dominion_id or ""), str(writ_id or ""), objective_text,
                     _serialize_embedding(objective_embedding),
                     complexity, move_count,
                     json.dumps(plan_structure, ensure_ascii=False),
@@ -175,6 +188,8 @@ class LorePsyche:
         self,
         query_embedding: list[float] | None = None,
         complexity: str | None = None,
+        dominion_id: str | None = None,
+        writ_id: str | None = None,
         top_k: int = 3,
     ) -> list[dict]:
         """Retrieve relevant experience records.
@@ -207,6 +222,10 @@ class LorePsyche:
             quality = _quality_bonus(rec["offering_quality"], rec["success"])
 
             score = sim * 0.6 + recency * 0.2 + quality * 0.2
+            if dominion_id and str(rec.get("dominion_id") or "") == str(dominion_id):
+                score += 0.1
+            if writ_id and str(rec.get("writ_id") or "") == str(writ_id):
+                score += 0.05
             rec["relevance_score"] = round(score, 4)
             scored.append(rec)
 
@@ -220,10 +239,17 @@ class LorePsyche:
             return None
         return self._row_to_dict(row)
 
+    def delete(self, deed_id: str) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM records WHERE deed_id=?", (deed_id,))
+        return cur.rowcount > 0
+
     def list_records(
         self,
         complexity: str | None = None,
         success_only: bool = False,
+        dominion_id: str | None = None,
+        writ_id: str | None = None,
         limit: int = 50,
     ) -> list[dict]:
         clauses = []
@@ -233,6 +259,12 @@ class LorePsyche:
             params.append(complexity)
         if success_only:
             clauses.append("success=1")
+        if dominion_id:
+            clauses.append("dominion_id=?")
+            params.append(dominion_id)
+        if writ_id:
+            clauses.append("writ_id=?")
+            params.append(writ_id)
 
         sql = "SELECT * FROM records"
         if clauses:
@@ -243,6 +275,37 @@ class LorePsyche:
         with self._conn() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._row_to_dict(r) for r in rows]
+
+    def decay(self, stale_days: int = 180) -> dict:
+        """Prune stale, low-value records as Lore decay."""
+        cutoff_days = max(30, int(stale_days))
+        removed = 0
+        scanned = 0
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT deed_id, created_utc, success, offering_quality, user_feedback FROM records"
+            ).fetchall()
+            for row in rows:
+                scanned += 1
+                age_days = _days_since(str(row["created_utc"] or ""))
+                if age_days < cutoff_days:
+                    continue
+                success = bool(row["success"])
+                try:
+                    offering_quality = json.loads(row["offering_quality"] or "{}")
+                except Exception:
+                    offering_quality = {}
+                try:
+                    user_feedback = json.loads(row["user_feedback"]) if row["user_feedback"] else {}
+                except Exception:
+                    user_feedback = {}
+                quality = _quality_bonus(offering_quality, success)
+                feedback_score = float(user_feedback.get("score") or 0.0) if isinstance(user_feedback, dict) else 0.0
+                if success and max(quality, feedback_score) >= 0.5:
+                    continue
+                conn.execute("DELETE FROM records WHERE deed_id=?", (str(row["deed_id"] or ""),))
+                removed += 1
+        return {"scanned": scanned, "removed": removed, "stale_days": cutoff_days}
 
     def snapshot(self) -> dict:
         """Export recent successful records for agent consumption."""

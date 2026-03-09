@@ -60,9 +60,9 @@ if [ -f "$HIST" ]; then
   last_pulse=$(python3 -c "
 import json, sys, time
 rows = json.loads(open('$HIST').read()) if True else []
-pulse = [r for r in rows if r.get('routine') == 'pulse' and r.get('status') == 'ok']
-if not pulse: sys.exit(0)
-ts = pulse[-1].get('started_utc', '')
+    pulse = [r for r in rows if r.get('routine') == 'spine.pulse' and r.get('status') == 'ok']
+    if not pulse: sys.exit(0)
+    ts = pulse[-1].get('run_utc', '')
 if not ts: sys.exit(0)
 from datetime import datetime, timezone
 dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))

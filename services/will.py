@@ -41,6 +41,7 @@ class Will:
         temporal_client=None,
         temporal_queue: str = "daemon-queue",
         cortex: "Cortex | None" = None,
+        dominion_writ_manager: Any | None = None,
     ) -> None:
         self._lore = lore
         self._instinct = instinct
@@ -50,8 +51,10 @@ class Will:
         self._temporal = temporal_client
         self._temporal_queue = temporal_queue
         self._cortex = cortex
+        self._dominion_writ = dominion_writ_manager
         self._model_policy_path = self._state.parent / "config" / "model_policy.json"
         self._model_registry_path = self._state.parent / "config" / "model_registry.json"
+        self._quality_profiles_path = self._state / "norm_quality.json"
 
     def set_temporal_client(self, temporal_client) -> None:
         self._temporal = temporal_client
@@ -64,6 +67,7 @@ class Will:
 
         valid_agents = {"scout", "sage", "artificer", "arbiter", "scribe", "envoy"}
         ids: set[str] = set()
+        normalized: list[tuple[str, dict]] = []
         for i, st in enumerate(moves):
             if not isinstance(st, dict):
                 return False, f"move {i} is not an object"
@@ -71,9 +75,11 @@ class Will:
             if sid in ids:
                 return False, f"duplicate move id: {sid}"
             ids.add(sid)
+            normalized.append((sid, st))
             agent = str(st.get("agent") or "")
             if agent and agent not in valid_agents:
                 return False, f"move {sid}: unknown agent type {agent!r}"
+        for sid, st in normalized:
             for dep in st.get("depends_on") or []:
                 if dep not in ids:
                     return False, f"move {sid}: depends_on unknown move {dep!r}"
@@ -94,30 +100,42 @@ class Will:
     def enrich(self, plan: dict) -> dict:
         """V2 enrich pipeline: normalize -> complexity_defaults -> model_routing -> ration -> ward."""
         plan = dict(plan)
+        metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
+        plan["metadata"] = metadata
 
         # 1. Normalize Brief
         raw_spec = plan.get("brief") or {}
         brief = Brief.from_dict(raw_spec)
+        self._apply_writ_complexity_hint(brief, metadata, raw_spec)
+        self._apply_dominion_overrides(brief, plan, metadata)
         plan["brief"] = brief.to_dict()
         plan.setdefault("deed_id", _new_deed_id())
         plan.setdefault("complexity", brief.complexity)
+        plan.setdefault("default_move_timeout_s", brief.execution_defaults().get("timeout_per_move_s", 300))
+        plan.setdefault("timeout_per_move_s", plan["default_move_timeout_s"])
+        plan.setdefault("eval_window_hours", 48)
+        plan["deed_title"] = self._resolve_deed_title(plan, brief)
+        plan["title"] = plan["deed_title"]
 
         # 2. Complexity defaults
         defaults = brief.execution_defaults()
         plan.setdefault("concurrency", defaults.get("concurrency", 2))
         plan.setdefault("timeout_per_move_s", defaults.get("timeout_per_move_s", 300))
+        plan.setdefault("default_move_timeout_s", defaults.get("timeout_per_move_s", 300))
         plan.setdefault("rework_limit", defaults.get("rework_limit", 1))
 
         # 3. Quality profile from Instinct preferences + Brief.depth
         prefs = self._instinct.all_prefs()
         plan.setdefault("require_bilingual", prefs.get("require_bilingual", "true") == "true")
         plan.setdefault("default_depth", brief.depth)
+        plan.setdefault("quality_profile", self._quality_profile_for(plan, brief, prefs))
 
         # 4. Model routing
         self._apply_model_routing(plan)
 
         # 5. Ration preflight
         plan = self._ration_preflight(plan)
+        plan = self._submission_preflight(plan)
 
         # 6. System status check
         sys_status = self._ledger.load_system_status()
@@ -149,6 +167,12 @@ class Will:
             plan = self.enrich(plan)
         except Exception as exc:
             return {"ok": False, "error": str(exc)[:400], "error_code": "enrich_failed"}
+
+        try:
+            self._materialize_dominion_writ(plan)
+        except Exception as exc:
+            logger.error("Dominion/Writ materialization failed: %s", exc)
+            return {"ok": False, "error": str(exc)[:400], "error_code": "dominion_writ_materialization_failed"}
 
         deed_id = str(plan["deed_id"])
         complexity = str(plan.get("complexity") or "charge")
@@ -276,7 +300,199 @@ class Will:
                     plan["queued"] = True
                     plan["queue_reason"] = "concurrent_deeds_limit"
                     return plan
+        remains = self._provider_remaining_budget(plan)
+        if remains is not None and remains <= 0:
+            plan["queued"] = True
+            plan["queue_reason"] = "provider_budget_exhausted"
         return plan
+
+    def _submission_preflight(self, plan: dict) -> dict:
+        if not self._dominion_writ:
+            return plan
+        ok, reason = self._dominion_writ.check_submission_limits(plan)
+        if not ok:
+            plan["queued"] = True
+            plan["queue_reason"] = reason
+        return plan
+
+    def _provider_remaining_budget(self, plan: dict) -> float | None:
+        if not self._cortex:
+            return None
+        provider = self._selected_provider(plan)
+        if provider != "minimax":
+            return None
+        try:
+            return self._cortex.provider_remaining_budget("minimax")
+        except Exception as exc:
+            logger.warning("MiniMax budget check failed: %s", exc)
+            return None
+
+    def _selected_provider(self, plan: dict) -> str:
+        alias = str(plan.get("default_alias") or plan.get("model_alias") or "").strip()
+        model_registry = plan.get("model_registry") if isinstance(plan.get("model_registry"), dict) else {}
+        for row in model_registry.get("models") or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("alias") or "") == alias:
+                return str(row.get("provider") or "")
+        return ""
+
+    def _apply_writ_complexity_hint(self, brief: Brief, metadata: dict, raw_spec: dict) -> None:
+        if str(raw_spec.get("complexity") or "").strip():
+            return
+        if not self._dominion_writ:
+            return
+        writ_id = str(metadata.get("writ_id") or "").strip()
+        if not writ_id:
+            return
+        brief.complexity = self._dominion_writ.infer_complexity_from_history(writ_id, default=brief.complexity)
+        defaults = COMPLEXITY_DEFAULTS.get(brief.complexity, COMPLEXITY_DEFAULTS["charge"])
+        brief.move_budget = int(raw_spec.get("move_budget") or defaults["move_budget"])
+
+    def _apply_dominion_overrides(self, brief: Brief, plan: dict, metadata: dict) -> None:
+        if not self._dominion_writ:
+            return
+        dominion_id = str(metadata.get("dominion_id") or plan.get("dominion_id") or "").strip()
+        if not dominion_id:
+            return
+        dominion = self._dominion_writ.get_dominion(dominion_id)
+        overrides = dominion.get("instinct_overrides") if isinstance(dominion, dict) else {}
+        if not isinstance(overrides, dict):
+            return
+        for key, value in overrides.items():
+            if key == "default_language" and value:
+                brief.language = str(value)
+            elif key == "default_format" and value:
+                brief.format = str(value)
+            elif key == "default_depth" and value:
+                brief.depth = str(value)
+            elif key == "require_bilingual":
+                plan["require_bilingual"] = bool(value)
+            elif key == "review_emphasis":
+                plan["review_emphasis"] = value
+            elif key == "quality_hints" and isinstance(value, list):
+                brief.quality_hints = [str(x) for x in value if str(x).strip()]
+        metadata["dominion_id"] = dominion_id
+        plan["metadata"] = metadata
+
+    def _resolve_deed_title(self, plan: dict, brief: Brief) -> str:
+        for key in ("deed_title", "title", "charge_title", "run_title"):
+            text = str(plan.get(key) or "").strip()
+            if text:
+                return text[:120]
+        objective = str(brief.objective or "").strip()
+        if objective:
+            compact = objective.replace("\n", " ").strip()
+            return compact[:120]
+        return str(plan.get("deed_id") or _new_deed_id())
+
+    def _quality_profile_for(self, plan: dict, brief: Brief, prefs: dict[str, str]) -> dict:
+        defaults = {
+            "default": {
+                "min_sections": 3,
+                "min_word_count": 800,
+                "forbidden_markers": ["[DONE]", "[COMPLETE]", "<system>", "[INTERNAL]"],
+                "language_consistency": True,
+                "format_compliance": True,
+                "academic_format": False,
+            },
+            "errand": {
+                "min_sections": 1,
+                "min_word_count": 200,
+                "forbidden_markers": ["[DONE]", "[COMPLETE]", "<system>", "[INTERNAL]"],
+                "language_consistency": True,
+                "format_compliance": True,
+                "academic_format": False,
+            },
+            "charge": {
+                "min_sections": 3,
+                "min_word_count": 800,
+                "forbidden_markers": ["[DONE]", "[COMPLETE]", "<system>", "[INTERNAL]"],
+                "language_consistency": True,
+                "format_compliance": True,
+                "academic_format": "citation" in " ".join(brief.quality_hints).lower(),
+            },
+            "endeavor": {
+                "min_sections": 4,
+                "min_word_count": 1200,
+                "forbidden_markers": ["[DONE]", "[COMPLETE]", "<system>", "[INTERNAL]"],
+                "language_consistency": True,
+                "format_compliance": True,
+                "academic_format": "citation" in " ".join(brief.quality_hints).lower(),
+            },
+        }
+        profiles = defaults
+        if self._quality_profiles_path.exists():
+            try:
+                payload = json.loads(self._quality_profiles_path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    profiles = {**profiles, **payload}
+            except Exception as exc:
+                logger.warning("Failed to read norm_quality.json: %s", exc)
+        key = str(plan.get("quality_profile_key") or brief.complexity or "default")
+        profile = dict(profiles.get(key) or profiles.get(brief.complexity) or profiles["default"])
+        if prefs.get("require_bilingual") == "true":
+            profile["require_bilingual"] = True
+        if "review_emphasis" in plan:
+            profile["review_emphasis"] = plan.get("review_emphasis")
+        if str(prefs.get("min_word_count") or "").strip():
+            try:
+                profile["min_word_count"] = int(float(prefs["min_word_count"]))
+            except Exception:
+                pass
+        if str(prefs.get("min_sections") or "").strip():
+            try:
+                profile["min_sections"] = int(float(prefs["min_sections"]))
+            except Exception:
+                pass
+        try:
+            profile["min_quality_score"] = float(
+                plan.get("min_quality_score")
+                or prefs.get("min_quality_score")
+                or prefs.get("quality_min_score")
+                or 0.6
+            )
+        except Exception:
+            profile["min_quality_score"] = 0.6
+        return profile
+
+    def _materialize_dominion_writ(self, plan: dict) -> None:
+        if not self._dominion_writ:
+            return
+        metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
+        brief = plan.get("brief") if isinstance(plan.get("brief"), dict) else {}
+        dominion_id = str(metadata.get("dominion_id") or plan.get("dominion_id") or "").strip()
+        if not dominion_id and str(metadata.get("create_dominion_objective") or "").strip():
+            dominion = self._dominion_writ.create_dominion(
+                str(metadata.get("create_dominion_objective") or brief.get("objective") or plan.get("title") or "").strip(),
+                metadata={"instinct_overrides": metadata.get("instinct_overrides") if isinstance(metadata.get("instinct_overrides"), dict) else {}},
+            )
+            dominion_id = str(dominion.get("dominion_id") or "")
+            metadata["dominion_id"] = dominion_id
+        writ_id = str(metadata.get("writ_id") or plan.get("writ_id") or "").strip()
+        writ_trigger = metadata.get("create_writ_trigger") if isinstance(metadata.get("create_writ_trigger"), dict) else {}
+        if dominion_id and not writ_id and writ_trigger:
+            writ = self._dominion_writ.create_writ(
+                brief_template={
+                    "objective": str(brief.get("objective") or plan.get("title") or ""),
+                    "complexity": str(brief.get("complexity") or plan.get("complexity") or "charge"),
+                    "language": str(brief.get("language") or "bilingual"),
+                    "format": str(brief.get("format") or "markdown"),
+                    "depth": str(brief.get("depth") or "study"),
+                    "references": brief.get("references") if isinstance(brief.get("references"), list) else [],
+                    "quality_hints": brief.get("quality_hints") if isinstance(brief.get("quality_hints"), list) else [],
+                },
+                trigger=writ_trigger,
+                dominion_id=dominion_id,
+                label=str(metadata.get("create_writ_label") or plan.get("deed_title") or plan.get("title") or "Writ"),
+            )
+            writ_id = str(writ.get("writ_id") or "")
+            metadata["writ_id"] = writ_id
+        if dominion_id:
+            plan["dominion_id"] = dominion_id
+        if writ_id:
+            plan["writ_id"] = writ_id
+        plan["metadata"] = metadata
 
     def _make_deed_root(self, deed_id: str) -> str:
         deeds_dir = self._state / "deeds" / deed_id
@@ -295,11 +511,16 @@ class Will:
                 if str(row.get("deed_id") or "") == deed_id:
                     row["deed_status"] = deed_status
                     row["updated_utc"] = _utc()
-                    if deed_root:
-                        row["deed_root"] = deed_root
-                    if plan.get("last_error"):
-                        row["last_error"] = plan["last_error"]
-                    break
+                if deed_root:
+                    row["deed_root"] = deed_root
+                row["dominion_id"] = metadata.get("dominion_id")
+                row["writ_id"] = metadata.get("writ_id")
+                row["deed_title"] = str(plan.get("deed_title") or plan.get("title") or objective)
+                row["title"] = str(plan.get("deed_title") or plan.get("title") or objective)
+                row["plan"] = plan
+                if plan.get("last_error"):
+                    row["last_error"] = plan["last_error"]
+                break
             else:
                 deeds.append({
                     "deed_id": deed_id,
@@ -312,6 +533,8 @@ class Will:
                     "priority": metadata.get("priority", 5),
                     "dominion_id": metadata.get("dominion_id"),
                     "writ_id": metadata.get("writ_id"),
+                    "deed_title": str(plan.get("deed_title") or plan.get("title") or objective),
+                    "title": str(plan.get("deed_title") or plan.get("title") or objective),
                     "source": metadata.get("source", "portal_voice"),
                     "plan": plan,
                     "last_error": plan.get("last_error", ""),

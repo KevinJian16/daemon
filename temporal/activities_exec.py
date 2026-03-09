@@ -25,6 +25,20 @@ async def run_openclaw_move(self, deed_root: str, plan: dict, move: dict) -> dic
     session_key = self._openclaw.session_key(agent_id, deed_id, move_id)
     instruction = str(move.get("instruction") or move.get("message") or "").strip()
     timeout_s = int(move.get("timeout_s") or plan.get("default_move_timeout_s") or 480)
+    move_label = str(move.get("label") or instruction[:80] or move_id)
+
+    def _emit_progress(phase: str, **extra) -> None:
+        self._ether.emit(
+            "deed_progress",
+            {
+                "deed_id": deed_id,
+                "move_id": move_id,
+                "move_label": move_label,
+                "agent": agent_role or agent_id,
+                "phase": phase,
+                **extra,
+            },
+        )
 
     checkpoint = self._read_move_checkpoint(deed_root, move_id)
     if checkpoint and str(checkpoint.get("status") or "") in {"ok", "degraded"}:
@@ -45,8 +59,10 @@ async def run_openclaw_move(self, deed_root: str, plan: dict, move: dict) -> dic
         if context_payload
         else instruction
     )
+    _emit_progress("started")
     await asyncio.to_thread(self._openclaw.send, session_key, composed_message, agent_id)
     activity.heartbeat({"deed_id": deed_id, "move_id": move_id, "phase": "sent"})
+    _emit_progress("waiting")
 
     deadline = time.time() + timeout_s
     poll_interval = 5
@@ -98,6 +114,7 @@ async def run_openclaw_move(self, deed_root: str, plan: dict, move: dict) -> dic
                             "partial_content": partial_content[:500],
                         }
                         self._write_move_checkpoint(deed_root, move_id, result)
+                        _emit_progress("degraded", error=result["error"])
                         return result
                 except Exception as exc:
                     activity.logger.warning("session_status check failed for %s: %s", session_key, exc)
@@ -123,6 +140,7 @@ async def run_openclaw_move(self, deed_root: str, plan: dict, move: dict) -> dic
                             "output_path": output_path,
                         }
                         self._write_move_checkpoint(deed_root, move_id, result)
+                        _emit_progress("completed", output_path=output_path)
                         return result
 
             poll_interval = min(poll_interval * 1.2, 30)
@@ -151,6 +169,7 @@ async def run_openclaw_move(self, deed_root: str, plan: dict, move: dict) -> dic
         "degraded": True,
     }
     self._write_move_checkpoint(deed_root, move_id, result)
+    _emit_progress("degraded", error=result["error"])
     return result
 
 

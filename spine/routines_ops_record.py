@@ -56,6 +56,8 @@ def run_record(self, deed_id: str, plan: dict, move_results: list[dict], offerin
             user_feedback=user_feedback,
             rework_history=rework_history,
             objective_embedding=objective_embedding,
+            dominion_id=str((plan.get("metadata") or {}).get("dominion_id") or plan.get("dominion_id") or ""),
+            writ_id=str((plan.get("metadata") or {}).get("writ_id") or plan.get("writ_id") or ""),
         )
         ctx.step("lore_recorded", {"record_id": record_id, "success": success})
 

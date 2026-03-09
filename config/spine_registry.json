@@ -4,24 +4,17 @@
     "spine.pulse": {
       "mode": "deterministic",
       "schedule": "*/10 * * * *",
+      "timeout_s": 120,
       "nerve_triggers": ["service_error"],
       "reads": ["infra:health"],
       "writes": ["state:ward"],
       "depends_on": [],
       "degraded_mode": null
     },
-    "spine.intake": {
-      "mode": "deterministic",
-      "schedule": "0 4 * * *",
-      "nerve_triggers": ["scout_completed"],
-      "reads": ["deeds:scout_output"],
-      "writes": ["psyche:memory:units"],
-      "depends_on": [],
-      "degraded_mode": null
-    },
     "spine.record": {
       "mode": "deterministic",
       "schedule": null,
+      "timeout_s": 120,
       "nerve_triggers": ["deed_completed", "herald_completed"],
       "reads": ["state:trails"],
       "writes": ["psyche:lore:evaluations", "psyche:memory:usage", "state:trails:summary"],
@@ -31,42 +24,37 @@
     "spine.witness": {
       "mode": "hybrid",
       "schedule": "adaptive:4h:2h-12h",
+      "timeout_s": 900,
       "nerve_triggers": [],
       "reads": ["state:deeds", "state:trails", "psyche:memory:stats", "psyche:lore:stats", "psyche:lore:evaluations:unanalyzed"],
       "writes": ["psyche:memory:observations", "psyche:instinct:attention_signals"],
       "depends_on": ["spine.record"],
       "degraded_mode": "stats_only"
     },
-    "spine.distill": {
-      "mode": "hybrid",
-      "schedule": "30 4 * * *",
-      "nerve_triggers": ["intake_completed"],
-      "reads": ["psyche:memory:units"],
-      "writes": ["psyche:memory:units", "psyche:memory:links"],
-      "depends_on": ["spine.intake"],
-      "degraded_mode": "string_match_only"
-    },
     "spine.learn": {
       "mode": "hybrid",
       "schedule": "adaptive:4h30m:2h30m-12h30m",
-      "nerve_triggers": [],
+      "timeout_s": 1200,
+      "nerve_triggers": ["deed_completed"],
       "reads": ["state:deeds", "state:trails", "psyche:lore:active", "psyche:memory:observations"],
       "writes": ["psyche:lore:candidates", "state:skill_evolution_proposals"],
       "depends_on": ["spine.witness"],
       "degraded_mode": "skip"
     },
-    "spine.judge": {
-      "mode": "deterministic",
-      "schedule": "0 5 * * *",
-      "nerve_triggers": [],
-      "reads": ["psyche:lore:evaluations"],
-      "writes": ["psyche:lore:methods"],
+    "spine.distill": {
+      "mode": "hybrid",
+      "schedule": "30 4 * * *",
+      "timeout_s": 900,
+      "nerve_triggers": ["psyche_updated"],
+      "reads": ["psyche:memory:units"],
+      "writes": ["psyche:memory:units", "psyche:memory:links"],
       "depends_on": ["spine.learn"],
-      "degraded_mode": null
+      "degraded_mode": "string_match_only"
     },
     "spine.focus": {
       "mode": "hybrid",
       "schedule": "0 6 * * 1",
+      "timeout_s": 900,
       "nerve_triggers": ["attention_critical"],
       "reads": ["psyche:instinct:attention_signals", "psyche:memory:stats", "psyche:lore:stats"],
       "writes": ["psyche:instinct:priorities", "psyche:instinct:resource_rations"],
@@ -76,6 +64,7 @@
     "spine.relay": {
       "mode": "deterministic",
       "schedule": "0 */4 * * *",
+      "timeout_s": 300,
       "nerve_triggers": ["psyche_updated"],
       "reads": ["psyche:memory", "psyche:lore", "psyche:instinct"],
       "writes": ["state:snapshots", "openclaw:skill_index"],
@@ -85,6 +74,7 @@
     "spine.tend": {
       "mode": "deterministic",
       "schedule": "0 3 * * *",
+      "timeout_s": 1800,
       "nerve_triggers": ["ward_changed"],
       "reads": ["state", "psyche:memory", "psyche:lore", "openclaw:sessions"],
       "writes": ["state", "psyche:memory:gc", "psyche:lore:gc", "openclaw:sessions:gc"],
@@ -94,10 +84,11 @@
     "spine.curate": {
       "mode": "deterministic",
       "schedule": "0 2 * * 0",
+      "timeout_s": 1800,
       "nerve_triggers": ["design_pressure", "memory_pressure"],
       "reads": ["psyche:lore:methods", "openclaw:design_patterns"],
       "writes": ["psyche:lore:methods:tiers", "openclaw:design_patterns:gc"],
-      "depends_on": ["spine.judge"],
+      "depends_on": ["spine.distill"],
       "degraded_mode": null
     }
   }

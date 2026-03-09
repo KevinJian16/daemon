@@ -3,8 +3,13 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
 logger = logging.getLogger(__name__)
+
+
+def _utc() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def run_witness(self) -> dict:
@@ -39,19 +44,65 @@ def run_witness(self) -> dict:
                     quality_scores.append(sum(scores) / len(scores))
 
         avg_quality = sum(quality_scores) / max(len(quality_scores), 1) if quality_scores else 0.0
+        review_user_conflicts = 0
+        for r in records:
+            fb = r.get("user_feedback") if isinstance(r.get("user_feedback"), dict) else {}
+            oq = r.get("offering_quality") if isinstance(r.get("offering_quality"), dict) else {}
+            try:
+                user_score = float(fb.get("score")) if fb.get("score") is not None else None
+            except Exception:
+                user_score = None
+            dims = [float(v) for v in oq.values() if isinstance(v, (int, float))]
+            qa_score = (sum(dims) / len(dims)) if dims else None
+            if user_score is not None and qa_score is not None and user_score <= 0.4 and qa_score >= 0.8:
+                review_user_conflicts += 1
         ctx.step("stats_computed", {
             "success_rate": round(success_rate, 3),
             "rework_rate": round(rework_rate, 3),
             "avg_quality": round(avg_quality, 3),
             "feedback_dist": feedback_dist,
+            "review_user_conflicts": review_user_conflicts,
         })
+
+        dominion_stats: dict[str, dict] = {}
+        for r in records:
+            dominion_id = str(r.get("dominion_id") or "").strip()
+            if not dominion_id:
+                continue
+            row = dominion_stats.setdefault(
+                dominion_id,
+                {"count": 0, "success": 0, "quality_sum": 0.0, "quality_n": 0, "latest_deed_id": "", "latest_objective": ""},
+            )
+            row["count"] += 1
+            if r.get("success"):
+                row["success"] += 1
+            oq = r.get("offering_quality") if isinstance(r.get("offering_quality"), dict) else {}
+            dims = [float(v) for v in oq.values() if isinstance(v, (int, float))]
+            if dims:
+                row["quality_sum"] += sum(dims) / len(dims)
+                row["quality_n"] += 1
+            deed_id = str(r.get("deed_id") or "")
+            if deed_id:
+                row["latest_deed_id"] = deed_id
+            objective = str(r.get("objective_text") or "")
+            if objective:
+                row["latest_objective"] = objective[:240]
 
         health = {
             "success_rate": round(success_rate, 4),
             "rework_rate": round(rework_rate, 4),
             "avg_quality": round(avg_quality, 4),
             "feedback_distribution": feedback_dist,
+            "review_user_conflicts": review_user_conflicts,
             "sample_size": len(records),
+            "dominions": {
+                dominion_id: {
+                    "count": row["count"],
+                    "success_rate": round(row["success"] / max(row["count"], 1), 4),
+                    "avg_quality": round(row["quality_sum"] / max(row["quality_n"], 1), 4) if row["quality_n"] else 0.0,
+                }
+                for dominion_id, row in dominion_stats.items()
+            },
         }
         self._store.save_json("system_health.json", health)
         ctx.step("health_written", True)
@@ -61,12 +112,72 @@ def run_witness(self) -> dict:
         if avg_quality > 0.8 and success_rate > 0.8:
             self.instinct.observe_pref("default_depth", "study")
 
+        dominions = self._store.load_json("dominions.json", [])
+        if isinstance(dominions, list) and dominion_stats:
+            changed = False
+            progress_updates = 0
+            completion_candidates = 0
+            for dominion in dominions:
+                if not isinstance(dominion, dict):
+                    continue
+                dominion_id = str(dominion.get("dominion_id") or "").strip()
+                if dominion_id not in dominion_stats:
+                    continue
+                stats = dominion_stats[dominion_id]
+                progress_notes = dominion.get("progress_notes") if isinstance(dominion.get("progress_notes"), list) else []
+                latest_deed_id = str(stats.get("latest_deed_id") or "")
+                if latest_deed_id and not any(str(note.get("deed_id") or "") == latest_deed_id for note in progress_notes if isinstance(note, dict)):
+                    avg = round(stats["quality_sum"] / max(stats["quality_n"], 1), 3) if stats["quality_n"] else 0.0
+                    note = {
+                        "deed_id": latest_deed_id,
+                        "created_utc": self._store.load_ward().get("updated_utc") or "",
+                        "summary": f"Recent progress: {stats['latest_objective']} (quality={avg})".strip(),
+                    }
+                    progress_notes.append(note)
+                    dominion["progress_notes"] = progress_notes[-100:]
+                    dominion["updated_utc"] = _utc()
+                    changed = True
+                    progress_updates += 1
+                    try:
+                        self.nerve.emit(
+                            "dominion_progress_update",
+                            {
+                                "dominion_id": dominion_id,
+                                "deed_id": latest_deed_id,
+                                "summary": note["summary"],
+                            },
+                        )
+                    except Exception:
+                        pass
+                if (
+                    str(dominion.get("status") or "").strip() == "active"
+                    and stats["count"] >= 3
+                    and stats["success"] >= max(2, stats["count"] - 1)
+                    and (stats["quality_sum"] / max(stats["quality_n"], 1) if stats["quality_n"] else 0.0) >= 0.85
+                ):
+                    completion_candidates += 1
+                    try:
+                        self.nerve.emit(
+                            "dominion_goal_candidate_completed",
+                            {
+                                "dominion_id": dominion_id,
+                                "objective": str(dominion.get("objective") or ""),
+                            },
+                        )
+                    except Exception:
+                        pass
+            if changed:
+                self._store.save_json("dominions.json", dominions)
+            ctx.step("dominion_progress", {"updated": progress_updates, "completion_candidates": completion_candidates})
+
         result = {
             "analyzed": len(records),
             "success_rate": round(success_rate, 3),
             "rework_rate": round(rework_rate, 3),
             "avg_quality": round(avg_quality, 3),
             "feedback_dist": feedback_dist,
+            "review_user_conflicts": review_user_conflicts,
+            "dominions": len(dominion_stats),
         }
         ctx.set_result(result)
     return result
@@ -79,6 +190,7 @@ def run_distill(self) -> dict:
         ctx.step("distill_done", distill_result)
         result = {
             "decayed": distill_result.get("decayed", 0),
+            "merged": distill_result.get("merged", 0),
             "evicted": distill_result.get("evicted", 0),
         }
         ctx.set_result(result)
@@ -99,7 +211,7 @@ def run_learn(self, deed_id: str | None = None) -> dict:
             ctx.set_result(result)
             return result
 
-        move_outputs = list(deed_root.glob("moves/*/output.md"))
+        move_outputs = list(deed_root.glob("moves/*/output/output.md"))
         ctx.step("move_outputs_found", len(move_outputs))
 
         if not move_outputs:
@@ -164,9 +276,16 @@ def run_focus(self) -> dict:
         mem_stats = self.memory.stats()
         ctx.step("memory_stats", mem_stats)
 
+        dominions = self._store.load_json("dominions.json", [])
+        active_dominions = [
+            row for row in dominions
+            if isinstance(row, dict) and str(row.get("status") or "").strip() == "active"
+        ]
+
         result = {
             "total_entries": mem_stats.get("total_entries", 0),
             "with_embedding": mem_stats.get("with_embedding", 0),
+            "active_dominions": len(active_dominions),
         }
         ctx.set_result(result)
     return result

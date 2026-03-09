@@ -104,6 +104,7 @@ class Retinue:
                     inst["deed_id"] = deed_id
                     inst["allocated_utc"] = _utc()
                     self._fill_templates(inst)
+                    self.write_psyche_snapshot(inst.get("instance_id", ""), self._default_psyche_snapshot())
                     return dict(inst)
             raise PoolExhausted(f"No idle {role} instances (pool_size={self._pool_size})")
 
@@ -246,6 +247,29 @@ class Retinue:
         mem_dir = workspace_dir / "memory"
         mem_dir.mkdir(parents=True, exist_ok=True)
         (mem_dir / "MEMORY.md").write_text(memory_snapshot, encoding="utf-8")
+
+    def _default_psyche_snapshot(self) -> str:
+        snap_path = self._home / "state" / "snapshots" / "memory_snapshot.json"
+        try:
+            if snap_path.exists():
+                data = json.loads(snap_path.read_text(encoding="utf-8"))
+                entries = data.get("entries") if isinstance(data, dict) else []
+                if isinstance(entries, list) and entries:
+                    lines = ["# Psyche Memory Snapshot", ""]
+                    for row in entries[:40]:
+                        if not isinstance(row, dict):
+                            continue
+                        content = str(row.get("content") or "").strip()
+                        if not content:
+                            continue
+                        tags = row.get("tags") if isinstance(row.get("tags"), list) else []
+                        tag_text = f" [{', '.join(str(tag) for tag in tags[:6])}]" if tags else ""
+                        lines.append(f"- {content[:280]}{tag_text}")
+                    if len(lines) > 2:
+                        return "\n".join(lines).strip() + "\n"
+        except Exception:
+            pass
+        return "# Psyche Memory Snapshot\n\n- No relay snapshot available yet.\n"
 
 
 # ── Bootstrap: register retinue instances in openclaw.json ─────────────────────

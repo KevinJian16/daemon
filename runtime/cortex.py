@@ -352,6 +352,34 @@ class Cortex:
         items = [u for u in self._usage if str(u.get("trail_id", "")) == str(trail_id)]
         return items[-limit:]
 
+    def provider_remaining_budget(self, provider: str) -> float | None:
+        target = str(provider or "").strip().lower()
+        if target != "minimax":
+            return None
+        api_key = os.getenv("MINIMAX_API_KEY", "").strip()
+        if not api_key:
+            return None
+        base_url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/anthropic").rstrip("/")
+        candidates = [
+            os.getenv("MINIMAX_REMAINS_URL", "").strip(),
+            base_url.replace("/anthropic", "/coding_plan/remains"),
+            f"{base_url}/coding_plan/remains",
+        ]
+        headers = {"Authorization": f"Bearer {api_key}"}
+        for url in candidates:
+            if not url:
+                continue
+            try:
+                resp = httpx.get(url, headers=headers, timeout=8)
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception:
+                continue
+            remains = self._extract_remaining_value(data)
+            if remains is not None:
+                return remains
+        return None
+
     # ── Internal ─────────────────────────────────────────────────────────────
 
     def _call(self, provider: str, prompt: str, model: str | None, max_tokens: int, temperature: float) -> tuple[str, int, int]:
@@ -511,3 +539,23 @@ class Cortex:
             except json.JSONDecodeError:
                 continue
         self._usage = loaded
+
+    def _extract_remaining_value(self, payload: Any) -> float | None:
+        if isinstance(payload, (int, float)):
+            return float(payload)
+        if isinstance(payload, dict):
+            for key in ("remaining", "remains", "remain", "quota_remaining"):
+                if key in payload:
+                    try:
+                        return float(payload[key])
+                    except (TypeError, ValueError):
+                        pass
+            data = payload.get("data")
+            if data is not None:
+                return self._extract_remaining_value(data)
+        if isinstance(payload, list):
+            for row in payload:
+                value = self._extract_remaining_value(row)
+                if value is not None:
+                    return value
+        return None
