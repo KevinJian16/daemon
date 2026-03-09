@@ -57,9 +57,6 @@ async function chatSend(){
   btn.disabled=false; ta.focus();
 }
 
-// Legacy alias
-function composeSend(){ chatSend(); }
-
 // ── Plan Card: three forms per INTERACTION_DESIGN §1.2 ───
 function showPlanCard(plan){
   detPlan=plan;

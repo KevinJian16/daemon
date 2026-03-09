@@ -1,188 +1,218 @@
-async function loadAgents() {
-  const q = document.getElementById('agents-q')?.value?.trim() || '';
-  const sizeSel = Number(document.getElementById('agents-page-size')?.value || 20);
-  _listState('agents', {size: sizeSel}).size = sizeSel;
-  const agents = await api('/console/agents');
-  const filtered = _applyListQuery(agents || [], q, ['id', 'skills_count', 'workspace_exists']);
-  const pageRows = _paginate(filtered, 'agents', 'agents-pager', 'loadAgents');
-  document.getElementById('agents-tbody').innerHTML = pageRows.map(a =>
-    `<tr>
-      <td>${esc(a.id)}</td>
-      <td>${a.skills_count}</td>
-      <td><span class="badge ${a.workspace_exists ? 'ok' : 'error'}">${a.workspace_exists ? tx('就绪', 'ready') : tx('缺失', 'missing')}</span></td>
-      <td><button class="action" style="font-size:11px;padding:3px 8px" onclick="manageAgent('${encodeURIComponent(a.id)}')">${tx('管理', 'Manage')}</button></td>
-    </tr>`
-  ).join('') || `<tr><td colspan="4" style="color:var(--muted)">${tx('未找到 agents', 'No agents found')}</td></tr>`;
-  if (activeAgentId) {
-    await reloadActiveAgentSkills();
-  }
-}
+// ── Agents panel: shows 7 ROLES, not 151 instances ──
+const RETINUE_ROLES = ['counsel', 'scout', 'sage', 'artificer', 'arbiter', 'scribe', 'envoy'];
 
-async function manageAgent(agentKey) {
-  activeAgentId = decodeURIComponent(agentKey);
-  await reloadActiveAgentSkills();
-}
-
-async function reloadActiveAgentSkills() {
-  const tbody = document.getElementById('agent-skills-tbody');
-  document.getElementById('skills-agent-tag').textContent = activeAgentId || tx('未选择 agent', 'No agent selected');
-  if (!activeAgentId) {
-    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--muted)">${tx('请选择一个 agent 管理 skills', 'Select an agent to manage skills')}</td></tr>`;
-    return;
-  }
-  try {
-    const q = document.getElementById('agent-skills-q')?.value?.trim() || '';
-    const sizeSel = Number(document.getElementById('agent-skills-page-size')?.value || 20);
-    _listState('agent_skills', {size: sizeSel}).size = sizeSel;
-    const skills = await api('/console/agents/' + encodeURIComponent(activeAgentId) + '/skills');
-    activeAgentSkills = Array.isArray(skills) ? skills : [];
-    if (!activeAgentSkills.length) {
-      tbody.innerHTML = `<tr><td colspan="4" style="color:var(--muted)">${tx('未找到 skills', 'No skills found')}</td></tr>`;
-      return;
+registerPanel('agents', {
+  _roles: [],
+  _retinue: null,
+  async load() {
+    const [agents, retinue] = await Promise.all([
+      api('/console/agents'),
+      api('/console/retinue').catch(() => null),
+    ]);
+    const allAgents = agents || [];
+    this._retinue = retinue || {};
+    const byRole = {};
+    for (const a of allAgents) {
+      const role = String(a.id || '').split(/[_\-]/)[0] || 'other';
+      if (!byRole[role]) byRole[role] = { role, instances: [], rep: null, skills_count: 0 };
+      byRole[role].instances.push(a);
+      if (!byRole[role].rep) byRole[role].rep = a.id;
+      if (a.skills_count > byRole[role].skills_count) {
+        byRole[role].skills_count = a.skills_count;
+        byRole[role].rep = a.id;
+      }
     }
-    const filtered = _applyListQuery(activeAgentSkills, q, ['skill', 'enabled', 'path']);
-    const pageRows = _paginate(filtered, 'agent_skills', 'agent-skills-pager', 'reloadActiveAgentSkills');
-    tbody.innerHTML = pageRows.map(s => {
-      const skillKey = encodeURIComponent(s.skill || '');
-      const enabled = !!s.enabled;
-      return `<tr>
-        <td>${esc(s.skill)}</td>
-        <td><span class="badge ${enabled ? 'ok' : 'error'}">${enabled ? 'enabled' : 'disabled'}</span></td>
-        <td style="color:var(--muted)">${esc((s.path||'').replace(/^.*openclaw\//, 'openclaw/'))}</td>
-        <td>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:${enabled ? '#7f1d1d' : '#14532d'}" onclick="toggleSkillEnabled('${skillKey}', ${enabled ? 'true' : 'false'})">${enabled ? tx('禁用', 'Disable') : tx('启用', 'Enable')}</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="openSkillEditor('${skillKey}')">${tx('编辑', 'Edit')}</button>
-        </td>
-      </tr>`;
+    // Build per-role pool stats from instances
+    const poolInstances = this._retinue.instances || [];
+    const poolByRole = {};
+    for (const inst of poolInstances) {
+      const role = String(inst.id || '').split(/[_\-]/)[0] || 'other';
+      if (!poolByRole[role]) poolByRole[role] = { occupied: 0, idle: 0 };
+      if (String(inst.status || '') === 'occupied') poolByRole[role].occupied++;
+      else poolByRole[role].idle++;
+    }
+    this._roles = RETINUE_ROLES.map(r => {
+      const group = byRole[r] || { role: r, instances: [], rep: r, skills_count: 0 };
+      const pool = poolByRole[r] || {};
+      return {
+        role: r,
+        total: group.instances.length,
+        occupied: pool.occupied || 0,
+        idle: pool.idle || group.instances.length,
+        skills_count: group.skills_count,
+        rep: group.rep || r,
+        allReady: group.instances.every(a => a.workspace_exists),
+      };
+    });
+  },
+  render() {
+    if (!this._roles.length) return `<div class="empty">No Agents</div>`;
+    return this._roles.map(r => {
+      const poolLabel = r.occupied > 0
+        ? `${r.occupied}/${r.total} occupied`
+        : `${r.total} idle`;
+      return `
+        <div class="list-item" onclick="PANELS.agents.openDetail('${esc(r.role)}')">
+          <div class="item-main">
+            <div class="item-title">${esc(r.role)}</div>
+            <div class="item-sub">${poolLabel} \u00b7 ${r.skills_count} Skills</div>
+          </div>
+          ${statusDot(r.occupied > 0 ? 'blue' : r.allReady ? 'green' : 'amber')}
+        </div>
+      `;
     }).join('');
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
-  }
-}
+  },
+  async openDetail(role) {
+    const r = this._roles.find(x => x.role === role);
+    if (!r) return;
+    pushDetail(role, '<div class="loading">\u2026</div>');
+    try {
+      const skills = await api('/console/agents/' + encodeURIComponent(r.rep) + '/skills');
+      const skillList = Array.isArray(skills) ? skills : [];
+      let html = '';
+      html += fieldText('Role', r.role);
+      html += fieldText(tx('\u6c60\u5927\u5c0f', 'Pool Size'), String(r.total));
+      html += fieldText(tx('\u5360\u7528', 'Occupied'), String(r.occupied));
+      html += fieldText(tx('\u7a7a\u95f2', 'Idle'), String(r.idle));
+      html += field('Workspace', r.allReady
+        ? tag(tx('\u5168\u90e8\u5c31\u7eea', 'All Ready'), 'ok')
+        : tag(tx('\u90e8\u5206\u7f3a\u5931', 'Some Missing'), 'error'));
 
-async function toggleSkillEnabled(skillKey, currentlyEnabled) {
-  if (!activeAgentId) return;
-  const skill = decodeURIComponent(skillKey);
+      if (skillList.length) {
+        html += `<div class="section-heading">Skills</div>`;
+        html += skillList.map(s => {
+          const enabled = !!s.enabled;
+          return `
+            <div class="sub-item">
+              <div class="item-main">
+                <div class="item-title">${esc(s.skill || '')}</div>
+                <div class="item-sub">${enabled ? tag(tx('\u542f\u7528', 'enabled'), 'ok') : tag(tx('\u7981\u7528', 'disabled'), 'dim')}</div>
+              </div>
+              <button class="btn ${enabled ? 'danger' : 'success'}" style="padding:4px 10px;font-size:11px" onclick="_toggleSkill('${esc(r.rep)}','${esc(s.skill || '')}',${enabled},'${esc(role)}')">${enabled ? tx('\u7981\u7528', 'Disable') : tx('\u542f\u7528', 'Enable')}</button>
+            </div>
+          `;
+        }).join('');
+      } else {
+        html += `<div class="empty">No Skills</div>`;
+      }
+      pushDetail(role, html);
+    } catch (e) {
+      pushDetail(role, `<div class="empty">${esc(e.message)}</div>`);
+    }
+  }
+});
+
+async function _toggleSkill(repAgent, skill, currentlyEnabled, role) {
+  const action = currentlyEnabled ? tx('\u7981\u7528', 'Disable') : tx('\u542f\u7528', 'Enable');
+  const ok = await confirmAction(
+    'Toggle Skill',
+    tx(`${action} ${role} / ${skill}\uff1f`, `${action} ${role} / ${skill}?`)
+  );
+  if (!ok) return;
   try {
     await apiWrite(
-      '/console/agents/' + encodeURIComponent(activeAgentId) + '/skills/' + encodeURIComponent(skill) + '/enabled',
+      '/console/agents/' + encodeURIComponent(repAgent) + '/skills/' + encodeURIComponent(skill) + '/enabled',
       'PATCH',
-      {enabled: !currentlyEnabled}
+      { enabled: !currentlyEnabled }
     );
-    await reloadActiveAgentSkills();
-    await loadAgents();
+    refreshPanel('agents');
   } catch (e) {
-    alert(tx('更新 Skill 状态失败：', 'Failed to update skill state: ') + e.message);
+    pushDetail(tx('\u9519\u8bef', 'Error'), `<div class="empty">${esc(e.message)}</div>`);
   }
 }
 
-async function openSkillEditor(skillKey) {
-  const skill = decodeURIComponent(skillKey);
-  const row = activeAgentSkills.find(s => s.skill === skill);
-  if (!row) return;
-  await openUnifiedEditor({
-    key: `skill:${activeAgentId}:${skill}`,
-    title: tx('Skill 编辑器', 'Skill Editor'),
-    subtitle: `${activeAgentId} / ${skill}`,
-    hint: tx('保存后会立即回写 SKILL.md 并刷新列表。', 'Save writes SKILL.md and refreshes list immediately.'),
-    loadText: async () => String(row.content || ''),
-    saveText: async (content) => {
-      if (!String(content || '').trim()) {
-        throw new Error(tx('Skill 内容不能为空', 'Skill content cannot be empty'));
-      }
-      await apiWrite(
-        '/console/agents/' + encodeURIComponent(activeAgentId) + '/skills/' + encodeURIComponent(skill),
-        'PUT',
-        {content}
-      );
-    },
-    onSaved: async () => {
-      await reloadActiveAgentSkills();
-      await loadAgents();
-    },
-  });
-}
+// ── Skill Evolution panel ──
+registerPanel('evolution', {
+  _data: [],
+  _filter: '',
+  async load() {
+    let url = '/console/skill-evolution/proposals?limit=500';
+    if (this._filter) url += '&status=' + encodeURIComponent(this._filter);
+    this._data = await api(url);
+  },
+  render() {
+    let html = `<div class="filter-bar">
+      <select onchange="PANELS.evolution._filter=this.value;showPanel('evolution',true)">
+        <option value="">${tx('\u5168\u90e8\u72b6\u6001', 'All status')}</option>
+        ${['pending', 'approved', 'rejected', 'applied', 'apply_failed'].map(s =>
+          `<option value="${s}"${this._filter === s ? ' selected' : ''}>${s}</option>`
+        ).join('')}
+      </select>
+    </div>`;
 
-async function loadSkillEvolution() {
-  const status = document.getElementById('sev-status').value;
-  const q = document.getElementById('sev-q')?.value?.trim() || '';
-  const sizeSel = Number(document.getElementById('sev-page-size')?.value || 20);
-  _listState('skill_evolution', {size: sizeSel}).size = sizeSel;
-  const tbody = document.getElementById('sev-tbody');
-  let url = '/console/skill-evolution/proposals?limit=500';
-  if (status) url += '&status=' + encodeURIComponent(status);
-  try {
-    const rows = await api(url);
-    const filtered = _applyListQuery(rows || [], q, ['proposal_id', 'skill', 'status', 'reviewed_utc']);
-    const pageRows = _paginate(filtered, 'skill_evolution', 'sev-pager', 'loadSkillEvolution');
-    if (!pageRows.length) {
-      tbody.innerHTML = `<tr><td colspan="5" style="color:var(--muted)">${tx('未找到提案', 'No proposals found')}</td></tr>`;
-      return;
+    if (!this._data.length) {
+      html += `<div class="empty">No Proposals</div>`;
+      return html;
     }
-    tbody.innerHTML = pageRows.map(p => {
-      const pid = encodeURIComponent(p.proposal_id || '');
-      return `<tr>
-        <td style="color:var(--muted);font-size:11px">${esc(p.proposal_id || '')}</td>
-        <td>${esc(p.skill || '')}</td>
-        <td><span class="badge ${p.status === 'applied' ? 'ok' : p.status === 'rejected' || p.status === 'apply_failed' ? 'error' : 'degraded'}">${esc(p.status || '')}</span></td>
-        <td style="color:var(--muted)">${fmtTime(p.reviewed_utc) || '—'}</td>
-        <td>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewSkillProposal('${pid}')">${tx('查看', 'View')}</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#14532d" onclick="reviewSkillProposal('${pid}','approve')">${tx('通过', 'Approve')}</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="reviewSkillProposal('${pid}','reject')">${tx('拒绝', 'Reject')}</button>
-          <button class="action" style="font-size:11px;padding:3px 8px" onclick="applySkillProposal('${pid}')">${tx('应用', 'Apply')}</button>
-        </td>
-      </tr>`;
+    html += this._data.map(p => {
+      const st = p.status || '';
+      const dotType = st === 'applied' ? 'green' : st === 'approved' ? 'blue' : (st === 'rejected' || st === 'apply_failed') ? 'red' : 'amber';
+      return `
+        <div class="list-item" onclick="PANELS.evolution.openDetail('${esc(p.proposal_id || '')}')">
+          <div class="item-main">
+            <div class="item-title">${esc(p.skill || '')}</div>
+            <div class="item-sub">${esc(st)} \u00b7 ${fmtTime(p.created_utc || p.reviewed_utc)}</div>
+          </div>
+          ${statusDot(dotType)}
+        </div>
+      `;
     }).join('');
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
-  }
-}
+    return html;
+  },
+  openDetail(proposalId) {
+    const p = this._data.find(x => x.proposal_id === proposalId);
+    if (!p) return;
+    let html = '';
+    html += fieldText('Proposal ID', p.proposal_id, { mono: true });
+    html += fieldText('Skill', p.skill);
+    html += field(tx('\u72b6\u6001', 'Status'), tag(p.status || '', p.status === 'applied' ? 'ok' : p.status === 'rejected' ? 'error' : 'warn'));
+    if (p.agent) html += fieldText('Agent', p.agent);
+    if (p.reviewed_utc) html += fieldText(tx('\u5ba1\u6838\u65f6\u95f4', 'Reviewed'), fmtTime(p.reviewed_utc));
+    if (p.reviewer) html += fieldText(tx('\u5ba1\u6838\u4eba', 'Reviewer'), p.reviewer);
+    if (p.note) html += fieldText(tx('\u5907\u6ce8', 'Note'), p.note);
+    if (p.diff_summary) html += fieldText(tx('\u53d8\u66f4\u6458\u8981', 'Diff Summary'), p.diff_summary);
 
-async function _findSkillProposal(proposalId) {
-  const all = await api('/console/skill-evolution/proposals?limit=300');
-  return all.find(p => String(p.proposal_id || '') === String(proposalId || '')) || null;
-}
-
-async function viewSkillProposal(pidKey) {
-  const proposalId = decodeURIComponent(pidKey);
-  const detail = document.getElementById('sev-detail');
-  detail.textContent = tx('加载提案详情…', 'Loading proposal detail…');
-  try {
-    const row = await _findSkillProposal(proposalId);
-    if (!row) {
-      detail.textContent = tx('未找到提案。', 'Proposal not found.');
-      return;
+    const btns = [];
+    if (p.status === 'pending') {
+      btns.push(btn(tx('\u901a\u8fc7', 'Approve'), `_reviewProposal('${esc(proposalId)}','approve')`, 'success'));
+      btns.push(btn(tx('\u62d2\u7edd', 'Reject'), `_reviewProposal('${esc(proposalId)}','reject')`, 'danger'));
     }
-    detail.textContent = JSON.stringify(row, null, 2);
-  } catch (e) {
-    detail.textContent = tx('错误：', 'Error: ') + e.message;
+    if (p.status === 'approved') {
+      btns.push(btn(tx('\u5e94\u7528', 'Apply'), `_applyProposal('${esc(proposalId)}')`, 'primary'));
+    }
+    if (btns.length) html += actions(...btns);
+    pushDetail(p.skill || proposalId, html);
   }
-}
+});
 
-async function reviewSkillProposal(pidKey, decision) {
-  const proposalId = decodeURIComponent(pidKey);
-  const note = prompt(tx(`${decision.toUpperCase()} 给 ${proposalId} 的备注：`, `${decision.toUpperCase()} note for ${proposalId}:`)) || '';
+async function _reviewProposal(proposalId, decision) {
+  const ok = await confirmAction(
+    tx('\u5ba1\u6838\u63d0\u6848', 'Review Proposal'),
+    tx(`${decision === 'approve' ? '\u901a\u8fc7' : '\u62d2\u7edd'} ${proposalId}\uff1f`, `${decision} ${proposalId}?`)
+  );
+  if (!ok) return;
   try {
     await apiWrite(
       '/console/skill-evolution/proposals/' + encodeURIComponent(proposalId) + '/review',
       'POST',
-      {decision, reviewer: 'console', note, apply: decision === 'approve'}
+      { decision, reviewer: 'console', note: '', apply: decision === 'approve' }
     );
-    await loadSkillEvolution();
-    await viewSkillProposal(encodeURIComponent(proposalId));
+    refreshPanel('evolution');
   } catch (e) {
-    alert(tx('审核失败：', 'Review failed: ') + e.message);
+    pushDetail(tx('\u9519\u8bef', 'Error'), `<div class="empty">${esc(e.message)}</div>`);
   }
 }
 
-async function applySkillProposal(pidKey) {
-  const proposalId = decodeURIComponent(pidKey);
+async function _applyProposal(proposalId) {
+  const ok = await confirmAction(
+    tx('\u5e94\u7528\u63d0\u6848', 'Apply Proposal'),
+    tx(`\u786e\u8ba4\u5e94\u7528 ${proposalId}\uff1f`, `Apply ${proposalId}?`)
+  );
+  if (!ok) return;
   try {
     await apiWrite('/console/skill-evolution/proposals/' + encodeURIComponent(proposalId) + '/apply', 'POST', {});
-    await loadSkillEvolution();
-    await viewSkillProposal(encodeURIComponent(proposalId));
+    refreshPanel('evolution');
   } catch (e) {
-    alert(tx('应用失败：', 'Apply failed: ') + e.message);
+    pushDetail(tx('\u9519\u8bef', 'Error'), `<div class="empty">${esc(e.message)}</div>`);
   }
 }

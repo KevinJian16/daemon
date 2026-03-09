@@ -15,7 +15,7 @@
     <span id="brand">Daemon</span>
     <span id="ward-dot" title="Ward: GREEN"></span>
     <button class="icon-btn" id="lang-btn" onclick="toggleLang()">EN</button>
-    <a class="icon-btn" href="/console/" id="console-link" onclick="try{const raw=localStorage.getItem('d_console_view_state');const panel=String((raw?JSON.parse(raw):{}).panel||'').trim();const allow=['overview','lexicon','spine','psyche','norm','trails','model','agents','skill-evolution','schedules','endeavors','system'];this.href=allow.includes(panel)?('/console/?panel='+encodeURIComponent(panel)):'/console/';}catch(_){this.href='/console/';}">Console</a>
+    <a class="icon-btn" href="/console/" id="console-link" onclick="try{const raw=localStorage.getItem('d_console_view_state');const panel=String((raw?JSON.parse(raw):{}).panel||'').trim();const allow=['overview','routines','trails','model','agents','evolution','norm','endeavors','lexicon','system'];this.href=allow.includes(panel)?('/console/?panel='+encodeURIComponent(panel)):'/console/';}catch(_){this.href='/console/';}">Console</a>
     <button class="icon-btn" id="compose-btn" onclick="showNewChat()" title="新建对话">✏</button>
   </div>
 

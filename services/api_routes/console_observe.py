@@ -1,9 +1,9 @@
-"""Console trails, usage, schedules routes."""
+"""Console trails and cortex usage routes."""
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 
 
 def register_console_observe_routes(app: FastAPI, *, ctx: Any) -> None:
@@ -69,31 +69,3 @@ def register_console_observe_routes(app: FastAPI, *, ctx: Any) -> None:
             "today": ctx.cortex.usage_today(),
             "records": ctx.cortex.usage_between(since=since, until=until, limit=limit),
         }
-
-    # ── Console — Schedules ───────────────────────────────────────────────────
-
-    @app.get("/console/schedules")
-    def list_schedules():
-        return ctx.cadence.status()
-
-    @app.get("/console/schedules/history")
-    def list_schedule_history(routine: str | None = None, limit: int = 100):
-        return ctx.cadence.history(routine=routine, limit=limit)
-
-    @app.put("/console/schedules/{job_id}")
-    async def update_schedule(job_id: str, request: Request):
-        body = await request.json()
-        schedule = body.get("schedule") if "schedule" in body else None
-        enabled = body.get("enabled") if "enabled" in body else None
-        result = ctx.cadence.update_schedule(job_id, schedule=schedule, enabled=enabled)
-        if not result.get("ok"):
-            raise HTTPException(status_code=400, detail=result)
-        return result
-
-    @app.post("/console/schedules/{routine}/trigger")
-    async def trigger_schedule(routine: str):
-        full_name = routine if routine.startswith("spine.") else f"spine.{routine}"
-        result = await ctx.cadence.trigger(full_name)
-        if not result.get("ok"):
-            raise HTTPException(status_code=400, detail=result.get("error"))
-        return result

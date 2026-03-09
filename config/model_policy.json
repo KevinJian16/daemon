@@ -5,20 +5,25 @@
   "default_alias": "fast",
   "agent_model_map": {
     "_comment": "Authoritative per-agent OpenClaw model assignment. Mirrors openclaw.json agent overrides.",
-    "counsel":    "fast",
-    "scout":      "fast",
-    "sage":       "analysis",
-    "artificer":  "fast",
-    "arbiter":    "review",
-    "scribe":     "glm",
-    "envoy":      "fast",
-    "opencode":   "qwen"
+    "counsel": "fast",
+    "scout": "fast",
+    "sage": "analysis",
+    "artificer": "fast",
+    "arbiter": "review",
+    "scribe": "glm",
+    "envoy": "fast",
+    "opencode": "qwen"
   },
   "budget_limits": {
-    "minimax_tokens_per_day":   20000000,
-    "deepseek_tokens_per_day":  5000000,
-    "qwen_tokens_per_day":      10000000,
-    "zhipu_tokens_per_day":     5000000
+    "minimax_tokens_per_day": 20000000,
+    "deepseek_tokens_per_day": 5000000,
+    "qwen_tokens_per_day": 10000000,
+    "zhipu_tokens_per_day": 5000000
   },
-  "provider_route": ["minimax", "qwen", "zhipu", "deepseek"]
+  "provider_route": [
+    "minimax",
+    "qwen",
+    "zhipu",
+    "deepseek"
+  ]
 }

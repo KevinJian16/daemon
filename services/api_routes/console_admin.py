@@ -38,17 +38,14 @@ def register_console_admin_routes(app: FastAPI, *, ctx: Any) -> None:
         }
 
     @app.get("/console/routines")
-    @app.get("/console/cadence")
     def console_cadence():
         return ctx.cadence.status()
 
     @app.get("/console/routines/history")
-    @app.get("/console/cadence/history")
     def console_cadence_history(routine: str | None = None, limit: int = 100):
         return ctx.cadence.history(routine=routine, limit=limit)
 
     @app.put("/console/routines/{job_id}")
-    @app.put("/console/cadence/{job_id}")
     async def console_update_schedule(job_id: str, request: Request):
         body = await request.json()
         schedule = body.get("schedule") if isinstance(body, dict) and "schedule" in body else None
@@ -61,7 +58,6 @@ def register_console_admin_routes(app: FastAPI, *, ctx: Any) -> None:
         return result
 
     @app.post("/console/routines/{routine}/trigger")
-    @app.post("/console/cadence/{routine}/trigger")
     async def console_trigger_schedule(routine: str):
         full_name = routine if routine.startswith("spine.") else f"spine.{routine}"
         result = await ctx.cadence.trigger(full_name)

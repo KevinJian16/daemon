@@ -37,14 +37,14 @@ from services.api_routes.console_agents_skill import register_console_agents_ski
 from services.api_routes.console_observe import register_console_observe_routes
 from services.api_routes.console_norm import register_console_norm_routes
 from services.api_routes.console_admin import register_console_admin_routes
-from services.api_routes.console_spine_psyche import register_console_spine_psyche_routes
+from services.api_routes.console_spine import register_console_spine_routes
 from services.api_routes.feedback import register_feedback_routes
 from services.api_routes.submit import register_submit_route
 from services.api_routes.system import register_system_routes
 from services.cadence import Cadence
 from services.ledger import Ledger
 from services.dominion_writ import DominionWritManager
-from services.api_routes.tracks import register_track_routes
+from services.api_routes.dominion_writ_routes import register_dominion_writ_routes
 from services.system_reset import SystemResetManager
 from daemon_env import load_daemon_env
 from bootstrap import normalize_openclaw_config
@@ -276,8 +276,8 @@ p{
     # ─────────────────────────────────────────────────────────────────────
 
     temporal_client: TemporalClient | None = None
-    bridge_task: asyncio.Task | None = None
-    bridge_running = True
+    ether_task: asyncio.Task | None = None
+    ether_running = True
     runtime_loop: asyncio.AbstractEventLoop | None = None
 
     async def _ensure_temporal_client(retries: int = 1, delay_s: float = 0.5) -> bool:
@@ -311,7 +311,7 @@ p{
 
     @app.on_event("startup")
     async def _startup():
-        nonlocal bridge_task, bridge_running, runtime_loop
+        nonlocal ether_task, ether_running, runtime_loop
         runtime_loop = asyncio.get_running_loop()
         # Keep OpenClaw on daemon canonical topology (no legacy main default).
         norm = normalize_openclaw_config(oc_home)
@@ -334,23 +334,23 @@ p{
             logger.info("Registered %d active Writ triggers", trigger_count)
         _register_runtime_handlers()
         await cadence.start()
-        bridge_running = True
-        bridge_task = asyncio.create_task(_bridge_loop())
+        ether_running = True
+        ether_task = asyncio.create_task(_ether_loop())
 
     @app.on_event("shutdown")
     async def _shutdown():
-        nonlocal bridge_running, bridge_task
-        bridge_running = False
-        if bridge_task:
-            bridge_task.cancel()
+        nonlocal ether_running, ether_task
+        ether_running = False
+        if ether_task:
+            ether_task.cancel()
             try:
-                await bridge_task
+                await ether_task
             except asyncio.CancelledError:
                 pass
         await cadence.stop()
 
-    async def _bridge_loop() -> None:
-        while bridge_running:
+    async def _ether_loop() -> None:
+        while ether_running:
             try:
                 events = await asyncio.to_thread(ether.consume, "api", 200)
                 if events:
@@ -1346,7 +1346,7 @@ p{
     console_ctx.audit_console = _audit_console
 
     register_console_admin_routes(app, ctx=console_ctx)
-    register_console_spine_psyche_routes(app, ctx=console_ctx)
+    register_console_spine_routes(app, ctx=console_ctx)
     register_console_norm_routes(app, ctx=console_ctx)
     register_console_observe_routes(app, ctx=console_ctx)
     register_console_agents_skill_routes(app, ctx=console_ctx)
@@ -1372,7 +1372,7 @@ p{
 
     register_endeavor_routes(app, ctx=endeavor_ctx)
     register_chat_routes(app, voice=voice, log_portal_event=_log_portal_event)
-    register_track_routes(app, dominion_writ)
+    register_dominion_writ_routes(app, dominion_writ)
 
     @app.websocket("/ws")
     async def websocket_events(ws: WebSocket):
@@ -1726,6 +1726,15 @@ p{
     if portal_dir.exists():
         app.mount("/portal", StaticFiles(directory=portal_dir, html=True), name="portal")
     if console_dir.exists():
-        app.mount("/console", StaticFiles(directory=console_dir, html=True), name="console")
+        from starlette.responses import FileResponse as _FileResponse
+
+        _console_index = console_dir / "index.html"
+
+        @app.get("/console", include_in_schema=False)
+        @app.get("/console/", include_in_schema=False)
+        async def _serve_console_index():
+            return _FileResponse(_console_index, media_type="text/html")
+
+        app.mount("/_console", StaticFiles(directory=console_dir), name="console_static")
 
     return app

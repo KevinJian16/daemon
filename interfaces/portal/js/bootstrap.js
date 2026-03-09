@@ -26,7 +26,7 @@ function bindConsoleLink() {
     const raw = localStorage.getItem('d_console_view_state');
     const parsed = raw ? JSON.parse(raw) : {};
     const candidate = String(parsed?.panel || '').trim();
-    const allow = new Set(['overview', 'lexicon', 'spine', 'psyche', 'norm', 'trails', 'model', 'agents', 'skill-evolution', 'schedules', 'endeavors', 'system']);
+    const allow = new Set(['overview', 'routines', 'trails', 'model', 'agents', 'evolution', 'norm', 'endeavors', 'lexicon', 'system']);
     panel = allow.has(candidate) ? candidate : '';
   } catch (_) {
     panel = '';

@@ -1,192 +1,106 @@
-async function loadTrails() {
-  const routine = document.getElementById('trail-routine').value;
-  const status = document.getElementById('trail-status').value;
-  const q = document.getElementById('trail-q')?.value?.trim() || '';
-  const sizeSel = Number(document.getElementById('trail-page-size')?.value || 50);
-  _listState('trails', {size: sizeSel}).size = sizeSel;
-  const preset = document.getElementById('trail-date-preset')?.value || 'last_24h';
-  const now = new Date();
-  const toIso = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
-  let since = '';
-  if (preset === 'last_1h') since = toIso(new Date(now.getTime() - 1 * 3600 * 1000));
-  else if (preset === 'last_6h') since = toIso(new Date(now.getTime() - 6 * 3600 * 1000));
-  else if (preset === 'last_24h') since = toIso(new Date(now.getTime() - 24 * 3600 * 1000));
-  else if (preset === 'last_7d') since = toIso(new Date(now.getTime() - 7 * 24 * 3600 * 1000));
-  let url = '/console/trails?limit=1000';
-  if (routine) url += '&routine=' + encodeURIComponent(routine);
-  if (status) url += '&status=' + status;
-  if (since) url += '&since=' + encodeURIComponent(since);
-  try {
-    const rows = await api(url);
-    const filtered = _applyListQuery(rows || [], q, ['trail_id', 'routine', 'status', 'started_utc', 'error']);
-    const trails = _paginate(filtered, 'trails', 'trails-pager', 'loadTrails');
-    document.getElementById('trails-tbody').innerHTML = trails.map(t => {
-      const rawId = String(t.trail_id || '');
-      const shortId = rawId.length > 14 ? `${rawId.slice(0, 14)}…` : rawId;
-      return `<tr>
-        <td style="color:var(--muted);font-size:11px"><button class="action trail-id-btn" title="${esc(rawId)}" style="font-size:10px;padding:2px 6px;background:#334155" onclick="viewTrail('${rawId}')">${esc(shortId)}</button></td>
-        <td>${t.routine}</td>
-        <td><span class="badge ${t.status}">${t.status}</span></td>
-        <td>${t.degraded ? '<span class="badge degraded">yes</span>' : '—'}</td>
-        <td style="color:var(--muted)">${fmtTime(t.started_utc)}</td>
-        <td>${t.elapsed_s}s</td>
-      </tr>`;
-    }).join('') || `<tr><td colspan="6" style="color:var(--muted)">${tx('未找到 trails', 'No trails found')}</td></tr>`;
-  } catch (e) {
-    document.getElementById('trails-tbody').innerHTML = `<tr><td colspan="6" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
-    const pager = document.getElementById('trails-pager');
-    if (pager) pager.innerHTML = '';
-  }
-}
+registerPanel('trails', {
+  _data: [],
+  _filters: { routine: '', status: '', range: 'last_24h' },
+  _routines: [],
+  async load() {
+    if (!this._routines.length) {
+      try { this._routines = (await api('/console/routines')).map(r => r.routine); } catch (_) {}
+    }
+    const f = this._filters;
+    const now = new Date();
+    const toIso = d => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+    let since = '';
+    if (f.range === 'last_1h') since = toIso(new Date(now.getTime() - 3600e3));
+    else if (f.range === 'last_6h') since = toIso(new Date(now.getTime() - 6 * 3600e3));
+    else if (f.range === 'last_24h') since = toIso(new Date(now.getTime() - 24 * 3600e3));
+    else if (f.range === 'last_7d') since = toIso(new Date(now.getTime() - 7 * 86400e3));
+    let url = '/console/trails?limit=200';
+    if (f.routine) url += '&routine=' + encodeURIComponent(f.routine);
+    if (f.status) url += '&status=' + f.status;
+    if (since) url += '&since=' + encodeURIComponent(since);
+    this._data = await api(url);
+  },
+  render() {
+    const f = this._filters;
+    let html = `<div class="filter-bar">`;
+    html += `<select onchange="PANELS.trails._filters.routine=this.value;showPanel('trails',true)">`;
+    html += `<option value="">All Routines</option>`;
+    html += this._routines.map(r => `<option value="${esc(r)}"${f.routine === r ? ' selected' : ''}>${esc(r)}</option>`).join('');
+    html += `</select>`;
+    html += `<select onchange="PANELS.trails._filters.status=this.value;showPanel('trails',true)">`;
+    html += `<option value=""${!f.status ? ' selected' : ''}>${tx('\u4efb\u610f\u72b6\u6001', 'Any status')}</option>`;
+    html += ['ok', 'error'].map(s => `<option value="${s}"${f.status === s ? ' selected' : ''}>${s}</option>`).join('');
+    html += `</select>`;
+    html += `<select onchange="PANELS.trails._filters.range=this.value;showPanel('trails',true)">`;
+    html += [['last_1h', tx('\u8fd1 1h', 'Last 1h')], ['last_6h', tx('\u8fd1 6h', 'Last 6h')], ['last_24h', tx('\u8fd1 24h', 'Last 24h')], ['last_7d', tx('\u8fd1 7d', 'Last 7d')]]
+      .map(([v, l]) => `<option value="${v}"${f.range === v ? ' selected' : ''}>${l}</option>`).join('');
+    html += `</select></div>`;
 
-async function viewTrail(trailId) {
-  const target = document.getElementById('trail-detail');
-  target.textContent = tx('加载 trail 详情…', 'Loading trail detail…');
-  try {
-    const t = await api('/console/trails/' + encodeURIComponent(trailId));
-    const lines = [];
-    lines.push(`# ${t.trail_id || trailId}`);
-    lines.push(`routine: ${t.routine || ''}`);
-    lines.push(`status: ${t.status || ''} (degraded: ${t.degraded ? 'yes' : 'no'})`);
-    lines.push(`started_utc: ${t.started_utc || ''}`);
-    lines.push(`elapsed_s: ${t.elapsed_s || 0}`);
-    if (t.error) lines.push(`error: ${t.error}`);
-    lines.push('');
-    lines.push(tx('## 动作', '## Moves'));
-    const moves = Array.isArray(t.moves || t.steps) ? (t.moves || t.steps) : [];
-    if (!moves.length) {
-      lines.push(tx('- 未记录动作', '- no moves recorded'));
-    } else {
-      for (const s of moves) {
-        lines.push(`- [${s.t ?? 0}s] ${s.name || 'move'}`);
-        if (s.detail !== undefined && s.detail !== null && s.detail !== '') {
-          lines.push(`  detail: ${JSON.stringify(s.detail).slice(0, 500)}`);
+    if (!this._data.length) {
+      html += `<div class="empty">No Trails</div>`;
+      return html;
+    }
+    html += this._data.slice(0, 100).map(t => `
+      <div class="list-item" onclick="PANELS.trails.openDetail('${esc(t.trail_id || '')}')">
+        <div class="item-main">
+          <div class="item-title">${esc(t.routine || '')}</div>
+          <div class="item-sub">${fmtTime(t.started_utc)} \u00b7 ${t.elapsed_s || 0}s${t.degraded ? ' \u00b7 degraded' : ''}</div>
+        </div>
+        ${statusDot(t.status || 'muted')}
+      </div>
+    `).join('');
+    if (this._data.length > 100) {
+      html += `<div class="empty">${tx('\u663e\u793a\u524d 100 \u6761\uff0c\u5171', 'Showing first 100 of ')}${this._data.length}</div>`;
+    }
+    return html;
+  },
+  async openDetail(trailId) {
+    pushDetail(tx('\u52a0\u8f7d\u4e2d\u2026', 'Loading\u2026'), '<div class="loading">\u2026</div>');
+    try {
+      const t = await api('/console/trails/' + encodeURIComponent(trailId));
+      let html = '';
+      html += fieldText('Trail ID', t.trail_id || trailId, { mono: true });
+      html += fieldText('Routine', t.routine);
+      html += field(tx('\u72b6\u6001', 'Status'), tag(t.status || '', t.status === 'ok' ? 'ok' : 'error') + (t.degraded ? ' ' + tag('degraded', 'warn') : ''));
+      html += fieldText(tx('\u5f00\u59cb\u65f6\u95f4', 'Started'), fmtTime(t.started_utc));
+      html += fieldText(tx('\u8017\u65f6', 'Elapsed'), (t.elapsed_s || 0) + 's');
+      if (t.error) html += fieldText(tx('\u9519\u8bef', 'Error'), t.error);
+
+      const moves = Array.isArray(t.moves || t.steps) ? (t.moves || t.steps) : [];
+      if (moves.length) {
+        html += `<div class="section-heading">Moves</div>`;
+        html += moves.map(m => `
+          <div class="sub-item">
+            <div class="item-main">
+              <div class="item-title">${esc(m.name || 'move')}</div>
+              <div class="item-sub">${m.t ?? 0}s</div>
+            </div>
+          </div>
+        `).join('');
+      }
+
+      const cs = t.cortex_summary || {};
+      if (cs.total_calls) {
+        html += `<div class="section-heading">Cortex Summary</div>`;
+        html += fieldText(tx('\u603b\u8c03\u7528', 'Total Calls'), String(cs.total_calls || 0));
+        html += fieldText('Input Tokens', (cs.total_in_tokens || 0).toLocaleString());
+        html += fieldText('Output Tokens', (cs.total_out_tokens || 0).toLocaleString());
+        const bp = cs.by_provider || {};
+        if (Object.keys(bp).length) {
+          html += `<div class="section-heading">By Provider</div>`;
+          html += Object.entries(bp).map(([p, v]) => `
+            <div class="sub-item">
+              <div class="item-main">
+                <div class="item-title">${esc(p)}</div>
+                <div class="item-sub">${v.calls || 0} ${tx('\u8c03\u7528', 'calls')} \u00b7 ${(v.in_tokens || 0).toLocaleString()} in \u00b7 ${(v.out_tokens || 0).toLocaleString()} out${v.errors ? ` \u00b7 ${v.errors} ${tx('\u9519\u8bef', 'errors')}` : ''}</div>
+              </div>
+            </div>
+          `).join('');
         }
       }
+      pushDetail(t.trail_id || trailId, html);
+    } catch (e) {
+      pushDetail(tx('\u9519\u8bef', 'Error'), `<div class="empty">${esc(e.message)}</div>`);
     }
-    lines.push('');
-    lines.push(tx('## 结果', '## Result'));
-    lines.push(JSON.stringify(t.result || {}, null, 2));
-    lines.push('');
-    lines.push(tx('## Cortex 汇总', '## Cortex Summary'));
-    const cs = t.cortex_summary || {};
-    lines.push(`total_calls: ${cs.total_calls || 0}`);
-    lines.push(`total_in_tokens: ${cs.total_in_tokens || 0}`);
-    lines.push(`total_out_tokens: ${cs.total_out_tokens || 0}`);
-    const bp = cs.by_provider || {};
-    const providers = Object.keys(bp);
-    if (!providers.length) {
-      lines.push(tx('- 无关联 cortex 调用', '- no cortex calls attributed'));
-    } else {
-      lines.push(tx('- 按 provider：', '- by_provider:'));
-      for (const p of providers) {
-        const row = bp[p] || {};
-        lines.push(`  - ${p}: calls=${row.calls||0}, in=${row.in_tokens||0}, out=${row.out_tokens||0}, errors=${row.errors||0}, avg_elapsed_s=${row.avg_elapsed_s||0}`);
-      }
-    }
-    const latest = Array.isArray(cs.latest_calls) ? cs.latest_calls : [];
-    if (latest.length) {
-      lines.push(tx('- 最近调用：', '- latest_calls:'));
-      for (const c of latest) {
-        lines.push(`  - [${c.timestamp||''}] ${c.provider||'unknown'} ${c.model||''} in=${c.in_tokens||0} out=${c.out_tokens||0} elapsed=${c.elapsed_s||0}s success=${c.success ? 'yes' : 'no'}`);
-        if (c.prompt_preview) lines.push(`    prompt: ${String(c.prompt_preview).slice(0, 180)}`);
-        if (c.output_preview) lines.push(`    output: ${String(c.output_preview).slice(0, 180)}`);
-        if (c.error) lines.push(`    error: ${String(c.error).slice(0, 180)}`);
-      }
-    }
-    target.textContent = lines.join('\n');
-  } catch (e) {
-    target.textContent = tx('加载 trail 详情失败：', 'Error loading trail detail: ') + e.message;
-}
-}
-
-function jumpToTrail(trailId) {
-  const resolved = decodeURIComponent(trailId || '');
-  if (!resolved) return;
-  const btn = Array.from(document.querySelectorAll('nav button')).find(b => (b.getAttribute('onclick') || '').includes("show('trails'"));
-  show('trails', btn || null);
-  viewTrail(resolved);
-}
-
-async function loadCortexUsage() {
-  const tbody = document.getElementById('cortex-usage-tbody');
-  const summary = document.getElementById('cortex-usage-summary');
-  const preset = document.getElementById('cortex-date-preset')?.value || 'last_24h';
-  const now = new Date();
-  const toIso = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
-  let since = '';
-  if (preset === 'last_1h') since = toIso(new Date(now.getTime() - 1 * 3600 * 1000));
-  else if (preset === 'last_6h') since = toIso(new Date(now.getTime() - 6 * 3600 * 1000));
-  else if (preset === 'last_24h') since = toIso(new Date(now.getTime() - 24 * 3600 * 1000));
-  else if (preset === 'last_7d') since = toIso(new Date(now.getTime() - 7 * 24 * 3600 * 1000));
-  const until = toIso(now);
-  const q = document.getElementById('cortex-q')?.value?.trim() || '';
-  const sizeSel = Number(document.getElementById('cortex-page-size')?.value || 20);
-  _listState('cortex', {size: sizeSel}).size = sizeSel;
-  let url = '/console/cortex/usage?limit=2000';
-  if (since) url += '&since=' + encodeURIComponent(since);
-  if (until) url += '&until=' + encodeURIComponent(until);
-  try {
-    const res = await api(url);
-    const rows = Array.isArray(res.records) ? res.records : [];
-    const filtered = _applyListQuery(rows, q, ['timestamp', 'trail_id', 'trace_id', 'provider', 'model', 'routine']);
-    const pageRows = _paginate(filtered, 'cortex', 'cortex-pager', 'loadCortexUsage');
-    tbody.innerHTML = pageRows.map(r => {
-      const rawTrail = String(r.trail_id || r.trace_id || '');
-      const trailLabel = esc(rawTrail);
-      const trailAction = rawTrail
-        ? `<button class="action" style="font-size:10px;padding:2px 6px;background:#334155" onclick="jumpToTrail('${encodeURIComponent(rawTrail)}')">${trailLabel}</button>`
-        : '<span style="color:var(--muted)">—</span>';
-      return `<tr>
-        <td style="color:var(--muted)">${fmtTime(r.timestamp)}</td>
-        <td>${trailAction}</td>
-        <td>${esc(r.provider||'')}</td>
-        <td style="color:var(--muted)">${esc(r.model||'')}</td>
-        <td>${Number(r.in_tokens||0).toLocaleString()}</td>
-        <td>${Number(r.out_tokens||0).toLocaleString()}</td>
-        <td>${Number(r.elapsed_s||0).toFixed(2)}s</td>
-        <td><span class="badge ${r.success ? 'ok' : 'error'}">${r.success ? tx('正常', 'ok') : tx('错误', 'error')}</span></td>
-      </tr>`;
-    }).join('') || `<tr><td colspan="8" style="color:var(--muted)">${tx('暂无用量记录', 'No usage records')}</td></tr>`;
-
-    const byProvider = {};
-    for (const r of filtered) {
-      const p = String(r.provider || 'unknown');
-      if (!byProvider[p]) byProvider[p] = {calls: 0, in_tokens: 0, out_tokens: 0, errors: 0, avg_elapsed_s: 0};
-      byProvider[p].calls += 1;
-      byProvider[p].in_tokens += Number(r.in_tokens || 0);
-      byProvider[p].out_tokens += Number(r.out_tokens || 0);
-      byProvider[p].avg_elapsed_s += Number(r.elapsed_s || 0);
-      if (!r.success) byProvider[p].errors += 1;
-    }
-    for (const p of Object.keys(byProvider)) {
-      const x = byProvider[p];
-      x.avg_elapsed_s = x.calls ? Number((x.avg_elapsed_s / x.calls).toFixed(3)) : 0;
-    }
-    if (summary) {
-      const providerRows = Object.entries(byProvider).sort((a, b) => b[1].calls - a[1].calls);
-      summary.innerHTML = `
-        <div class="model-table-shell">
-          <table>
-            <thead><tr><th>Provider</th><th>Calls</th><th>In</th><th>Out</th><th>Errors</th><th>Avg Elapsed</th></tr></thead>
-            <tbody>
-              ${providerRows.map(([provider, v]) => `
-                <tr>
-                  <td>${esc(provider)}</td>
-                  <td>${Number(v.calls || 0).toLocaleString()}</td>
-                  <td>${Number(v.in_tokens || 0).toLocaleString()}</td>
-                  <td>${Number(v.out_tokens || 0).toLocaleString()}</td>
-                  <td>${Number(v.errors || 0).toLocaleString()}</td>
-                  <td>${Number(v.avg_elapsed_s || 0).toFixed(3)}s</td>
-                </tr>
-              `).join('') || `<tr><td colspan="6" style="color:var(--muted)">${tx('暂无汇总数据', 'No summary data')}</td></tr>`}
-            </tbody>
-          </table>
-        </div>
-      `;
-    }
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
-    if (summary) summary.innerHTML = `<div class="model-empty">${tx('加载用量汇总失败：', 'Error loading usage summary: ')}${esc(e.message)}</div>`;
   }
-}
+});

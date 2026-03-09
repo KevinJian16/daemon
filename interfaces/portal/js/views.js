@@ -30,9 +30,6 @@ function showNewChat() {
   setTimeout(() => ta.focus(), 50);
 }
 
-// Legacy alias
-function showCompose() { showNewChat(); }
-
 function showDeedChat(deed, messages) {
   currentDeedId = deed.deed_id;
   currentDeedData = deed;

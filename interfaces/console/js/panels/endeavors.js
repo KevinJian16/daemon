@@ -1,115 +1,114 @@
-async function loadEndeavors() {
-  const tbody = document.getElementById('endeavors-tbody');
-  if (!tbody) return;
-  const q = document.getElementById('endeavor-q')?.value?.trim() || '';
-  const sizeSel = Number(document.getElementById('endeavor-page-size')?.value || 20);
-  _listState('endeavors', {size: sizeSel}).size = sizeSel;
-  try {
-    const rows = await api('/endeavors?limit=500');
-    const normalized = (rows || []).map((r) => ({
-      ...r,
-      endeavor_status: r.endeavor_status || '',
-      endeavor_phase: r.endeavor_phase || '',
-    }));
-    const filtered = _applyListQuery(normalized, q, ['endeavor_id', 'deed_id', 'endeavor_status', 'endeavor_phase', 'updated_utc']);
-    const pageRows = _paginate(filtered, 'endeavors', 'endeavors-pager', 'loadEndeavors');
-    tbody.innerHTML = pageRows.map(r => `
-      <tr>
-        <td style="color:var(--muted);font-size:11px">${esc(r.endeavor_id || '')}</td>
-        <td style="color:var(--muted);font-size:11px">${esc(r.deed_id || '')}</td>
-        <td><span class="badge ${r.endeavor_status==='completed' ? 'ok' : r.endeavor_status==='running' ? 'hybrid' : r.endeavor_status==='paused' ? 'degraded' : r.endeavor_status==='cancelled' ? 'error' : 'deterministic'}">${esc(r.endeavor_status || '')}</span></td>
-        <td>${esc(r.endeavor_phase || '')}</td>
-        <td>${Number(r.current_passage_index || 0)} / ${Number(r.total_passages || 0)}</td>
-        <td style="color:var(--muted)">${fmtTime(r.updated_utc)}</td>
-        <td>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#334155" onclick="viewEndeavor('${encodeURIComponent(r.endeavor_id || '')}')">${tx('查看', 'View')}</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#0f766e" onclick="confirmEndeavor('${encodeURIComponent(r.endeavor_id || '')}')">${tx('确认', 'Confirm')}</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#14532d" onclick="resumeEndeavor('${encodeURIComponent(r.endeavor_id || '')}')">${tx('恢复', 'Resume')}</button>
-          <button class="action" style="font-size:11px;padding:3px 8px;background:#7f1d1d" onclick="cancelEndeavor('${encodeURIComponent(r.endeavor_id || '')}')">${tx('取消', 'Cancel')}</button>
-        </td>
-      </tr>
-    `).join('') || `<tr><td colspan="7" style="color:var(--muted)">${tx('暂无 Endeavor', 'No endeavors')}</td></tr>`;
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--red)">${tx('错误：', 'Error: ')}${esc(e.message)}</td></tr>`;
-  }
-}
+registerPanel('endeavors', {
+  _data: [],
+  async load() {
+    this._data = await api('/endeavors?limit=500');
+  },
+  render() {
+    if (!this._data || !this._data.length) return `<div class="empty">No Endeavors</div>`;
+    return this._data.map(r => {
+      const st = r.endeavor_status || '';
+      const dotType = st === 'completed' ? 'green' : st === 'running' ? 'blue' : st === 'paused' ? 'amber' : st === 'cancelled' || st === 'failed' ? 'red' : 'muted';
+      return `
+        <div class="list-item" onclick="PANELS.endeavors.openDetail('${esc(r.endeavor_id || '')}')">
+          <div class="item-main">
+            <div class="item-title">${esc(r.endeavor_id || '')}</div>
+            <div class="item-sub">${esc(r.endeavor_phase || '')} \u00b7 ${Number(r.current_passage_index || 0)}/${Number(r.total_passages || 0)}</div>
+          </div>
+          ${statusDot(dotType)}
+        </div>
+      `;
+    }).join('');
+  },
+  async openDetail(endeavorId) {
+    pushDetail(tx('\u52a0\u8f7d\u4e2d\u2026', 'Loading\u2026'), '<div class="loading">\u2026</div>');
+    try {
+      const r = await api('/endeavors/' + encodeURIComponent(endeavorId));
+      const m = r.manifest || {};
+      const st = m.endeavor_status || '';
+      const ph = m.endeavor_phase || '';
+      let html = '';
+      html += fieldText('Endeavor ID', m.endeavor_id || endeavorId, { mono: true });
+      if (m.deed_id) html += fieldText('Deed ID', m.deed_id, { mono: true });
+      html += field(tx('\u72b6\u6001', 'Status'), tag(st, st === 'completed' ? 'ok' : st === 'running' ? 'info' : st === 'paused' ? 'warn' : 'error'));
+      html += fieldText('Phase', ph);
+      html += fieldText('Passage Progress', `${Number(m.current_passage_index || 0)} / ${Number(m.total_passages || 0)}`);
+      if (m.updated_utc) html += fieldText(tx('\u66f4\u65b0\u65f6\u95f4', 'Updated'), fmtTime(m.updated_utc));
 
-async function viewEndeavor(endeavorKey) {
-  const endeavorId = decodeURIComponent(endeavorKey || '');
-  if (!endeavorId) return;
-  const target = document.getElementById('endeavor-detail');
-  if (!target) return;
-  target.textContent = tx('加载 Endeavor 详情…', 'Loading endeavor detail…');
-  try {
-    const row = await api('/endeavors/' + encodeURIComponent(endeavorId));
-    target.textContent = JSON.stringify(row, null, 2);
-  } catch (e) {
-    target.textContent = tx('错误：', 'Error: ') + e.message;
-  }
-}
+      // Passages
+      const passages = m.passages || [];
+      if (passages.length) {
+        html += `<div class="section-heading">Passages</div>`;
+        html += passages.map((p, i) => {
+          const pst = p.status || (i < (m.current_passage_index || 0) ? 'done' : 'pending');
+          return `
+            <div class="sub-item">
+              <div class="item-main">
+                <div class="item-title">${esc(p.title || ('Passage ' + (i + 1)))}</div>
+                <div class="item-sub">${esc(pst)}</div>
+              </div>
+              ${statusDot(pst === 'done' || pst === 'passed' ? 'green' : pst === 'failed' ? 'red' : 'muted')}
+            </div>
+          `;
+        }).join('');
+      }
 
-async function resumeEndeavor(endeavorKey) {
-  const endeavorId = decodeURIComponent(endeavorKey || '');
-  if (!endeavorId) return;
-  let detail = null;
-  try {
-    detail = await api('/endeavors/' + encodeURIComponent(endeavorId));
-  } catch (e) {
-    alert(tx('加载 Endeavor 详情失败：', 'Load endeavor detail failed: ') + e.message);
-    return;
-  }
-  const manifest = detail?.manifest || {};
-  const phase = String(manifest.endeavor_phase || '');
-  const payload = {};
-  if (phase === 'phase0_waiting_confirmation') {
-    payload.confirmed = true;
-  }
-  if (phase === 'passage_waiting_feedback') {
-    const satisfied = confirm(tx(`Endeavor ${endeavorId} 段落反馈：点确定=满意，点取消=不满意`, `Endeavor ${endeavorId} passage feedback: click OK=satisfied, Cancel=unsatisfied`));
-    const comment = prompt(tx('反馈备注（可选）：', 'Feedback comment (optional):'), '') || '';
-    payload.feedback = {
-      satisfied,
-      rating: satisfied ? 5 : 2,
-      comment,
-      source: 'console',
-    };
-  }
-  const resumeFromRaw = prompt(tx(`从哪个 passage 序号恢复 ${endeavorId}（从 0 开始，留空=当前）：`, `Resume ${endeavorId} from passage index (0-based, empty = current):`), '');
-  if (resumeFromRaw !== null && String(resumeFromRaw).trim() !== '') {
-    const v = Number(resumeFromRaw);
-    if (!Number.isNaN(v)) payload.resume_from = Math.max(0, Math.floor(v));
-  }
-  try {
-    await apiWrite('/endeavors/' + encodeURIComponent(endeavorId) + '/resume', 'POST', payload);
-    await loadEndeavors();
-    await viewEndeavor(encodeURIComponent(endeavorId));
-  } catch (e) {
-    alert(tx('恢复 Endeavor 失败：', 'Resume endeavor failed: ') + e.message);
-  }
-}
+      const btns = [];
+      if (ph === 'phase0_waiting_confirmation') {
+        btns.push(btn(tx('\u786e\u8ba4\u5f00\u59cb', 'Confirm Start'), `_confirmEndeavor('${esc(endeavorId)}')`, 'success'));
+      }
+      if (st === 'paused' || (ph.includes('waiting') && ph !== 'passage_waiting_feedback')) {
+        btns.push(btn(tx('\u6062\u590d\u6267\u884c', 'Resume'), `_resumeEndeavor('${esc(endeavorId)}')`, 'primary'));
+      }
+      if (st === 'running' || st === 'paused') {
+        btns.push(btn(tx('\u53d6\u6d88', 'Cancel'), `_cancelEndeavor('${esc(endeavorId)}')`, 'danger'));
+      }
+      if (btns.length) html += actions(...btns);
 
-async function confirmEndeavor(endeavorKey) {
-  const endeavorId = decodeURIComponent(endeavorKey || '');
-  if (!endeavorId) return;
-  if (!confirm(tx(`确认 Endeavor ${endeavorId} 并开始执行吗？`, `Confirm endeavor ${endeavorId} and start execution?`))) return;
+      pushDetail(m.endeavor_id || endeavorId, html);
+    } catch (e) {
+      pushDetail(tx('\u9519\u8bef', 'Error'), `<div class="empty">${esc(e.message)}</div>`);
+    }
+  }
+});
+
+async function _confirmEndeavor(endeavorId) {
+  const ok = await confirmAction(
+    'Confirm Endeavor',
+    tx(`\u786e\u8ba4 ${endeavorId} \u5e76\u5f00\u59cb\u6267\u884c\uff1f`, `Confirm ${endeavorId} and start execution?`)
+  );
+  if (!ok) return;
   try {
     await apiWrite('/endeavors/' + encodeURIComponent(endeavorId) + '/confirm', 'POST', {});
-    await loadEndeavors();
-    await viewEndeavor(encodeURIComponent(endeavorId));
+    refreshPanel('endeavors');
   } catch (e) {
-    alert(tx('确认 Endeavor 失败：', 'Confirm endeavor failed: ') + e.message);
+    pushDetail(tx('\u9519\u8bef', 'Error'), `<div class="empty">${esc(e.message)}</div>`);
   }
 }
 
-async function cancelEndeavor(endeavorKey) {
-  const endeavorId = decodeURIComponent(endeavorKey || '');
-  if (!endeavorId) return;
-  if (!confirm(tx(`确认取消 Endeavor ${endeavorId} 吗？`, `Cancel endeavor ${endeavorId}?`))) return;
+async function _resumeEndeavor(endeavorId) {
+  const ok = await confirmAction(
+    'Resume Endeavor',
+    tx(`\u786e\u8ba4\u6062\u590d ${endeavorId}\uff1f`, `Resume ${endeavorId}?`)
+  );
+  if (!ok) return;
+  try {
+    await apiWrite('/endeavors/' + encodeURIComponent(endeavorId) + '/resume', 'POST', {});
+    refreshPanel('endeavors');
+  } catch (e) {
+    pushDetail(tx('\u9519\u8bef', 'Error'), `<div class="empty">${esc(e.message)}</div>`);
+  }
+}
+
+async function _cancelEndeavor(endeavorId) {
+  const ok = await confirmAction(
+    'Cancel Endeavor',
+    tx(`\u786e\u8ba4\u53d6\u6d88 ${endeavorId}\uff1f\u6b64\u64cd\u4f5c\u4e0d\u53ef\u9006\u3002`, `Cancel ${endeavorId}? This is irreversible.`)
+  );
+  if (!ok) return;
   try {
     await apiWrite('/endeavors/' + encodeURIComponent(endeavorId) + '/cancel', 'POST', {});
-    await loadEndeavors();
-    await viewEndeavor(encodeURIComponent(endeavorId));
+    refreshPanel('endeavors');
   } catch (e) {
-    alert(tx('取消 Endeavor 失败：', 'Cancel endeavor failed: ') + e.message);
+    pushDetail(tx('\u9519\u8bef', 'Error'), `<div class="empty">${esc(e.message)}</div>`);
   }
 }

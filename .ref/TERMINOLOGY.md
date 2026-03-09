@@ -428,6 +428,8 @@ curate, relay, witness, distill, pulse（作为 routine 名）
 
 Console 使用系统术语（第一部分），不做翻译。Console 是内部治理工具，不面向普通用户。
 
+Console 的维护者是"修车工"，使用系统术语但不一定理解其设计含义。术语是标识符，不是自解释的标签——呈现时需配合足够的上下文辅助理解（如状态含义、数量关系、操作后果）。详见 INTERACTION_DESIGN.md §0.4。
+
 ---
 
 ## 第四部分：改名实施影响

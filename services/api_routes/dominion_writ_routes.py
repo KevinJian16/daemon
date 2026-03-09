@@ -1,12 +1,10 @@
 """Dominion and Writ CRUD routes + /events/ingest endpoint."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
-
-router = APIRouter()
+from fastapi import HTTPException, Request
 
 
-def register_track_routes(app, dominion_writ_manager) -> None:
+def register_dominion_writ_routes(app, dominion_writ_manager) -> None:
     """Register Dominion/Writ API routes on the FastAPI app."""
 
     def _paths(prefix: str, suffix: str = "") -> list[str]:

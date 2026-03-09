@@ -50,7 +50,6 @@ async function renderNav() {
   try { awaitingDeeds = await api('/deeds?phase=awaiting_eval&limit=200'); } catch(e){ awaitingDeeds=[]; }
   try { historyDeeds = await api('/deeds?phase=history&limit=200'); } catch(e){ historyDeeds=[]; }
   deeds=[...runningDeeds,...awaitingDeeds,...historyDeeds];
-  try { offerings = await api('/offering?limit=200'); } catch(e){ offerings=[]; }
   const pending = awaitingDeeds || [];
   const running = runningDeeds || [];
 
@@ -158,26 +157,6 @@ async function openDeed(deed, navEl) {
   let messages = [];
   try {
     messages = await api('/deeds/' + encodeURIComponent(deed.deed_id) + '/messages?limit=500');
-  } catch (_) {}
-
-  showDeedChat(deed, messages);
-}
-
-async function openOffering(offering, navEl) {
-  clearActive();
-  if (navEl) navEl.classList.add('active');
-
-  const deed = {
-    deed_id: offering.deed_id,
-    deed_title: offering.title || offering.deed_id,
-    deed_status: 'completed',
-    deed_type: offering.deed_type || '',
-    created_utc: offering.delivered_utc || '',
-  };
-
-  let messages = [];
-  try {
-    messages = await api('/deeds/' + encodeURIComponent(offering.deed_id) + '/messages?limit=500');
   } catch (_) {}
 
   showDeedChat(deed, messages);
