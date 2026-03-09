@@ -794,11 +794,15 @@
 
 ### 12-P1 设计原则（用户确认）
 
-1. **Console 和 Portal 统一设计风格**
-2. **Console 禁止原始文件编辑**：不出现编辑 JSON/Markdown/文档文件的方式。用选项、按钮、下拉栏，简洁美观
-3. **原因**：Console 使用者（人类维护者）对系统内部不一定有很好的理解。随便改了出问题不会解决
-4. **双语**：Portal 和 Console 同步切换。系统术语不翻译（Deed, Writ, Dominion, Spine 等），其余部分翻译
-5. **术语词典**：Console 内置术语说明
+1. **Portal 和 Console 使用者不是同一个人，persona 不同**：Portal 使用者是 daemon 的主人（owner），通过自然语言表达意图；Console 使用者是系统维护者（maintainer），对系统内部不一定有很好的理解，职责是保障系统运转，不替主人做决策
+2. **隐私边界**：主人的私人内容对维护者不可见。Psyche（Memory/Lore/Instinct）、Dominion objective、Deed Brief/内容、Writ brief_template、Move 产出、Offering 内容均属主人隐私。Console 只展示运维所需的系统数据（健康/状态/资源/日志）。将主人的隐私交给维护者查看或修改是安全危险
+3. **Console 和 Portal 统一设计风格**
+4. **Console 禁止原始文件编辑**：不出现编辑 JSON/Markdown/文档文件的方式。用选项、按钮、下拉栏，简洁美观
+5. **原因**：维护者对系统内部不一定有很好的理解。随便改了出问题不会解决
+6. **Console 可操作范围**：Routine 开关/触发、系统生命周期、Ward 手动覆盖、Provider 模型分配/配额、Retinue size、Dominion/Writ 运维（暂停/恢复/删除）
+7. **Console 不可操作**：Dominion/Writ 创建和内容编辑、Psyche 任何查看或编辑、Instinct 偏好、Norm 质量配置、任务提交
+8. **双语**：Portal 和 Console 同步切换。系统术语不翻译（Deed, Writ, Dominion, Spine 等），其余部分翻译
+9. **术语词典**：Console 内置术语说明
 
 ### 12-P2 设计风格一致性
 

@@ -2,12 +2,19 @@
 async function boot(){
   bindConsoleLink();
   applyI18n();
-  showCompose();
+  showNewChat();
+
+  // Connect WebSocket for real-time updates
+  wsConnect();
+
   await Promise.all([checkWard(), renderNav()]);
+
   // Auto-open first pending if any
   const first=document.querySelector('#pending-list .nav-item');
   if(first) first.click();
-  setInterval(()=>{ checkWard(); renderNav(); }, 15000);
+
+  // Fallback polling (nav refresh every 30s, ward already via WS)
+  setInterval(renderNav, 30000);
 }
 document.addEventListener('DOMContentLoaded', boot);
 

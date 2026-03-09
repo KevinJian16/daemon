@@ -16,7 +16,7 @@
     <span id="ward-dot" title="Ward: GREEN"></span>
     <button class="icon-btn" id="lang-btn" onclick="toggleLang()">EN</button>
     <a class="icon-btn" href="/console/" id="console-link" onclick="try{const raw=localStorage.getItem('d_console_view_state');const panel=String((raw?JSON.parse(raw):{}).panel||'').trim();const allow=['overview','lexicon','spine','psyche','norm','trails','model','agents','skill-evolution','schedules','endeavors','system'];this.href=allow.includes(panel)?('/console/?panel='+encodeURIComponent(panel)):'/console/';}catch(_){this.href='/console/';}">Console</a>
-    <button class="icon-btn" id="compose-btn" onclick="showCompose()" title="新建委托">✏</button>
+    <button class="icon-btn" id="compose-btn" onclick="showNewChat()" title="新建对话">✏</button>
   </div>
 
   <nav id="sb-nav">
@@ -50,112 +50,99 @@
   </nav>
 </aside>
 
-<!-- ── Main ── -->
+<!-- ── Main: unified chat view ── -->
 <main id="main">
 
-  <!-- Compose view -->
-  <div id="view-compose" style="display:flex;flex-direction:column;flex:1;overflow:hidden;align-items:center">
-    <div id="compose-scroll" style="flex:1;overflow-y:auto;width:100%;display:flex;flex-direction:column;align-items:center">
-      <div id="compose-empty">
-        <div style="height:15vh"></div>
-        <div style="text-align:center;pointer-events:none">
-          <div style="font-size:24px;font-weight:600;letter-spacing:-.3px;margin-bottom:6px" data-i18n="composeTitle">需要做什么？</div>
-          <div style="font-size:14px;color:var(--muted);max-width:560px;line-height:1.6;margin:0 auto;text-wrap:balance" data-i18n="composeHint">描述你的目标。</div>
-        </div>
-      </div>
-      <div id="chat-history" style="width:100%;max-width:680px;padding:16px 20px 0;display:flex;flex-direction:column;gap:10px"></div>
-      <div id="plan-card" style="width:100%;max-width:680px;margin:8px 20px 0;border:1px solid var(--border);border-radius:var(--r);overflow:hidden;display:none">
-        <div id="plan-card-hdr" style="padding:8px 14px;background:var(--hover);border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--muted);display:flex;align-items:center;gap:6px">
-          <span>⚡</span><span data-i18n="planDetected">检测到运行计划</span>
-        </div>
-        <div style="padding:12px 14px">
-          <div id="plan-summary" style="font-size:13px;line-height:1.5"></div>
-          <div id="plan-scale" style="font-size:11px;color:var(--muted);margin-top:3px"></div>
-          <div style="display:flex;gap:8px;margin-top:10px">
-            <button class="btn btn-primary btn-sm" id="plan-ok-btn" onclick="submitPlan()" data-i18n="submitPlan">确认提交</button>
-            <button class="btn btn-ghost btn-sm" onclick="dismissPlan()" data-i18n="rewrite">重新描述</button>
-          </div>
-        </div>
+  <!-- Chat header (visible when viewing a deed) -->
+  <div id="chat-header" class="hidden">
+    <div id="ch-info">
+      <div id="ch-title"></div>
+      <div id="ch-meta">
+        <span id="ch-status" class="sbadge"></span>
+        <span id="ch-passage" class="ch-passage"></span>
+        <span id="ch-time" class="det-time"></span>
       </div>
     </div>
-
-    <!-- Input -->
-    <div style="width:100%;max-width:680px;padding:8px 20px 28px;flex-shrink:0">
-      <div id="compose-box">
-        <div id="compose-file-chips"></div>
-        <textarea id="compose-textarea" rows="1"
-          placeholder="描述你的目标…"
-          data-ph-zh="描述你的目标…" data-ph-en="Describe your objective…"
-          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();composeSend()}"
-          oninput="autoResize(this)"></textarea>
-        <div id="compose-actions">
-          <button id="compose-attach-btn" id="attach-btn" onclick="document.getElementById('compose-file-input').click()">📎</button>
-          <input type="file" id="compose-file-input" multiple onchange="onFilesSelected(this)">
-          <button id="compose-send-btn" class="btn btn-primary btn-sm" onclick="composeSend()" data-i18n="send">发送</button>
-        </div>
-      </div>
+    <div id="ch-controls">
+      <button class="btn btn-ghost btn-sm" id="btn-resume" onclick="deedResume()" style="display:none" data-i18n="resume">继续</button>
+      <button class="btn btn-ghost btn-sm" id="btn-pause" onclick="deedPause()" style="display:none" data-i18n="pause">暂停</button>
+      <button class="btn btn-ghost btn-sm" id="btn-redirect" onclick="deedRedirect()" style="display:none" data-i18n="redirect">调整方向</button>
+      <button class="btn btn-ghost btn-sm" id="btn-retry" onclick="deedRetry()" style="display:none" data-i18n="retry">重新执行</button>
+      <button class="btn btn-danger btn-sm" id="btn-cancel" onclick="deedCancel()" style="display:none" data-i18n="cancel">取消</button>
     </div>
   </div>
 
-  <!-- Detail view -->
-  <div id="view-detail" style="display:none;flex:1;flex-direction:column;overflow:hidden">
-    <div id="det-header">
-      <div id="det-title"></div>
-      <div id="det-meta">
-        <span id="det-status" class="sbadge"></span>
-        <span id="det-scale" class="scale-tag" style="display:none"></span>
-        <span id="det-time" class="det-time"></span>
+  <!-- Chat scroll area -->
+  <div id="chat-scroll">
+    <!-- Empty state (new conversation) -->
+    <div id="chat-empty">
+      <div style="height:15vh"></div>
+      <div style="text-align:center;pointer-events:none">
+        <div style="font-size:24px;font-weight:600;letter-spacing:-.3px;margin-bottom:6px" data-i18n="composeTitle">需要做什么？</div>
+        <div style="font-size:14px;color:var(--muted);max-width:560px;line-height:1.6;margin:0 auto;text-wrap:balance" data-i18n="composeHint">描述你的目标。</div>
       </div>
     </div>
-    <div id="det-controls" class="hidden">
-      <button class="btn btn-ghost btn-sm" id="btn-resume" onclick="runResume()" style="display:none" data-i18n="resume">继续</button>
-      <button class="btn btn-ghost btn-sm" id="btn-pause" onclick="runPause()" style="display:none" data-i18n="pause">暂停</button>
-      <button class="btn btn-ghost btn-sm" id="btn-redirect" onclick="runRedirect()" style="display:none" data-i18n="redirect">调整方向</button>
-      <button class="btn btn-danger btn-sm" id="btn-cancel" onclick="runCancel()" style="display:none" data-i18n="cancel">取消</button>
-    </div>
-    <div id="det-body">
-      <div id="ms-timeline" style="display:none">
-        <h3 data-i18n="passages">Passage 进度</h3>
-        <div id="ms-list"></div>
-      </div>
-      <div id="prog-wrap" style="display:none">
-        <div class="prog-track"><div class="prog-fill" id="prog-fill" style="width:0%"></div></div>
-        <div style="font-size:11px;color:var(--muted);margin-top:3px" id="prog-label"></div>
-      </div>
-      <div id="output-body"></div>
-      <div id="rating-wrap" style="display:none">
-        <h3 data-i18n="rateTitle">这个结果怎么样？</h3>
-        <div id="rating-existing"></div>
-        <div id="q-choices">
-          <button class="q-choice" data-v="5" data-zh="超出预期" data-en="Exceeded expectations" onclick="pickChoice(this)">超出预期</button>
-          <button class="q-choice" data-v="4" data-zh="满足需求" data-en="Met needs" onclick="pickChoice(this)">满足需求</button>
-          <button class="q-choice" data-v="2" data-zh="偏浅了" data-en="Too shallow" onclick="pickChoice(this)">偏浅了</button>
-          <button class="q-choice" data-v="1" data-zh="不满意" data-en="Not satisfied" onclick="pickChoice(this)">不满意</button>
+
+    <!-- Messages area -->
+    <div id="chat-messages"></div>
+
+    <!-- Plan card (dynamic content generated by showPlanCard / showDeedPlan) -->
+    <div id="plan-card"></div>
+
+    <!-- Inline feedback (shown for awaiting_eval deeds) -->
+    <div id="fb-inline" class="hidden">
+      <div class="cmsg assistant">
+        <div id="fb-ask" data-i18n="fbAsk">做好了，想听听你的想法。</div>
+        <div id="fb-choices" class="fb-choices">
+          <button class="fb-choice" data-v="satisfactory" onclick="pickFeedback(this)" data-i18n="fbSatisfactory">符合预期，质量满意</button>
+          <button class="fb-choice" data-v="acceptable" onclick="pickFeedback(this)" data-i18n="fbAcceptable">基本达标，尚可接受</button>
+          <button class="fb-choice" data-v="unsatisfactory" onclick="pickFeedback(this)" data-i18n="fbUnsatisfactory">未达预期，存在明显问题</button>
+          <button class="fb-choice" data-v="wrong" onclick="pickFeedback(this)" data-i18n="fbWrong">方向偏离，需要重新审视</button>
         </div>
-        <div id="rating-row">
-          <button class="btn btn-primary btn-sm" id="rating-ok-btn" onclick="submitRating()" disabled data-i18n="submitRating">提交评价</button>
-          <button id="rating-deep-btn" onclick="toggleDeep()" data-i18n="deepFeedback">详细评价</button>
-          <span id="rating-status"></span>
-        </div>
-        <div id="deep-wrap">
-          <textarea id="deep-note"
-            data-ph-zh="写一段详细评价：哪里做得好、哪里需要改进…"
-            data-ph-en="Write detailed feedback: what worked, what needs improvement…"
-            placeholder="写一段详细评价：哪里做得好、哪里需要改进…"
-            oninput="refreshRatingSubmitEnabled()"></textarea>
-        </div>
-        <div id="append-wrap">
-          <h4 data-i18n="appendTitle">追加评价</h4>
-          <div id="rating-history"></div>
-          <textarea id="append-note"
-            data-ph-zh="补充一段后续评价（例如新发现、修正建议、长期效果）…"
-            data-ph-en="Add follow-up feedback (new findings, correction suggestions, long-term effects)…"
-            placeholder="补充一段后续评价…"></textarea>
-          <div id="append-row">
-            <button class="btn btn-ghost btn-sm" id="append-ok-btn" onclick="submitAppend()" data-i18n="appendSubmit">追加评价</button>
-            <span id="append-status"></span>
+        <!-- Issue multiselect (shown for unsatisfactory/wrong) -->
+        <div id="fb-issues" class="hidden">
+          <div class="fb-issues-list">
+            <label><input type="checkbox" value="missing_info" onchange="refreshFbSubmit()"><span data-i18n="fbIssueMissing">关键信息缺失</span></label>
+            <label><input type="checkbox" value="depth_insufficient" onchange="refreshFbSubmit()"><span data-i18n="fbIssueDepth">分析深度不足</span></label>
+            <label><input type="checkbox" value="factual_error" onchange="refreshFbSubmit()"><span data-i18n="fbIssueFactual">存在事实性错误</span></label>
+            <label><input type="checkbox" value="format_issue" onchange="refreshFbSubmit()"><span data-i18n="fbIssueFormat">格式或排版不当</span></label>
+            <label><input type="checkbox" value="wrong_direction" onchange="refreshFbSubmit()"><span data-i18n="fbIssueDirection">偏离了原始需求方向</span></label>
           </div>
         </div>
+        <!-- Follow-up comment -->
+        <div id="fb-comment-wrap" class="hidden">
+          <div class="fb-followup" data-i18n="fbFollowUp">还有什么想说的吗？</div>
+          <textarea id="fb-comment"
+            data-ph-zh="写一段评价…" data-ph-en="Write a comment…"
+            placeholder="写一段评价…"
+            oninput="refreshFbSubmit()"></textarea>
+        </div>
+        <div id="fb-actions" class="hidden">
+          <button class="btn btn-primary btn-sm" id="fb-submit-btn" onclick="submitFeedbackFollowUp()" data-i18n="submitRating">提交评价</button>
+          <span id="fb-status"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Offering preview card (shown for completed deeds) -->
+    <div id="offering-card" class="hidden">
+      <div id="offering-body"></div>
+    </div>
+  </div>
+
+  <!-- Input area -->
+  <div id="chat-input-wrap">
+    <div id="compose-box">
+      <div id="compose-file-chips"></div>
+      <textarea id="compose-textarea" rows="1"
+        placeholder="描述你的目标…"
+        data-ph-zh="描述你的目标…" data-ph-en="Describe your objective…"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();chatSend()}"
+        oninput="autoResize(this)"></textarea>
+      <div id="compose-actions">
+        <button id="compose-attach-btn" onclick="document.getElementById('compose-file-input').click()" title="添加附件">📎</button>
+        <input type="file" id="compose-file-input" multiple onchange="onFilesSelected(this)">
+        <button id="compose-send-btn" class="btn btn-primary btn-sm" onclick="chatSend()" data-i18n="send">发送</button>
       </div>
     </div>
   </div>
@@ -165,6 +152,7 @@
 
 <script src="./js/i18n.js"></script>
 <script src="./js/api.js"></script>
+<script src="./js/ws.js"></script>
 <script src="./js/views.js"></script>
 <script src="./js/sync.js"></script>
 <script src="./js/run_list.js"></script>

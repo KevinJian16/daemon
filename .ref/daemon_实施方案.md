@@ -848,26 +848,38 @@ POST /events/ingest
 
 ### 12.1 功能（Q10.1）
 
+**Portal 和 Console 使用者不是同一个人，persona 不同。** Portal 使用者是 daemon 的主人（owner），通过自然语言表达意图和目标；Console 使用者是系统维护者（maintainer），对系统内部不一定有很好的理解，职责是保障系统运转，不替主人做决策。不需要权限控制。同一 FastAPI 实例，/console/* 和 /portal/* 路由隔离。
+
+**隐私边界：** 主人的私人内容对维护者不可见。Psyche（Memory/Lore/Instinct）、Dominion objective、Deed Brief/内容、Writ brief_template、Move 产出、Offering 内容均属主人隐私，Console 不得展示。
+
+Console 编辑功能限于：开关类、滑块类、按钮类。不做复杂文本编辑（Q2.9）。禁止原始文件编辑（JSON/Markdown/文档），所有配置编辑使用结构化控件。
+
+**可观测（运维数据）：**
+
 | 功能 | 类型 |
 |------|------|
-| Psyche Memory 查看/删除 | 观测+操作 |
-| Psyche Lore 查看/标记 stale | 观测+操作 |
-| Psyche Instinct 偏好查看/编辑 | 观测+操作 |
-| Routine 开关/阈值/手动触发 | 操作 |
+| Dashboard 概览（健康/uptime/组件连通性） | 观测 |
+| Routine 状态 | 观测 |
+| Deed 运行状态（数量/状态分布，不含任务内容） | 观测 |
+| Retinue 占用率 | 观测 |
+| Provider 调用统计 | 观测 |
+| Ward 状态 | 观测 |
+| 系统日志（运维指标） | 观测 |
+| Dominion/Writ 运行状态（不含 objective/brief_template） | 观测 |
+
+**可操作（运维控制）：**
+
+| 功能 | 类型 |
+|------|------|
+| Routine 开关/手动触发 | 操作 |
 | 系统生命周期 pause/restart/reset/shutdown | 操作 |
-| 排障日志查看 | 观测 |
-| Gate 状态查看/手动覆盖 | 观测+操作 |
-| complexity 默认值表调整 | 操作 |
-| Pool size N 调整 | 操作 |
-| Provider 配额查看/限额调整 | 观测+操作 |
-| agent_model_map 调整 | 操作 |
-| cancelled/failed Deed 历史 | 观测 |
-| 系统日志查看 | 观测 |
-| Dashboard 概览 | 观测 |
+| Ward 手动覆盖 | 操作 |
+| Provider 模型分配（agent_model_map） | 操作 |
+| Provider 配额调整 | 操作 |
+| Retinue size N 调整 | 操作 |
+| Dominion/Writ 运维（暂停/恢复/删除） | 操作 |
 
-Console 用户只有系统管理员。不需要权限控制。同一 FastAPI 实例，/console/* 和 /portal/* 路由隔离。
-
-Console 编辑功能限于：开关类、滑块类、按钮类。不做复杂文本编辑（Q2.9）。
+**不可观测/不可操作（主人隐私 + 主人决策）：** Psyche 查看或编辑、Dominion/Writ 创建或内容编辑、Instinct 偏好、Norm 质量配置、complexity 默认值表、Deed/Offering 内容、任务提交。
 
 ### 12.2 Dashboard（Q10.2）
 
@@ -879,10 +891,9 @@ Console 编辑功能限于：开关类、滑块类、按钮类。不做复杂文
 
 ### 12.3 编辑能力（Q10.3）
 
-**生效方式分三类**：
-- 立即生效：routine 开关、阈值、gate、ration
-- 下次 Deed 生效：model_map、Instinct、quality
-- 需要 restart：pool size N（显示警告）
+**生效方式分两类**：
+- 立即生效：routine 开关、Ward 覆盖、Provider 配额
+- 需要 restart：Retinue size N、Provider 模型分配（显示警告）
 
 审计：每次编辑写入 console_audit.jsonl。tend 清理 90 天前记录。
 
@@ -999,10 +1010,10 @@ state/
 | `/console/config/{key}` | GET/PUT | 可调参数编辑 |
 | `/console/logs/{type}` | GET | 日志查看 |
 | `/console/retinue` | GET | Retinue 实例状态 |
-| `/console/dominions` | GET/POST | Dominion CRUD（运维接口） |
-| `/console/dominions/{id}` | GET/PUT/DELETE | Dominion 操作 |
-| `/console/writs` | GET/POST | Writ CRUD（运维接口） |
-| `/console/writs/{id}` | GET/PUT/DELETE | Writ 操作 |
+| `/console/dominions` | GET | Dominion 列表（只读） |
+| `/console/dominions/{id}` | GET/PUT/DELETE | Dominion 观测与运维控制（暂停/恢复/删除，不可创建或编辑内容） |
+| `/console/writs` | GET | Writ 列表（只读） |
+| `/console/writs/{id}` | GET/PUT/DELETE | Writ 运维控制（启用/停用/删除，不可创建或编辑内容） |
 | `/system/{action}` | POST | 生命周期操作 |
 
 ### 14.3 事件注入

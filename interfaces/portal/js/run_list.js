@@ -1,6 +1,5 @@
 // ── Nav data ──────────────────────────────────────────────
 let deeds=[], offerings=[];
-let curDeedId=null;
 
 function dotCls(s){
   const v = String(s || '').toLowerCase();
@@ -23,9 +22,9 @@ function parseUtcMs(input){
 }
 function relTime(u){
   const ms = parseUtcMs(u);
-  if (!Number.isFinite(ms)) return '—';
+  if (!Number.isFinite(ms)) return '\u2014';
   let diff=(Date.now()-ms)/1000;
-  if (!Number.isFinite(diff)) return '—';
+  if (!Number.isFinite(diff)) return '\u2014';
   if (diff < 0) diff = 0;
   if(diff<60) return '<1m';
   if(diff<3600) return Math.floor(diff/60)+'m';
@@ -36,7 +35,8 @@ function relTime(u){
 function makeItem(deed_id, title, scale, deedStatus, time, onClick) {
   const el = document.createElement('div');
   el.className = 'nav-item'; el.dataset.id = deed_id;
-  el.innerHTML = `<span class="n-dot ${dotCls(deedStatus)}"></span>
+  const isRunning = ['running','queued'].includes(String(deedStatus||'').toLowerCase());
+  el.innerHTML = `<span class="n-dot ${dotCls(deedStatus)}${isRunning?' breathing':''}"></span>
     <span class="n-title">${esc(title||deed_id)}</span>
     ${scale?`<span class="n-scale">${esc(scale)}</span>`:''}
     <span class="n-time">${esc(relTime(time))}</span>`;
@@ -53,7 +53,6 @@ async function renderNav() {
   try { offerings = await api('/offering?limit=200'); } catch(e){ offerings=[]; }
   const pending = awaitingDeeds || [];
   const running = runningDeeds || [];
-  const histOut = offerings || [];
 
   // Pending
   const pb = document.getElementById('pending-badge');
@@ -85,129 +84,195 @@ async function renderNav() {
     rl.innerHTML=`<div class="nav-empty">${t('none')}</div>`;
   }
 
-  // History
-  histAllOfferings=histOut;
-  renderHistoryGrouped(histOut);
-  // Update search placeholder for current lang
+  // History: §2.1 auto-clustering by Dominion (group_label)
+  _renderHistoryClustered(historyDeeds);
   const hs=document.getElementById('history-search');
   if(hs) hs.placeholder=lang==='zh'?hs.dataset.phZh:hs.dataset.phEn;
-
 }
 
-// ── Open deed ─────────────────────────────────────────────
-async function openDeed(deed, navEl) {
-  clearActive(); if(navEl) navEl.classList.add('active');
-  curDeedId=deed.deed_id;
-  const deedStatus = deed.deed_status || '';
-  const workScale = deed.work_scale || (deed.plan && deed.plan.work_scale) || '';
-  const endeavorId = deed.endeavor_id || (deed.plan && deed.plan.endeavor_id) || deed.deed_id;
-  document.getElementById('det-title').textContent = deed.deed_title||deed.title||deed.deed_type||deed.deed_id;
-  setBadge(deedStatus);
-  const sc=document.getElementById('det-scale');
-  if(workScale){sc.textContent=workScale;sc.style.display='';}else sc.style.display='none';
-  document.getElementById('det-time').textContent = relTime(deed.created_utc);
-
-  const deedStatusLower = String(deedStatus || '').toLowerCase();
-  const isRunning=['running','queued','cancelling'].includes(deedStatusLower);
-  const isPaused = deedStatusLower === 'paused';
-  const ctrl=document.getElementById('det-controls');
-  if(isRunning || isPaused){
-    ctrl.classList.remove('hidden');
-    const isEndeavor = String(workScale || '').toLowerCase() === 'endeavor';
-    document.getElementById('btn-resume').style.display = isPaused && !isEndeavor ? '' : 'none';
-    document.getElementById('btn-pause').style.display = isRunning && !isEndeavor ? '' : 'none';
-    document.getElementById('btn-redirect').style.display = isRunning && !isEndeavor ? '' : 'none';
-    document.getElementById('btn-cancel').style.display = '';
-  } else ctrl.classList.add('hidden');
-
-  const pw=document.getElementById('prog-wrap');
-  if(isRunning){
-    pw.style.display='block';
-    const pct=deed.progress_pct||(deed.move_index&&deed.total_moves?Math.round(deed.move_index/deed.total_moves*100):0);
-    document.getElementById('prog-fill').style.width=pct+'%';
-    document.getElementById('prog-label').textContent=deed.current_move||'';
-  } else if (isPaused) {
-    pw.style.display='block';
-    document.getElementById('prog-fill').style.width='100%';
-    document.getElementById('prog-label').textContent=lang==='zh'?'已暂停':'Paused';
-  } else pw.style.display='none';
-
-  document.getElementById('output-body').innerHTML='<p style="color:var(--muted);font-size:13px">Loading…</p>';
-  document.getElementById('ms-timeline').style.display='none';
-  document.getElementById('rating-wrap').style.display='none';
-  showDetail();
-
-  if(workScale==='endeavor'){
-    try{ const c=await api('/endeavors/'+encodeURIComponent(endeavorId)); renderEndeavor(c); }catch(e){ document.getElementById('output-body').innerHTML=''; }
+// §2.1: "daemon 自动将相关 Deed 归组，用自然语言标签呈现"
+let _historyDeeds = [];
+function _renderHistoryClustered(items) {
+  _historyDeeds = items || [];
+  const container = document.getElementById('history-groups');
+  container.innerHTML = '';
+  if (!_historyDeeds.length) {
+    container.innerHTML = `<div class="nav-empty" style="padding:6px 14px">${t('none')}</div>`;
     return;
   }
-  const match=offerings.find(o=>o.deed_id===deed.deed_id);
-  if(match) await renderOfferingContent(match);
-  else if(isRunning || isPaused) document.getElementById('output-body').innerHTML=`<p style="color:var(--muted);font-size:13px">${esc(deed.current_move|| (isPaused ? (lang==='zh'?'已暂停':'Paused') : 'Deed is active…'))}</p>`;
-  else document.getElementById('output-body').innerHTML=`<p style="color:var(--muted);font-size:13px">No output yet.</p>`;
+
+  // Group by group_label; "Independent" or empty = ungrouped
+  const groups = {};
+  const independent = [];
+  _historyDeeds.forEach(d => {
+    const label = (d.group_label || '').trim();
+    if (!label || label === 'Independent') {
+      independent.push(d);
+    } else {
+      if (!groups[label]) groups[label] = [];
+      groups[label].push(d);
+    }
+  });
+
+  // Render grouped items first (collapsible)
+  Object.keys(groups).forEach(label => {
+    const items = groups[label];
+    const grp = document.createElement('div');
+    grp.className = 'dominion-group';
+    const key = 'd_dg_' + label;
+    const collapsed = localStorage.getItem(key) === '1';
+    if (collapsed) grp.classList.add('collapsed');
+
+    const hdr = document.createElement('div');
+    hdr.className = 'dominion-group-label';
+    hdr.innerHTML = `<span class="dg-chevron">\u25BE</span><span class="dg-title">${esc(label)}</span><span class="dg-count">${items.length}</span>`;
+    hdr.onclick = () => {
+      const c = grp.classList.toggle('collapsed');
+      localStorage.setItem(key, c ? '1' : '0');
+    };
+    grp.appendChild(hdr);
+
+    const body = document.createElement('div');
+    body.className = 'dominion-group-body';
+    items.forEach(d => {
+      const el = makeItem(d.deed_id, d.deed_title || d.title || d.deed_id, '', _deedStatus(d) || 'completed', d.updated_utc || d.created_utc, () => openDeed(d, el));
+      body.appendChild(el);
+    });
+    grp.appendChild(body);
+    container.appendChild(grp);
+  });
+
+  // Render independent items flat
+  independent.forEach(d => {
+    const el = makeItem(d.deed_id, d.deed_title || d.title || d.deed_id, '', _deedStatus(d) || 'completed', d.updated_utc || d.created_utc, () => openDeed(d, el));
+    container.appendChild(el);
+  });
+}
+
+// ── Open deed → chat view ────────────────────────────────
+async function openDeed(deed, navEl) {
+  clearActive();
+  if (navEl) navEl.classList.add('active');
+
+  // Load messages from backend
+  let messages = [];
+  try {
+    messages = await api('/deeds/' + encodeURIComponent(deed.deed_id) + '/messages?limit=500');
+  } catch (_) {}
+
+  showDeedChat(deed, messages);
 }
 
 async function openOffering(offering, navEl) {
-  clearActive(); if(navEl) navEl.classList.add('active');
-  curDeedId=offering.deed_id;
-  document.getElementById('det-title').textContent=offering.title||offering.deed_id;
-  setBadge('completed');
-  const sc=document.getElementById('det-scale');
-  if(offering.deed_type){sc.textContent=offering.deed_type;sc.style.display='';}else sc.style.display='none';
-  document.getElementById('det-time').textContent=relTime(offering.delivered_utc);
-  document.getElementById('det-controls').classList.add('hidden');
-  document.getElementById('prog-wrap').style.display='none';
-  document.getElementById('ms-timeline').style.display='none';
-  showDetail();
-  await renderOfferingContent(offering);
-}
+  clearActive();
+  if (navEl) navEl.classList.add('active');
 
-async function renderOfferingContent(offering) {
-  const body=document.getElementById('output-body');
-  body.innerHTML='<p style="color:var(--muted);font-size:13px">Loading…</p>';
-  const path=(offering.path||'').replace(/^\/|\/+$/g,'');
+  const deed = {
+    deed_id: offering.deed_id,
+    deed_title: offering.title || offering.deed_id,
+    deed_status: 'completed',
+    deed_type: offering.deed_type || '',
+    created_utc: offering.delivered_utc || '',
+  };
+
+  let messages = [];
   try {
-    const hr=await fetch(API+'/offering/'+path+'/report.html');
-    if(hr.ok){
-      body.innerHTML='';
-      const fr=document.createElement('iframe');
-      fr.style.cssText='width:100%;min-height:480px;border:1px solid var(--border);border-radius:var(--r);display:block;background:white';
-      fr.srcdoc=await hr.text();
-      body.appendChild(fr);
-      await showRating(offering.deed_id); return;
-    }
-    const mr=await fetch(API+'/offering/'+path+'/report.md');
-    if(mr.ok){ body.innerHTML=md(await mr.text()); await showRating(offering.deed_id); return; }
-    body.innerHTML='<p style="color:var(--muted)">No preview available.</p>';
-  } catch(e){ body.innerHTML=`<p style="color:var(--red)">Error: ${esc(e.message)}</p>`; }
+    messages = await api('/deeds/' + encodeURIComponent(offering.deed_id) + '/messages?limit=500');
+  } catch (_) {}
+
+  showDeedChat(deed, messages);
 }
 
-function renderEndeavor(c) {
-  const data = (c && c.manifest) ? c.manifest : (c || {});
-  const ps=data.passages||[];
-  if(ps.length){
-    const tl=document.getElementById('ms-timeline');
-    const ml=document.getElementById('ms-list');
-    ml.innerHTML='';
-    ps.forEach((p,i)=>{
-      const passageStatus = p.passage_status || '';
-      const cls=
-        passageStatus==='passed' || passageStatus==='skipped' ? 'done' :
-        passageStatus==='running' ? 'active' :
-        passageStatus==='failed' ? 'needs-review' : '';
-      const row=document.createElement('div'); row.className='ms-row';
-      row.innerHTML=`<div class="ms-num ${cls}">${i+1}</div>
-        <div><div class="ms-name">${esc(p.title||p.name||('Passage '+(i+1)))}</div>
-        <div class="ms-sub">${esc(passageStatus)}${p.completed_utc?' · '+relTime(p.completed_utc):''}</div></div>`;
-      ml.appendChild(row);
-    });
-    tl.style.display='block';
+// ── WebSocket event handlers ─────────────────────────────
+
+function onWsDeedMessage(p) {
+  const deedId = p.deed_id || '';
+  if (!deedId || deedId !== currentDeedId) return;
+  addChatMsg(p.role || 'assistant', p.content || '', p.event || '');
+}
+
+function onWsDeedCompleted(p) {
+  const deedId = String(p.deed_id || '').trim();
+  if (!deedId || deedId !== currentDeedId || !currentDeedData) return;
+  currentDeedData.deed_status = 'awaiting_eval';
+  _setChatBadge('awaiting_eval');
+  document.getElementById('btn-pause').style.display = 'none';
+  document.getElementById('btn-redirect').style.display = 'none';
+  document.getElementById('btn-cancel').style.display = 'none';
+  document.getElementById('ch-controls').style.display = 'none';
+  // T5: compact plan component
+  const planLive = document.getElementById('deed-plan-live');
+  if (planLive) planLive.classList.add('compacting');
+  _loadOfferingPreview(currentDeedData);
+  showFeedbackInline(deedId);
+}
+
+function onWsDeedFailed(p) {
+  const deedId = String(p.deed_id || '').trim();
+  if (!deedId || deedId !== currentDeedId || !currentDeedData) return;
+  currentDeedData.deed_status = 'failed';
+  _setChatBadge('failed');
+  document.getElementById('btn-pause').style.display = 'none';
+  document.getElementById('btn-redirect').style.display = 'none';
+  document.getElementById('btn-cancel').style.display = 'none';
+  document.getElementById('btn-retry').style.display = '';
+  document.getElementById('ch-controls').style.display = '';
+}
+
+function onWsDeedProgress(p) {
+  // Update plan component step states in-place (T4)
+  const deedId = String(p.deed_id || '').trim();
+  if (!deedId || deedId !== currentDeedId) return;
+  const moveId = p.move_id || '';
+  const moveStatus = p.status || '';
+  if (!moveId) return;
+  // Find step by data-step-id and update state
+  const step = document.querySelector('.plan-step[data-step-id="' + CSS.escape(moveId) + '"]');
+  if (step) {
+    step.classList.remove('pending', 'active', 'done');
+    if (moveStatus === 'completed' || moveStatus === 'done') step.classList.add('done');
+    else if (moveStatus === 'running') step.classList.add('active');
+    else step.classList.add('pending');
   }
-  document.getElementById('output-body').innerHTML=data.summary?md(data.summary):`<pre>${esc(JSON.stringify(data,null,2))}</pre>`;
+  // Update progress bar
+  const allSteps = document.querySelectorAll('.plan-step');
+  const doneSteps = document.querySelectorAll('.plan-step.done');
+  const fill = document.querySelector('.plan-pbar-fill');
+  if (fill && allSteps.length) {
+    fill.style.width = Math.round(doneSteps.length / allSteps.length * 100) + '%';
+  }
 }
 
-function setBadge(s) {
-  const b=document.getElementById('det-status');
-  b.textContent=sLabel(s);
-  b.className='sbadge s-'+s;
+function onWsPassageCompleted(p) {
+  // Update passage states in plan component
+  const deedId = String(p.deed_id || '').trim();
+  if (!deedId || deedId !== currentDeedId) return;
+  const pidx = p.passage_index;
+  if (pidx == null) return;
+  // Mark passage as done, next as current
+  const segs = document.querySelectorAll('.passage-seg');
+  const items = document.querySelectorAll('.passage-item');
+  segs.forEach((seg, i) => {
+    seg.classList.remove('pending', 'current', 'done');
+    if (i <= pidx) seg.classList.add('done');
+    else if (i === pidx + 1) seg.classList.add('current');
+    else seg.classList.add('pending');
+  });
+  items.forEach((item, i) => {
+    item.classList.remove('pending', 'current', 'done');
+    if (i <= pidx) item.classList.add('done');
+    else if (i === pidx + 1) item.classList.add('current');
+    else item.classList.add('pending');
+  });
+  // Update header passage progress
+  const pel = document.getElementById('ch-passage');
+  if (pel) {
+    pel.textContent = (pidx + 2) + '/' + segs.length;
+  }
+}
+
+function onWsEvalExpiring(p) {
+  const deedId = String(p.deed_id || '').trim();
+  if (!deedId || deedId !== currentDeedId) return;
+  addChatMsg('system', t('fbFollowUp'), 'eval_expiring');
 }
