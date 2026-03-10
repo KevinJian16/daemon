@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -81,7 +82,10 @@ class VoiceService:
             return {"ok": False, "error": "OpenClaw not configured"}
 
         gw_port = self._oc_cfg.get("gateway", {}).get("port", 18790)
-        gw_token = self._oc_cfg.get("gateway", {}).get("auth", {}).get("token", "")
+        gw_token = os.environ.get(
+            "OPENCLAW_GATEWAY_TOKEN",
+            self._oc_cfg.get("gateway", {}).get("auth", {}).get("token", ""),
+        )
         gw_url = f"http://127.0.0.1:{gw_port}"
         headers = {"Authorization": f"Bearer {gw_token}", "Content-Type": "application/json"}
         oc_session_key = f"agent:counsel:voice:{session_id}"

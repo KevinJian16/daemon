@@ -185,10 +185,11 @@ class SpineRoutines:
             if not cfg:
                 return "config_missing"
             port = cfg.get("gateway", {}).get("port", 18789)
-            token = cfg.get("gateway", {}).get("auth", {}).get("token", "")
-            if not token:
-                import os
-                token = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
+            import os
+            token = os.environ.get(
+                "OPENCLAW_GATEWAY_TOKEN",
+                cfg.get("gateway", {}).get("auth", {}).get("token", ""),
+            )
             headers = {"Authorization": f"Bearer {token}"} if token else {}
             resp = httpx.get(f"http://127.0.0.1:{port}/health", headers=headers, timeout=5)
             if resp.status_code < 300:

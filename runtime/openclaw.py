@@ -65,6 +65,14 @@ class OpenClawAdapter:
         except Exception as e:
             return f"error: {str(e)[:80]}"
 
+    @staticmethod
+    def _base_role(agent_id: str) -> str:
+        """Map pool instance ID (e.g. 'scout_3') back to base role ('scout')."""
+        parts = agent_id.rsplit("_", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            return parts[0]
+        return agent_id
+
     def send(self, session_key: str, message: str, agent_id: str | None = None) -> dict:
         """Spawn an isolated subagent execution for this move."""
         args: dict[str, Any] = {
@@ -74,7 +82,7 @@ class OpenClawAdapter:
             "cleanup": "keep",
         }
         if agent_id:
-            args["agentId"] = agent_id
+            args["agentId"] = self._base_role(agent_id)
         result = self._invoke("sessions_spawn", args)
         details = self._extract_details(result)
         self._raise_on_status("sessions_spawn", details)
@@ -86,7 +94,7 @@ class OpenClawAdapter:
             # Fallback for older gateways that do not return childSessionKey.
             send_args: dict[str, Any] = {"sessionKey": session_key, "message": message}
             if agent_id:
-                send_args["agentId"] = agent_id
+                send_args["agentId"] = self._base_role(agent_id)
             result = self._invoke("sessions_send", send_args)
             details = self._extract_details(result)
             self._raise_on_status("sessions_send", details)
