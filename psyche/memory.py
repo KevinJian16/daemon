@@ -39,10 +39,19 @@ CREATE INDEX IF NOT EXISTS idx_entries_updated   ON entries(updated_utc);
 """
 
 CAPACITY_LIMIT = 2000
-DECAY_FACTOR = 0.95
+DECAY_FACTOR = 0.95  # default fallback
 SIMILARITY_THRESHOLD = 0.7
 MERGE_SIMILARITY_THRESHOLD = 0.92
 LOW_RELEVANCE_MERGE_CEILING = 0.35
+
+# Tier-based decay: core doesn't decay, deep decays very slowly,
+# working uses normal rate, transient decays fast.
+TIER_DECAY_FACTORS: dict[str, float] = {
+    "core": 1.0,
+    "deep": 0.99,
+    "working": 0.95,
+    "transient": 0.85,
+}
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -253,13 +262,28 @@ class MemoryPsyche:
             )
 
     def decay_all(self) -> int:
-        """Apply relevance decay to all entries. Returns count of decayed entries."""
+        """Apply tier-based relevance decay to all entries.
+
+        core: no decay (factor 1.0), deep: very slow (0.99),
+        working: normal (0.95), transient: fast (0.85).
+        """
+        decayed = 0
         with self._conn() as conn:
-            cur = conn.execute(
-                "UPDATE entries SET relevance_score = relevance_score * ? WHERE relevance_score > 0.01",
-                (DECAY_FACTOR,),
-            )
-        return cur.rowcount
+            rows = conn.execute(
+                "SELECT entry_id, tags, relevance_score FROM entries WHERE relevance_score > 0.01"
+            ).fetchall()
+            for row in rows:
+                tags = json.loads(row["tags"] or "[]")
+                tier = self._tag_value(tags, "tier") or "working"
+                factor = TIER_DECAY_FACTORS.get(tier, DECAY_FACTOR)
+                if factor >= 1.0:
+                    continue  # core tier: no decay
+                conn.execute(
+                    "UPDATE entries SET relevance_score = relevance_score * ? WHERE entry_id=?",
+                    (factor, row["entry_id"]),
+                )
+                decayed += 1
+        return decayed
 
     def enforce_capacity(self) -> int:
         """Evict lowest-relevance entries when over capacity limit. Returns evicted count."""

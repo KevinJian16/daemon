@@ -25,8 +25,10 @@ class OpenClawError(Exception):
 class OpenClawAdapter:
     """Single-channel HTTP adapter for OpenClaw Gateway.
 
-    All Agent communication goes through the Gateway HTTP API.
-    No CLI fallback — one channel, one source of truth.
+    All Agent communication goes through the Gateway HTTP API using
+    persistent full sessions (not subagent spawn).  Each pool instance
+    uses its main session (`agent:<id>:main`) so MEMORY.md is loaded
+    and memory tools are available.
     """
 
     def __init__(self, openclaw_home: Path) -> None:
@@ -34,7 +36,6 @@ class OpenClawAdapter:
         self._cfg: dict = {}
         self._gateway_url: str = ""
         self._token: str = ""
-        self._session_alias: dict[str, str] = {}
         self._load_config()
 
     def _load_config(self) -> None:
@@ -65,45 +66,44 @@ class OpenClawAdapter:
         except Exception as e:
             return f"error: {str(e)[:80]}"
 
-    @staticmethod
-    def _base_role(agent_id: str) -> str:
-        """Map pool instance ID (e.g. 'scout_3') back to base role ('scout')."""
-        parts = agent_id.rsplit("_", 1)
-        if len(parts) == 2 and parts[1].isdigit():
-            return parts[0]
-        return agent_id
+    def main_session_key(self, agent_id: str) -> str:
+        """Return the main session key for a pool instance.
 
-    def send(self, session_key: str, message: str, agent_id: str | None = None) -> dict:
-        """Spawn an isolated subagent execution for this move."""
-        args: dict[str, Any] = {
-            "task": message,
-            "runtime": "subagent",
-            "runTimeoutSeconds": 240,
-            "cleanup": "keep",
-        }
-        if agent_id:
-            args["agentId"] = self._base_role(agent_id)
-        result = self._invoke("sessions_spawn", args)
+        Format follows OC's buildAgentMainSessionKey: ``agent:<agentId>:main``.
+        Full sessions auto-load MEMORY.md and have memory_search/memory_get available.
+        """
+        return f"agent:{agent_id}:main"
+
+    def send_to_session(self, session_key: str, message: str, timeout_s: int = 300) -> dict:
+        """Send a message to a persistent full session and wait for completion.
+
+        Uses ``sessions_send`` with synchronous wait.  The target session must
+        be a main session (not subagent) so MEMORY.md is loaded and memory
+        tools are available.
+
+        Returns the raw response dict including ``status`` and ``reply``.
+        Raises OpenClawError on hard failures.
+        """
+        result = self._invoke(
+            "sessions_send",
+            {
+                "sessionKey": session_key,
+                "message": message,
+                "timeoutSeconds": max(1, timeout_s),
+            },
+            timeout=timeout_s + 30,
+        )
         details = self._extract_details(result)
-        self._raise_on_status("sessions_spawn", details)
-        child_session_key = str(details.get("childSessionKey") or "").strip()
-        if child_session_key:
-            self._session_alias[session_key] = child_session_key
-            details["sessionKey"] = child_session_key
-        else:
-            # Fallback for older gateways that do not return childSessionKey.
-            send_args: dict[str, Any] = {"sessionKey": session_key, "message": message}
-            if agent_id:
-                send_args["agentId"] = self._base_role(agent_id)
-            result = self._invoke("sessions_send", send_args)
-            details = self._extract_details(result)
-            self._raise_on_status("sessions_send", details)
+        status = str(details.get("status") or "").strip().lower()
+        if status in {"error", "forbidden", "failed"}:
+            raise OpenClawError(
+                f"sessions_send failed [{status}]: {details.get('error', 'unknown')}"
+            )
         return details or result
 
     def history(self, session_key: str, limit: int = 1) -> list[dict]:
         """Read recent messages from an Agent session."""
-        actual_key = self._session_alias.get(session_key, session_key)
-        result = self._invoke("sessions_history", {"sessionKey": actual_key, "limit": limit})
+        result = self._invoke("sessions_history", {"sessionKey": session_key, "limit": limit})
         details = self._extract_details(result)
         self._raise_on_status("sessions_history", details)
         rows = (details or {}).get("messages") or (result or {}).get("messages") or []
@@ -111,14 +111,10 @@ class OpenClawAdapter:
             return []
         return [self._normalize_message(m) for m in rows if isinstance(m, dict)]
 
-    def session_key(self, agent_id: str, deed_id: str, move_id: str) -> str:
-        return f"agent:{agent_id}:deed:{deed_id}:{move_id}"
-
     def session_status(self, session_key: str) -> dict:
         """Check session status via sessions_list, returns abortedLastRun and token counts."""
-        actual_key = self._session_alias.get(session_key, session_key)
         try:
-            result = self._invoke("sessions_list", {"sessionKey": actual_key})
+            result = self._invoke("sessions_list", {"sessionKey": session_key})
             details = self._extract_details(result)
             sessions = details.get("sessions") or result.get("sessions") or []
             if isinstance(sessions, list):
@@ -126,7 +122,7 @@ class OpenClawAdapter:
                     if not isinstance(s, dict):
                         continue
                     sk = str(s.get("sessionKey") or s.get("key") or "")
-                    if sk == actual_key or not sk:
+                    if sk == session_key or not sk:
                         return {
                             "abortedLastRun": bool(s.get("abortedLastRun")),
                             "contextTokens": int(s.get("contextTokens") or 0),
@@ -134,15 +130,30 @@ class OpenClawAdapter:
                         }
             return {"abortedLastRun": False, "contextTokens": 0, "totalTokens": 0}
         except Exception as exc:
-            logger.warning("session_status check failed for %s: %s", actual_key, exc)
+            logger.warning("session_status check failed for %s: %s", session_key, exc)
             return {"abortedLastRun": False, "contextTokens": 0, "totalTokens": 0, "error": str(exc)[:100]}
 
-    def _invoke(self, tool: str, args: dict) -> dict:
+    def destroy_session(self, agent_id: str) -> None:
+        """Destroy all sessions for a pool instance by removing session JSONL files.
+
+        Next message to this agent creates a fresh session that reloads MEMORY.md.
+        """
+        sessions_dir = self._home / "agents" / agent_id / "sessions"
+        if not sessions_dir.exists():
+            return
+        for f in sessions_dir.iterdir():
+            if f.suffix == ".jsonl":
+                try:
+                    f.unlink()
+                except Exception as exc:
+                    logger.warning("Failed to delete session file %s: %s", f, exc)
+
+    def _invoke(self, tool: str, args: dict, timeout: int = 120) -> dict:
         resp = httpx.post(
             f"{self._gateway_url}/tools/invoke",
             json={"tool": tool, "args": args},
             headers=self._headers,
-            timeout=120,
+            timeout=timeout,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -220,27 +231,25 @@ class OpenClawAdapter:
             return []
         return sorted(runs_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
 
-    def cleanup_orphaned_sessions(self) -> int:
-        """Remove session references that have no corresponding .jsonl file."""
-        sessions_path = self._home / "sessions.json"
-        if not sessions_path.exists():
-            return 0
-        try:
-            sessions = json.loads(sessions_path.read_text())
-        except Exception as exc:
-            logger.warning("Failed to parse session index %s: %s", sessions_path, exc)
-            return 0
+    def cleanup_all_sessions(self) -> int:
+        """Remove all session JSONL files across all agents.
 
-        sessions_dir = self._home / "sessions"
+        Used during maintenance to ensure fresh sessions on next use.
+        Returns total number of deleted session files.
+        """
+        agents_dir = self._home / "agents"
+        if not agents_dir.exists():
+            return 0
         cleaned = 0
-        valid = []
-        for s in sessions if isinstance(sessions, list) else []:
-            sid = s.get("sessionId") or s.get("id") or ""
-            if sid and (sessions_dir / f"{sid}.jsonl").exists():
-                valid.append(s)
-            else:
-                cleaned += 1
-
-        if cleaned:
-            sessions_path.write_text(json.dumps(valid, ensure_ascii=False, indent=2))
+        for agent_dir in agents_dir.iterdir():
+            sessions_dir = agent_dir / "sessions"
+            if not sessions_dir.is_dir():
+                continue
+            for f in sessions_dir.iterdir():
+                if f.suffix == ".jsonl":
+                    try:
+                        f.unlink()
+                        cleaned += 1
+                    except Exception as exc:
+                        logger.warning("Failed to delete session file %s: %s", f, exc)
         return cleaned

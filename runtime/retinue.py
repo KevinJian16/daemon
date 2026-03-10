@@ -100,11 +100,13 @@ class Retinue:
         def _do_allocate(pool: list[dict]) -> dict:
             for inst in pool:
                 if inst.get("role") == role and inst.get("status") == "idle":
+                    instance_id = inst.get("instance_id", "")
                     inst["status"] = "occupied"
                     inst["deed_id"] = deed_id
                     inst["allocated_utc"] = _utc()
+                    inst["session_key"] = f"agent:{instance_id}:main"
                     self._fill_templates(inst)
-                    self.write_psyche_snapshot(inst.get("instance_id", ""), self._default_psyche_snapshot())
+                    self.write_psyche_snapshot(instance_id, self._default_psyche_snapshot())
                     return dict(inst)
             raise PoolExhausted(f"No idle {role} instances (pool_size={self._pool_size})")
 
@@ -127,6 +129,7 @@ class Retinue:
                             "Release mismatch: instance %s has deed_id=%s, expected %s",
                             instance_id, inst.get("deed_id"), deed_id,
                         )
+                    self._destroy_instance_sessions(instance_id)
                     self._clean_instance(inst)
                     inst["status"] = "idle"
                     inst["deed_id"] = None
@@ -153,16 +156,18 @@ class Retinue:
         def _do_recover(pool: list[dict]) -> list[str]:
             for inst in pool:
                 if inst.get("status") == "occupied":
+                    iid = inst.get("instance_id", "")
                     logger.info(
                         "Recovering orphaned instance %s (was deed %s)",
-                        inst.get("instance_id"), inst.get("deed_id"),
+                        iid, inst.get("deed_id"),
                     )
+                    self._destroy_instance_sessions(iid)
                     self._clean_instance(inst)
                     inst["status"] = "idle"
                     inst["deed_id"] = None
                     inst["allocated_utc"] = None
                     inst["session_key"] = None
-                    recovered.append(inst["instance_id"])
+                    recovered.append(iid)
             return recovered
 
         self._mutate_pool(_do_recover)
@@ -195,47 +200,71 @@ class Retinue:
 
     # ── Template management ───────────────────────────────────────────────────
 
+    # Files to copy from base agent workspace → pool instance workspace.
+    _WORKSPACE_TEMPLATE_FILES = {
+        "SOUL.md", "TOOLS.md", "AGENTS.md", "IDENTITY.md",
+        "BOOTSTRAP.md", "HEARTBEAT.md", "USER.md",
+    }
+
     def _fill_templates(self, inst: dict) -> None:
-        """Copy templates/<role>/ files into the instance's agentDir."""
+        """Copy role workspace files from the base agent into the pool instance.
+
+        Source: openclaw/workspace/{role}/  (the base agent)
+        Dest:   openclaw/workspace/{role}_{N}/  (the pool instance)
+
+        Only copies role-definition markdown files and role-specific
+        subdirs (e.g. skills/).  Skips .git, memory/, .openclaw/.
+        """
         role = inst.get("role", "")
-        template_dir = self._templates_dir / role
-        agent_dir = Path(inst.get("agent_dir", ""))
-        if not template_dir.exists() or not agent_dir.parent.exists():
+        base_workspace = self._oc_home / "workspace" / role
+        inst_workspace = Path(inst.get("workspace_dir", ""))
+        if not base_workspace.exists() or not inst_workspace.parent.exists():
             return
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        for src in template_dir.iterdir():
-            if src.is_file():
-                dst = agent_dir / src.name
-                shutil.copy2(src, dst)
-            elif src.is_dir():
-                dst_dir = agent_dir / src.name
+        inst_workspace.mkdir(parents=True, exist_ok=True)
+
+        skip_dirs = {".git", ".openclaw", "memory"}
+        for src in base_workspace.iterdir():
+            name = src.name
+            if src.is_file() and name in self._WORKSPACE_TEMPLATE_FILES:
+                shutil.copy2(src, inst_workspace / name)
+            elif src.is_dir() and name not in skip_dirs:
+                dst_dir = inst_workspace / name
                 if dst_dir.exists():
                     shutil.rmtree(dst_dir)
                 shutil.copytree(src, dst_dir)
 
-    def _clean_instance(self, inst: dict) -> None:
-        """Remove template files and workspace memory from instance."""
-        agent_dir = Path(inst.get("agent_dir", ""))
-        if agent_dir.exists():
-            for item in agent_dir.iterdir():
-                try:
-                    if item.is_file():
-                        item.unlink()
-                    elif item.is_dir():
-                        shutil.rmtree(item)
-                except Exception as exc:
-                    logger.warning("Failed to clean %s: %s", item, exc)
+    def _destroy_instance_sessions(self, instance_id: str) -> None:
+        """Delete session JSONL files for a pool instance.
 
-        workspace_memory = Path(inst.get("workspace_dir", "")) / "memory"
-        if workspace_memory.exists():
-            for item in workspace_memory.iterdir():
+        Forces fresh session creation on next use, which reloads MEMORY.md.
+        """
+        sessions_dir = self._oc_home / "agents" / instance_id / "sessions"
+        if not sessions_dir.is_dir():
+            return
+        for f in sessions_dir.iterdir():
+            if f.suffix == ".jsonl":
                 try:
-                    if item.is_file():
-                        item.unlink()
-                    elif item.is_dir():
-                        shutil.rmtree(item)
+                    f.unlink()
                 except Exception as exc:
-                    logger.warning("Failed to clean memory %s: %s", item, exc)
+                    logger.warning("Failed to delete session file %s: %s", f, exc)
+
+    def _clean_instance(self, inst: dict) -> None:
+        """Remove template files and workspace memory from pool instance.
+
+        Restores workspace to empty state:  only the bare directory remains.
+        Does NOT touch the agentDir (agent config stays).
+        """
+        workspace = Path(inst.get("workspace_dir", ""))
+        if not workspace.exists():
+            return
+        for item in workspace.iterdir():
+            try:
+                if item.is_file():
+                    item.unlink()
+                elif item.is_dir():
+                    shutil.rmtree(item)
+            except Exception as exc:
+                logger.warning("Failed to clean %s: %s", item, exc)
 
     def write_psyche_snapshot(self, instance_id: str, memory_snapshot: str) -> None:
         """Write Psyche Memory snapshot into instance workspace/memory/MEMORY.md."""

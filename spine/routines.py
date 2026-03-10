@@ -176,6 +176,21 @@ class SpineRoutines:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
+    def _upgrade_tier(self, entry_id: str, target_tier: str) -> None:
+        """Upgrade a memory entry's tier tag (e.g. working → deep)."""
+        entry = self.memory.get(entry_id)
+        if not entry:
+            return
+        tags = entry.get("tags") or []
+        new_tags = [t for t in tags if not str(t).startswith("tier:")]
+        new_tags.append(f"tier:{target_tier}")
+        import json
+        with self.memory._conn() as conn:
+            conn.execute(
+                "UPDATE entries SET tags=?, updated_utc=? WHERE entry_id=?",
+                (json.dumps(new_tags, ensure_ascii=False), _utc(), entry_id),
+            )
+
     def _probe_gateway(self) -> str:
         if not self.openclaw_home:
             return "not_configured"

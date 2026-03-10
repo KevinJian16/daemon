@@ -20,7 +20,11 @@ class DeedInput:
 
 @workflow.defn(name="GraphWillWorkflow")
 class GraphWillWorkflow:
-    """Executes a DAG of Agent moves with Kahn topological ordering and per-agent concurrency limits."""
+    """Executes a DAG of Agent moves with Kahn topological ordering.
+
+    Each agent role uses a single persistent session; same-agent moves
+    serialize naturally (OC serializes runs per session key).
+    """
 
     def __init__(self) -> None:
         self._active_requirements: list[dict[str, str]] = []
@@ -291,10 +295,12 @@ class GraphWillWorkflow:
         return str(st.get("agent") or "").strip()
 
     def _agent_limits(self, plan: dict) -> dict[str, int]:
-        # Prefer plan-level overrides; fall back to defaults injected by Will.
-        system_defaults = plan.get("agent_concurrency_defaults") or {
-            "scout": 8, "sage": 4, "arbiter": 2,
-            "scribe": 2, "envoy": 1, "spine": 2, "counsel": 1, "artificer": 2,
+        # Each agent role maps to one persistent session; OC serializes runs
+        # per session key, so same-agent concurrency is naturally 1.
+        # spine keeps 2 because spine routines run in-process, not via OC.
+        system_defaults: dict[str, int] = {
+            "scout": 1, "sage": 1, "arbiter": 1,
+            "scribe": 1, "envoy": 1, "spine": 2, "counsel": 1, "artificer": 1,
         }
         overrides: dict = plan.get("agent_concurrency") or {}
         return {**system_defaults, **overrides}

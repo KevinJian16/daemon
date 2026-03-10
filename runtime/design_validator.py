@@ -9,7 +9,11 @@ Consolidates the 5 checks from SPEC §7.3:
 """
 from __future__ import annotations
 
+import logging
+
 from runtime.brief import Brief
+
+logger = logging.getLogger(__name__)
 
 VALID_AGENTS = frozenset({
     "counsel", "scout", "sage", "artificer", "arbiter", "scribe", "envoy", "spine",

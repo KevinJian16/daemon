@@ -93,17 +93,21 @@ def normalize_openclaw_config(oc_home: Path) -> dict:
             counsel["default"] = True
             report["updated"] = True
             report["changes"].append("agents.list.default=counsel")
-        # Ensure counsel can spawn canonical daemon agents when using sessions_spawn.
+        # Ensure counsel can spawn all daemon agents (base roles + pool instances).
         subagents = counsel.get("subagents")
         if not isinstance(subagents, dict):
             subagents = {}
             counsel["subagents"] = subagents
+        pool_roles = [a for a in CANONICAL_AGENTS if a != "counsel"]
+        desired_allow = list(CANONICAL_AGENTS)
+        for role in pool_roles:
+            for i in range(DEFAULT_POOL_SIZE):
+                desired_allow.append(f"{role}_{i}")
         allow_agents = subagents.get("allowAgents")
-        desired_allow = [a for a in CANONICAL_AGENTS if a]
-        if not isinstance(allow_agents, list) or sorted(str(x) for x in allow_agents) != sorted(desired_allow):
+        if not isinstance(allow_agents, list) or set(str(x) for x in allow_agents) != set(desired_allow):
             subagents["allowAgents"] = desired_allow
             report["updated"] = True
-            report["changes"].append("counsel.subagents.allowAgents=canonical")
+            report["changes"].append("counsel.subagents.allowAgents=canonical+pool")
 
     desired_default_workspace = (oc_home / "workspace" / "_default").resolve()
     current_workspace = str(defaults.get("workspace") or "").strip()

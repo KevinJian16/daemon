@@ -244,11 +244,15 @@ def run_learn(self, deed_id: str | None = None) -> dict:
         analysis = self.cortex.try_or_degrade(_llm_extract, _skip_fallback)
 
         extracted = 0
+        upgraded = 0
         for entry in analysis.get("entries", []):
             content = str(entry.get("content") or "").strip()
             if not content or len(content) < 10:
                 continue
-            tags = entry.get("tags") or []
+            tags = [str(t) for t in (entry.get("tags") or []) if str(t).strip()]
+            # Ensure tier:working tag for newly extracted knowledge.
+            if not any(t.startswith("tier:") for t in tags):
+                tags.append("tier:working")
 
             embedding = None
             try:
@@ -256,13 +260,22 @@ def run_learn(self, deed_id: str | None = None) -> dict:
             except Exception:
                 pass
 
-            self.memory.upsert(content=content, tags=tags, embedding=embedding, source=f"learn:{deed_id}")
+            result_info = self.memory.upsert(
+                content=content, tags=tags, embedding=embedding, source=f"learn:{deed_id}",
+            )
             extracted += 1
 
-        ctx.step("learn_done", {"extracted": extracted})
+            # If upsert found a duplicate (updated existing entry), upgrade tier to deep.
+            # This means the same fact was extracted from multiple Deeds — high confidence.
+            if result_info.get("action") == "updated":
+                self._upgrade_tier(result_info["entry_id"], "deep")
+                upgraded += 1
+
+        ctx.step("learn_done", {"extracted": extracted, "upgraded_to_deep": upgraded})
         result = {
             "deed_id": deed_id,
             "extracted": extracted,
+            "upgraded_to_deep": upgraded,
             "move_outputs": len(move_outputs),
             "degraded": ctx._degraded,
         }

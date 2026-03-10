@@ -90,6 +90,7 @@ class Will:
         plan.setdefault("default_depth", brief.depth)
         plan.setdefault("quality_profile", self._quality_profile_for(plan, brief, prefs))
 
+        plan = self._consolidate_same_agent_moves(plan)
         self._apply_model_routing(plan)
         plan = self._ration_preflight(plan)
         plan = self._submission_preflight(plan)
@@ -418,6 +419,89 @@ class Will:
         if not writ_id:
             return
         brief.dag_budget = self._folio_writ.infer_dag_budget_from_history(writ_id, default=brief.dag_budget)
+
+    def _consolidate_same_agent_moves(self, plan: dict) -> dict:
+        """Merge same-agent parallel moves into compound instructions.
+
+        With persistent sessions, same-agent moves serialize through one session.
+        Merging reduces round-trips and lets the agent decide internal parallelism
+        via OC's parallel tool calls.
+        """
+        moves = plan.get("moves")
+        if not isinstance(moves, list) or len(moves) < 2:
+            return plan
+
+        # Build dependency sets.
+        dep_map: dict[str, set[str]] = {}
+        for i, st in enumerate(moves):
+            sid = str(st.get("id") or f"move_{i}")
+            dep_map[sid] = set(st.get("depends_on") or [])
+
+        # Group same-agent moves that are parallel (neither depends on the other).
+        by_agent: dict[str, list[int]] = {}
+        for i, st in enumerate(moves):
+            agent = str(st.get("agent") or "").strip()
+            if agent and agent not in {"spine", "counsel"}:
+                by_agent.setdefault(agent, []).append(i)
+
+        merged_indices: set[int] = set()
+        new_moves = list(moves)
+
+        for agent, indices in by_agent.items():
+            if len(indices) < 2:
+                continue
+            # Find groups of parallel moves (share same deps set).
+            groups: dict[frozenset[str], list[int]] = {}
+            for idx in indices:
+                st = moves[idx]
+                sid = str(st.get("id") or f"move_{idx}")
+                deps = frozenset(dep_map.get(sid, set()))
+                groups.setdefault(deps, []).append(idx)
+
+            for deps_key, group_indices in groups.items():
+                if len(group_indices) < 2:
+                    continue
+                # Check all are truly parallel (none depends on another in group).
+                group_ids = {str(moves[i].get("id") or f"move_{i}") for i in group_indices}
+                truly_parallel = all(
+                    not (dep_map.get(str(moves[i].get("id") or f"move_{i}"), set()) & group_ids)
+                    for i in group_indices
+                )
+                if not truly_parallel:
+                    continue
+
+                # Merge: keep first, combine instructions, absorb others.
+                primary_idx = group_indices[0]
+                primary = dict(moves[primary_idx])
+                parts = []
+                total_timeout = 0
+                for idx in group_indices:
+                    st = moves[idx]
+                    ins = str(st.get("instruction") or st.get("message") or "").strip()
+                    if ins:
+                        parts.append(ins)
+                    total_timeout += int(st.get("timeout_s") or 0)
+
+                if len(parts) > 1:
+                    primary["instruction"] = (
+                        "Complete all of the following tasks:\n\n"
+                        + "\n\n".join(f"### Task {i+1}\n{p}" for i, p in enumerate(parts))
+                    )
+                if total_timeout > 0:
+                    primary["timeout_s"] = total_timeout
+                new_moves[primary_idx] = primary
+                for idx in group_indices[1:]:
+                    merged_indices.add(idx)
+                logger.info(
+                    "Consolidated %d parallel %s moves into compound instruction",
+                    len(group_indices), agent,
+                )
+
+        if merged_indices:
+            plan = dict(plan)
+            plan["moves"] = [st for i, st in enumerate(new_moves) if i not in merged_indices]
+
+        return plan
 
     def _resolve_slip_title(self, plan: dict, brief: Brief) -> str:
         for key in ("slip_title", "title", "run_title"):

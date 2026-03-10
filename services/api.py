@@ -908,6 +908,15 @@ p{
 
         nerve.on("writ_trigger_ready", _writ_handler)
 
+        def _deed_submitted_handler(payload: dict) -> None:
+            # Refresh Psyche snapshots so retinue pool instances get fresh memory.
+            try:
+                cadence.trigger("spine.relay", payload if isinstance(payload, dict) else {})
+            except Exception as exc:
+                logger.warning("relay trigger on deed_submitted failed: %s", exc)
+
+        nerve.on("deed_submitted", _deed_submitted_handler)
+
     def _proposal_id(item: dict) -> str:
         raw = f"{item.get('skill','')}|{item.get('proposed_change','')}|{item.get('evidence','')}"
         return "sev_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]

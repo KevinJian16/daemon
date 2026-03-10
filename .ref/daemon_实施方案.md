@@ -524,6 +524,12 @@ Will 的标准流程为：
 
 系统使用预创建 `Retinue` 实例池，不在运行时动态创建 agent。
 
+每个 `Deed` 分配空闲池实例，用完释放。实例生命周期：
+
+1. `allocate(role, deed_id)` — 设置 `session_key`，写入 Psyche 快照（MEMORY.md），复制 workspace 模板
+2. 执行期间 — 池实例持有一个 persistent full session（OC full mode），多个 Move 共享同一 session，记忆在 session 内累积
+3. `release(instance_id)` — 销毁 session 文件（下次分配时重新加载 MEMORY.md），清理 workspace
+
 ### 9.2 执行流
 
 标准执行流为：
@@ -532,8 +538,12 @@ Will 的标准流程为：
 
 ### 9.3 Deed 与 Move
 
-`Move` 是 `Design` 中的一个执行节点。  
+`Move` 是 `Design` 中的一个执行节点。
 `Deed` 承载整次 DAG 执行。
+
+每个 Move 通过 `sessions_send` 发送到池实例的主 session。OC 按 session key 串行化 runs，同 agent 的多个 Move 自然串行。不同 agent 的 Move 可并行（受 DAG 依赖约束）。
+
+`Will` 在提交前将同 agent 的并行 Move 合并为复合指令，减少 round-trip。agent 自决内部并发（通过 OC parallel tool calls）。
 
 ### 9.4 Review 与 rework
 

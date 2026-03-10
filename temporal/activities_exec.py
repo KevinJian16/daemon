@@ -11,6 +11,12 @@ from temporalio.exceptions import CancelledError as TemporalCancelledError
 
 
 async def run_openclaw_move(self, deed_root: str, plan: dict, move: dict) -> dict:
+    """Execute a single move via persistent full session (sessions_send).
+
+    Uses the retinue instance's main session — MEMORY.md is loaded at session
+    start and context accumulates across moves to the same agent.  The call
+    blocks until the agent finishes (synchronous wait via timeoutSeconds).
+    """
     if not self._openclaw:
         raise RuntimeError("OpenClawAdapter unavailable (OPENCLAW_HOME missing or openclaw.json invalid)")
 
@@ -18,11 +24,11 @@ async def run_openclaw_move(self, deed_root: str, plan: dict, move: dict) -> dic
     move_id = str(move.get("id") or "move").strip()
     deed_id = str(plan.get("deed_id") or deed_root.split("/")[-1] or uuid.uuid4().hex[:8])
 
-    # Resolve agent role -> retinue instance if allocations exist
+    # Resolve agent role -> retinue instance
     retinue_allocations = plan.get("retinue_allocations") or {}
     agent_id = str(retinue_allocations.get(agent_role, agent_role))
+    session_key = self._openclaw.main_session_key(agent_id)
 
-    session_key = self._openclaw.session_key(agent_id, deed_id, move_id)
     instruction = str(move.get("instruction") or move.get("message") or "").strip()
     timeout_s = int(move.get("timeout_s") or plan.get("default_move_timeout_s") or 480)
     move_label = str(move.get("label") or instruction[:80] or move_id)
@@ -59,91 +65,22 @@ async def run_openclaw_move(self, deed_root: str, plan: dict, move: dict) -> dic
         if context_payload
         else instruction
     )
-    _emit_progress("started")
-    await asyncio.to_thread(self._openclaw.send, session_key, composed_message, agent_id)
-    activity.heartbeat({"deed_id": deed_id, "move_id": move_id, "phase": "sent"})
-    _emit_progress("waiting")
 
-    deadline = time.time() + timeout_s
-    poll_interval = 5
-    last_content = ""
+    _emit_progress("started")
+
+    # Run send_to_session in a thread; heartbeat every 30s while waiting.
+    send_future: asyncio.Future[dict] = asyncio.get_running_loop().run_in_executor(
+        None, self._openclaw.send_to_session, session_key, composed_message, timeout_s,
+    )
+    heartbeat_interval = 30
 
     try:
-        while time.time() < deadline:
-            await asyncio.sleep(poll_interval)
-            activity.heartbeat({"deed_id": deed_id, "move_id": move_id, "phase": "poll"})
+        while True:
             try:
-                messages = await asyncio.to_thread(self._openclaw.history, session_key, 8)
-            except Exception as exc:
-                activity.logger.warning("history poll failed for %s: %s", session_key, exc)
-                poll_interval = min(poll_interval * 1.2, 30)
-                continue
-            if not isinstance(messages, list):
-                messages = []
-
-            newest_assistant = None
-            for msg in reversed(messages):
-                if not isinstance(msg, dict):
-                    continue
-                role = str(msg.get("role") or "").strip().lower()
-                if role != "assistant":
-                    continue
-                content = str(msg.get("content") or msg.get("text") or "").strip()
-                if not content:
-                    continue
-                newest_assistant = msg
-                break
-
-            # Q3.7(c): Check abortedLastRun to detect circuit breaker termination.
-            if self._openclaw:
-                try:
-                    sess_status = await asyncio.to_thread(self._openclaw.session_status, session_key)
-                    if sess_status.get("abortedLastRun"):
-                        activity.logger.warning(
-                            "Move %s aborted by circuit breaker (agent=%s)", move_id, agent_id
-                        )
-                        partial_content = last_content or ""
-                        if partial_content:
-                            self._write_move_output(deed_root, move_id, partial_content)
-                        result = {
-                            "status": "circuit_breaker",
-                            "move_id": move_id,
-                            "agent": agent_id,
-                            "session_key": session_key,
-                            "error": "aborted_by_loop_detection",
-                            "partial_content": partial_content[:500],
-                        }
-                        self._write_move_checkpoint(deed_root, move_id, result)
-                        _emit_progress("degraded", error=result["error"])
-                        return result
-                except Exception as exc:
-                    activity.logger.warning("session_status check failed for %s: %s", session_key, exc)
-
-            if newest_assistant:
-                content = str(newest_assistant.get("content") or newest_assistant.get("text") or "").strip()
-                if content:
-                    raw = newest_assistant.get("raw") if isinstance(newest_assistant.get("raw"), dict) else {}
-                    stop_reason = str(raw.get("stopReason") or "").strip().lower()
-                    has_done_signal = any(
-                        signal in content.lower()
-                        for signal in ["[done]", "[complete]", "run complete", "completed successfully"]
-                    )
-                    if content != last_content:
-                        last_content = content
-                    if has_done_signal or stop_reason in {"stop", "end_turn"}:
-                        output_path = self._write_move_output(deed_root, move_id, content)
-                        result = {
-                            "status": "ok",
-                            "move_id": move_id,
-                            "agent": agent_id,
-                            "session_key": session_key,
-                            "output_path": output_path,
-                        }
-                        self._write_move_checkpoint(deed_root, move_id, result)
-                        _emit_progress("completed", output_path=output_path)
-                        return result
-
-            poll_interval = min(poll_interval * 1.2, 30)
+                resp = await asyncio.wait_for(asyncio.shield(send_future), timeout=heartbeat_interval)
+                break  # send completed
+            except asyncio.TimeoutError:
+                activity.heartbeat({"deed_id": deed_id, "move_id": move_id, "phase": "waiting"})
     except (TemporalCancelledError, asyncio.CancelledError):
         result = {
             "status": "cancelled",
@@ -158,18 +95,60 @@ async def run_openclaw_move(self, deed_root: str, plan: dict, move: dict) -> dic
         except Exception:
             pass
         raise
+    except Exception as exc:
+        error_msg = str(exc)[:200]
+        # Check for circuit breaker / abort
+        if "aborted" in error_msg.lower() or "circuit" in error_msg.lower():
+            result = {
+                "status": "circuit_breaker",
+                "move_id": move_id,
+                "agent": agent_id,
+                "session_key": session_key,
+                "error": error_msg,
+            }
+            self._write_move_checkpoint(deed_root, move_id, result)
+            _emit_progress("degraded", error="circuit_breaker")
+            return result
+        activity.logger.warning("Move %s failed: %s", move_id, error_msg)
+        result = {
+            "status": "degraded",
+            "move_id": move_id,
+            "agent": agent_id,
+            "session_key": session_key,
+            "error": error_msg,
+            "degraded": True,
+        }
+        self._write_move_checkpoint(deed_root, move_id, result)
+        _emit_progress("degraded", error=error_msg)
+        return result
 
-    activity.logger.warning("Move %s timed out after %ss — marking degraded", move_id, timeout_s)
+    # Extract reply content from sessions_send response.
+    reply = str(resp.get("reply") or resp.get("text") or resp.get("content") or "").strip()
+    status = str(resp.get("status") or "").strip().lower()
+
+    if status in {"error", "failed", "aborted"}:
+        result = {
+            "status": "degraded",
+            "move_id": move_id,
+            "agent": agent_id,
+            "session_key": session_key,
+            "error": str(resp.get("error") or status),
+            "degraded": True,
+        }
+        self._write_move_checkpoint(deed_root, move_id, result)
+        _emit_progress("degraded", error=result["error"])
+        return result
+
+    output_path = self._write_move_output(deed_root, move_id, reply) if reply else ""
     result = {
-        "status": "degraded",
+        "status": "ok",
         "move_id": move_id,
         "agent": agent_id,
         "session_key": session_key,
-        "error": f"timeout_after_{timeout_s}s",
-        "degraded": True,
+        "output_path": output_path,
     }
     self._write_move_checkpoint(deed_root, move_id, result)
-    _emit_progress("degraded", error=result["error"])
+    _emit_progress("completed", output_path=output_path)
     return result
 
 

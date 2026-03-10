@@ -53,18 +53,21 @@ class DaemonActivities:
         self._retinue = Retinue(self._home, self._oc_home)
         self._instinct = None
         self._cortex = None
+        self._lore = None
         try:
             self._openclaw = OpenClawAdapter(self._oc_home)
         except Exception as exc:
             activity.logger.warning("Failed to initialize OpenClawAdapter from %s: %s", self._oc_home, exc)
         try:
             from psyche.instinct import InstinctPsyche
+            from psyche.lore import LorePsyche
             from runtime.cortex import Cortex
 
             self._instinct = InstinctPsyche(self._home / "state" / "psyche" / "instinct.db")
+            self._lore = LorePsyche(self._home / "state" / "psyche" / "lore.db")
             self._cortex = Cortex(self._instinct)
         except Exception as exc:
-            activity.logger.warning("Failed to initialize worker Cortex: %s", exc)
+            activity.logger.warning("Failed to initialize worker Cortex/Lore: %s", exc)
 
     def _utc(self) -> str:
         return _utc()
@@ -73,7 +76,7 @@ class DaemonActivities:
 
     @activity.defn(name="activity_openclaw_move")
     async def activity_openclaw_move(self, deed_root: str, plan: dict, move: dict) -> dict:
-        """Execute one DAG move through OpenClawAdapter single-channel gateway."""
+        """Execute one DAG move via persistent full session (sessions_send)."""
         return await _run_openclaw_move_impl(self, deed_root, plan, move)
 
     # ── Spine routine ─────────────────────────────────────────────────────────

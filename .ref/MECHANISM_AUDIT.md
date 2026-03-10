@@ -254,9 +254,9 @@
   3. 容量策略：热度衰减 + 相似合并 + 最后淘汰
   4. 冲突处理：新显式事实覆盖旧矛盾事实
   5. 不做硬主题隔离，不做预定义 cluster
-- **证据**：✓ 通过
+- **证据**：✓ 通过（2026-03-11 更新：tier-based decay）
   - `psyche/memory.py:152` — `search_by_embedding(query_embedding, top_k, threshold, folio_id)` 支持 embedding 检索和 folio_id 偏置
-  - `psyche/memory.py:255` — `decay_all()` 热度衰减 DECAY_FACTOR=0.95
+  - `psyche/memory.py` — `decay_all()` tier-based 衰减：`TIER_DECAY_FACTORS = {core: 1.0, deep: 0.99, working: 0.95, transient: 0.85}`，core 永不衰减
   - `psyche/memory.py:324` — `_merge_similar_low_relevance_entries()` 相似合并（similarity>0.92, relevance≤0.35）
   - `psyche/memory.py:264` — `enforce_capacity()` 容量淘汰 CAPACITY_LIMIT=2000
   - `psyche/memory.py:115-138` — `upsert()` 冲突覆盖（新事实替换旧矛盾）
@@ -990,7 +990,7 @@
 | §2 | 删除规则 | ✓ |
 | §3 | Event/Writ 匹配与动作 | ✓ 已修 |
 | §3 | Writ 版本化 | ✓ 已修 |
-| §4 | Memory | ✓ |
+| §4 | Memory | ✓ 已修（tier 分层 §17.9） |
 | §4 | Lore | ✓ |
 | §4 | Instinct | ✓ |
 | §4 | Slip/Writ 规划学习 | ✓ 已修 |
@@ -1035,6 +1035,17 @@
 | §16 | Portal/Console 手势一致 | ✓ |
 | §16 | 对象语义统一 | ✓ |
 
+| §17 | Retinue 池实例 vs 基础 Agent | ✓ 已修 |
+| §17 | Gateway Token 认证 | ✓ 已修 |
+| §17 | openclaw.json 配置清洁度 | ✓ 已修 |
+| §17 | Psyche Snapshot Relay | ✓ 已修（G-OC10 persistent session） |
+| §17 | Lore 经验记录 | ✓ 已修 |
+| §17 | Deed 级 Session（per-deed persistent） | ✓ 已修（§17.6） |
+| §17 | Session 生命周期泄漏 | ✓ 已修（§17.8 release 时销毁） |
+| §17 | 记忆分层制度 | ✓ 已修（§17.9 tier 枚举+衰减+升级） |
+| §17 | Subagent 记忆权限 | ✓ 已修（§17.10 不再使用 subagent） |
+| §17 | E2E 验证 | ✓ |
+
 ### 已修复项明细
 
 | 编号 | 修复内容 | 修改文件 |
@@ -1054,6 +1065,21 @@
 | P6 | 审计时已修复（Folio 页面有 `folio-results-block` + 后端 `recent_results`） | — |
 | P7 | Standing Slip → Writ 自动关联：`ensure_standing_writ()` 便捷 API + `_materialize_objects` Writ 创建后移至 Slip 之后 | `folio_writ.py`, `will.py` |
 | BUG-1 | `_writ_action_crystallize_draft` 缺少必传参数（title/objective/brief/design），从 Draft 读取后传入 | `api.py` |
+| G-OC1 | 删除 `_base_role()` hack，池实例 ID 直接传递给 gateway | `runtime/openclaw.py` |
+| G-OC2 | counsel allowAgents 扩展至 151 个（含 144 池实例） | `bootstrap.py` |
+| G-OC3 | `_fill_templates()` 源改为基础 agent workspace，目标改为池实例 workspace | `runtime/retinue.py` |
+| G-OC4 | `_clean_instance()` 清理目标改为 workspace（非 agentDir） | `runtime/retinue.py` |
+| G-OC5 | Gateway plist 直接使用 env var token，Python 层 env-var-first 读取 | plist, `voice.py`, `openclaw.py`, `routines.py` |
+| G-OC6 | 清理 openclaw.json 222 处不兼容字段 | `openclaw.json` |
+| G-OC7 | tailscale mode funnel→off | `openclaw.json` |
+| G-OC8 | deed_submitted 事件触发 relay 刷新 | `services/api.py` |
+| G-OC9 | Herald 添加 Lore 记录（成功+失败路径） | `activities_herald.py`, `activities.py` |
+| G-OC10 | 执行模式从 subagent spawn 改为 persistent full session + `sessions_send`，MEMORY.md 内化链路恢复 | `runtime/openclaw.py`, `runtime/retinue.py`, `temporal/activities_exec.py`, `temporal/workflows.py`, `temporal/activities.py` |
+| §17.6 | Deed 级 persistent session：allocate 设 session_key，同 agent Move 共享 session，release 时销毁 | `runtime/retinue.py`, `temporal/activities_exec.py` |
+| §17.8 | Session 生命周期管理：release/recover 时 `_destroy_instance_sessions()`，`cleanup_all_sessions()` 全量清理 | `runtime/retinue.py`, `runtime/openclaw.py` |
+| §17.9 | 记忆分层：tier 枚举（core/deep/working/transient）、tier-based decay、learn 自动标记 working、重复提取升级 deep | `psyche/memory.py`, `spine/routines_ops_learn.py`, `spine/routines.py` |
+| §17.10 | 根因消除：不再使用 subagent 模式，agent 可正常读取记忆 | （同 G-OC10） |
+| P8 | Will 同 agent 并行 Move 合并为复合指令（减少 round-trip，agent 自决内部并发） | `services/will.py` |
 
 ### 第四阶段（学习闭环）实现状态
 
@@ -1061,6 +1087,128 @@
 - **Writ 执行引擎**：✓ 已实现。8 种 action type dispatcher（`_consume_writ_trigger` + 8 个 `_writ_action_*` 函数）。事件匹配和动作执行完整链路存在
 - **Writ 学习与候选修订**：✓ 已实现。`trigger_stats`（total_feedback/avg_rating/misfire_count）在 feedback 提交时更新；`lore.writ_trigger_summary()` 提供聚合视图；canonical 字段变更自动版本化
 - **Standing Slip + repeated Deed 触发**：✓ 已实现。`folio_writ.ensure_standing_writ(slip_id, schedule)` 便捷 API：自动确保 Folio 存在、检查去重、创建 schedule→spawn_deed Writ 并注入 slip_id。`will.py:_materialize_objects()` 在 Slip 创建后才创建 Writ，确保 action.slip_id 正确注入。standing Slip 无显式 Writ 时自动调用 ensure_standing_writ
+
+---
+
+## 17. OpenClaw 专题审计
+
+> 日期：2026-03-10
+> 背景：E2E 测试中发现 Python 层与 OpenClaw agent 层存在多处不对齐。本节专项审计两层关系。
+
+### 17.1 Retinue 池实例 vs 基础 Agent
+
+- **依据**：SPEC §9.1, QA §6.1, DESIGN_QA_v1 Retinue 设计
+- **设计规则**：
+  1. 6 个角色 × N 个池实例（scout_0..23 等）= 实际执行实体
+  2. 基础 agent（scout/sage/...）是模板，不直接执行 Deed
+  3. 每个 Deed 分配空闲池实例，用完释放，保证 per-Deed 隔离
+  4. 并发 Deed 必须使用不同池实例，避免记忆污染
+- **发现的 gap 与修复**：
+  - **G-OC1 [已修]** `runtime/openclaw.py` 曾有 `_base_role()` 方法将池实例 ID（如 `scout_3`）映射回基础 agent ID（如 `scout`），彻底绕过了 per-Deed 隔离设计。已删除，`send()` 现在直接传递 `agent_id`（池实例 ID）
+  - **G-OC2 [已修]** `bootstrap.py:normalize_openclaw_config()` 中 counsel 的 `subagents.allowAgents` 原来只包含 7 个基础 agent ID，未包含 144 个池实例。已修复为 7 + 144 = 151 个
+  - **G-OC3 [已修]** `runtime/retinue.py:_fill_templates()` 源目录指向不存在的 `templates/{role}/`，目标写入 agentDir 而非 workspace。已修复：源 = `openclaw/workspace/{role}/`（基础 agent workspace），目标 = `openclaw/workspace/{role}_{N}/`（池实例 workspace）
+  - **G-OC4 [已修]** `runtime/retinue.py:_clean_instance()` 清理目标是 agentDir 而非 workspace。已修复为清理 workspace
+
+### 17.2 Gateway Token 认证
+
+- **依据**：openclaw.json `gateway.auth` 配置
+- **设计规则**：
+  1. Gateway 以 Bearer token 认证所有 /tools/invoke 请求
+  2. Python 层（API 进程、Worker 进程）发送请求时必须使用相同 token
+- **发现的 gap 与修复**：
+  - **G-OC5 [已修]** `openclaw.json` 中 `gateway.auth.token` 存储的是 env var 引用字面量 `${OPENCLAW_GATEWAY_TOKEN}`，不是实际 token。Gateway plist 从 JSON 中用 python3 提取此字面量作为启动 token，导致 gateway 认的 token 是字面量字符串。Python 层通过 `os.environ.get("OPENCLAW_GATEWAY_TOKEN")` 获取实际 token，两端不匹配
+  - **修复**：gateway plist 改为直接使用 `$OPENCLAW_GATEWAY_TOKEN` 环境变量（plist 已 source `.env`），不再从 JSON 提取。Python 层保持 env-var-first 读取。两端统一使用实际 token 值
+  - **涉及文件**：`~/Library/LaunchAgents/ai.kevinjian.daemon.openclaw.gateway.plist`, `services/voice.py`, `runtime/openclaw.py`, `spine/routines.py`
+
+### 17.3 openclaw.json 配置清洁度
+
+- **依据**：openclaw gateway 版本兼容性
+- **发现的 gap 与修复**：
+  - **G-OC6 [已修]** 6 个基础 agent 含 `loopDetection` 字段（gateway 2026.3.x 不支持），144 个池 agent 含 `provider` 和字符串 `model` 字段（应由 defaults 继承）。共 222 处冗余/不兼容字段已清理
+  - **G-OC7 [已修]** `gateway.tailscale.mode` 设为 `funnel`，需要密码认证。改为 `off`
+
+### 17.4 Psyche Snapshot Relay
+
+- **依据**：SPEC §6.1, Retinue lifecycle step 4
+- **设计规则**：
+  1. `run_relay` routine 将 Memory 快照写入 `state/snapshots/`
+  2. Retinue `allocate()` 时将快照写入池实例的 `workspace/memory/MEMORY.md`
+  3. relay 应在 Deed 提交前刷新，确保池实例拿到最新记忆
+  4. Agent 执行时能实际读取 MEMORY.md 中的记忆内容
+- **发现的 gap 与修复**：
+  - **G-OC8 [已修]** relay 事件触发修复（deed_submitted → spine.relay）
+  - **G-OC10 [已修]** 执行模式从 subagent spawn 改为 persistent full session + `sessions_send`。每个 Deed 的池实例在 `allocate()` 时设置 `session_key = agent:{instance_id}:main`，首次 `send_to_session()` 自动创建 full session 并加载 MEMORY.md。整条 Psyche → relay → MEMORY.md → agent 内化链路恢复
+  - **修复文件**：`runtime/openclaw.py`（`send_to_session`/`main_session_key`）、`runtime/retinue.py`（session lifecycle）、`temporal/activities_exec.py`（move 执行重写）、`temporal/workflows.py`（agent limits）
+
+### 17.5 Lore 经验记录
+
+- **依据**：SPEC §6.2, §10.1
+- **设计规则**：
+  1. 每次 Deed 完成（成功或失败）必须在 Lore DB 记录经验
+  2. 记录内容包含：deed_id, objective, dag_budget, move_count, plan_structure, offering_quality, token_consumption, success, duration, 关联 ID
+- **发现的 gap 与修复**：
+  - **G-OC9 [已修]** `temporal/activities_herald.py:run_finalize_herald()` 和 `run_update_deed_status()` 均无 Lore 记录调用。已添加：
+    - 成功路径：从 plan/move_results 提取 objective、agents、tokens、duration，调用 `lore.record(success=True)`
+    - 失败/取消路径：调用 `lore.record(success=False)` 记录失败经验
+  - Worker 进程初始化时添加 `self._lore = LorePsyche(...)` 实例
+
+### 17.6 Deed 级 Session（已修复，2026-03-11）
+
+- **依据**：DESIGN_QA_v1 Retinue lifecycle steps 5-11
+- **设计规则**：
+  1. 每个 Deed 在分配的池实例上启动一个 **主 session（full mode）**
+  2. 主 session 贯穿整个 Deed 生命周期，多个 Move 共享记忆积累
+- **修复**：
+  - `retinue.py:allocate()` 设置 `session_key = agent:{instance_id}:main`
+  - `activities_exec.py:run_openclaw_move()` 通过 `send_to_session(session_key, message, timeout)` 发送指令，同一 agent 的多个 Move 共享同一 session
+  - OC 按 session key 串行化 runs，同 agent Move 自然串行、记忆积累
+  - `retinue.py:release()` 调用 `_destroy_instance_sessions()` 删除 session JSONL，下次分配时重新加载 MEMORY.md
+- **状态**：已修复
+
+### 17.8 Session 生命周期泄漏（已修复，2026-03-11）
+
+- **依据**：基本资源管理
+- **原 gap**：旧 `sessions_spawn` + `cleanup: "keep"` 模式每次 move 创建孤儿 session，无限积累
+- **修复**：
+  - 执行模式改为 persistent full session（每个池实例一个主 session），不再创建临时 session
+  - `retinue.py:release()` 在释放实例时调用 `_destroy_instance_sessions()` 删除 `.jsonl` 文件
+  - `retinue.py:recover_on_startup()` 恢复孤儿实例时也清理 session
+  - `openclaw.py:cleanup_all_sessions()` 可全量清理所有 agent 的 session 文件
+- **状态**：已修复
+
+### 17.9 记忆分层制度（已实现，2026-03-11）
+
+- **依据**：QA §1.6（知识源分级的动态性）
+- **设计规则**：
+  1. 知识源可信度由 Spine routine 动态维护
+  2. 引用该源的任务获得低评价时下调，高评价时上调
+  3. 不由用户手动触发
+- **实现**：
+  - **tier 正式枚举**：`core`(1.0) / `deep`(0.99) / `working`(0.95) / `transient`(0.85)，定义于 `psyche/memory.py:TIER_DECAY_FACTORS`
+  - **tier-based decay**：`memory.decay_all()` 按 tier 应用不同衰减因子，core 永不衰减，transient 衰减最快
+  - **run_learn() tier 标记**：新提取知识自动标记 `tier:working`（`routines_ops_learn.py`）
+  - **动态 tier 升级**：同一事实从多个 Deed 重复提取时（`upsert` 返回 `action: "updated"`），自动升级到 `tier:deep`（`routines.py:_upgrade_tier()`）
+- **状态**：已实现。反馈驱动的 tier 降级（高评分↑/低评分↓）暂未实现，待暖机后根据实际数据补充
+
+### 17.10 Subagent 记忆权限（已修复，2026-03-11）
+
+- **依据**：OC SDK `SUBAGENT_TOOL_DENY_ALWAYS`，docs.openclaw.ai/concepts/memory
+- **原 gap**：subagent 模式下 `memory_search`/`memory_get` 被硬性禁止，MEMORY.md 不加载，Psyche 内化链路无效
+- **修复**：执行模式从 subagent spawn 切换为 persistent full session。full session 启动时自动加载 MEMORY.md，agent 可通过 `memory_search`/`memory_get` 检索记忆
+- **状态**：已修复（根因消除：不再使用 subagent 模式）
+
+### 17.7 E2E 验证结果（2026-03-10）
+
+完整链路通过：
+1. Voice → counsel 应答 ✓
+2. `/submit` → Will enrich → Temporal submit ✓
+3. Retinue allocate → 池实例 `scout_1`（非基础 agent） ✓
+4. `_fill_templates()` → 基础 workspace 文件复制到池实例 workspace ✓
+5. Gateway `sessions_send` agentId=`scout_1` → 200 OK ✓
+6. Agent 执行 → `output.md` 产出 ✓
+7. Herald → offering 归档 + deed status = `awaiting_eval` ✓
+8. Lore → `lore.record()` 写入 DB ✓
+9. 两个 Deed 成功执行：`deed_20260310152057_4d0b2c` + `deed_20260310151755_c8df8b` ✓
 
 ---
 
