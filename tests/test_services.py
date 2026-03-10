@@ -198,3 +198,52 @@ class TestCadence:
 
     def test_parse_duration_invalid(self):
         assert Cadence._parse_duration("abc") is None
+
+
+# -- FolioWritManager: standing Slip / Writ auto-association -----------------
+
+class TestStandingSlipWrit:
+    def _make_manager(self, state_dir, nerve):
+        from services.folio_writ import FolioWritManager
+        from services.ledger import Ledger
+        ledger = Ledger(state_dir)
+        return FolioWritManager(state_dir, nerve, ledger)
+
+    def test_ensure_standing_writ_creates_folio_and_writ(self, state_dir, nerve):
+        mgr = self._make_manager(state_dir, nerve)
+        slip = mgr.create_slip(
+            title="Daily digest", objective="daily news", brief={}, design={},
+            standing=True,
+        )
+        slip_id = slip["slip_id"]
+        assert slip["folio_id"] is None
+
+        writ = mgr.ensure_standing_writ(slip_id, schedule="0 9 * * *")
+        assert writ is not None
+        assert writ["action"]["type"] == "spawn_deed"
+        assert writ["action"]["slip_id"] == slip_id
+        assert writ["match"]["schedule"] == "0 9 * * *"
+
+        # Slip should now have a folio_id.
+        updated_slip = mgr.get_slip(slip_id)
+        assert updated_slip["folio_id"]
+
+        # Folio should contain both Slip and Writ.
+        folio = mgr.get_folio(updated_slip["folio_id"])
+        assert slip_id in folio["slip_ids"]
+        assert writ["writ_id"] in folio["writ_ids"]
+
+    def test_ensure_standing_writ_idempotent(self, state_dir, nerve):
+        mgr = self._make_manager(state_dir, nerve)
+        folio = mgr.create_folio("Test folio")
+        slip = mgr.create_slip(
+            title="Weekly report", objective="weekly", brief={}, design={},
+            folio_id=folio["folio_id"], standing=True,
+        )
+        w1 = mgr.ensure_standing_writ(slip["slip_id"], schedule="0 9 * * 1")
+        w2 = mgr.ensure_standing_writ(slip["slip_id"], schedule="0 9 * * 1")
+        assert w1["writ_id"] == w2["writ_id"]
+
+    def test_ensure_standing_writ_returns_none_for_missing_slip(self, state_dir, nerve):
+        mgr = self._make_manager(state_dir, nerve)
+        assert mgr.ensure_standing_writ("nonexistent", schedule="0 9 * * *") is None

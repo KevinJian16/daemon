@@ -8,9 +8,9 @@ from bootstrap import bootstrap, _validate_openclaw
 class TestBootstrap:
     def test_bootstrap_creates_dbs(self, tmp_path):
         rep = bootstrap(daemon_home=tmp_path)
-        assert (tmp_path / "state" / "memory.db").exists()
-        assert (tmp_path / "state" / "lore.db").exists()
-        assert (tmp_path / "state" / "instinct.db").exists()
+        assert (tmp_path / "state" / "psyche" / "memory.db").exists()
+        assert (tmp_path / "state" / "psyche" / "lore.db").exists()
+        assert (tmp_path / "state" / "psyche" / "instinct.db").exists()
 
     def test_bootstrap_creates_ward(self, tmp_path):
         bootstrap(daemon_home=tmp_path)

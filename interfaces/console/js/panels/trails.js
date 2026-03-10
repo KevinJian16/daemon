@@ -24,7 +24,7 @@ registerPanel('trails', {
     const f = this._filters;
     let html = `<div class="filter-bar">`;
     html += `<select onchange="PANELS.trails._filters.routine=this.value;showPanel('trails',true)">`;
-    html += `<option value="">All Routines</option>`;
+    html += `<option value="">${tx('全部例行', 'All routines')}</option>`;
     html += this._routines.map(r => `<option value="${esc(r)}"${f.routine === r ? ' selected' : ''}>${esc(r)}</option>`).join('');
     html += `</select>`;
     html += `<select onchange="PANELS.trails._filters.status=this.value;showPanel('trails',true)">`;
@@ -37,14 +37,14 @@ registerPanel('trails', {
     html += `</select></div>`;
 
     if (!this._data.length) {
-      html += `<div class="empty">No Trails</div>`;
+      html += `<div class="empty">${tx('暂无踪迹。', 'No trails yet.')}</div>`;
       return html;
     }
     html += this._data.slice(0, 100).map(t => `
       <div class="list-item" onclick="PANELS.trails.openDetail('${esc(t.trail_id || '')}')">
         <div class="item-main">
           <div class="item-title">${esc(t.routine || '')}</div>
-          <div class="item-sub">${fmtTime(t.started_utc)} \u00b7 ${t.elapsed_s || 0}s${t.degraded ? ' \u00b7 degraded' : ''}</div>
+          <div class="item-sub">${fmtTime(t.started_utc)} \u00b7 ${t.elapsed_s || 0}s${t.degraded ? ' \u00b7 ' + tx('降级', 'degraded') : ''}</div>
         </div>
         ${statusDot(t.status || 'muted')}
       </div>
@@ -59,16 +59,16 @@ registerPanel('trails', {
     try {
       const t = await api('/console/trails/' + encodeURIComponent(trailId));
       let html = '';
-      html += fieldText('Trail ID', t.trail_id || trailId, { mono: true });
-      html += fieldText('Routine', t.routine);
-      html += field(tx('\u72b6\u6001', 'Status'), tag(t.status || '', t.status === 'ok' ? 'ok' : 'error') + (t.degraded ? ' ' + tag('degraded', 'warn') : ''));
+      html += fieldText(tx('踪迹 ID', 'Trail ID'), t.trail_id || trailId, { mono: true });
+      html += fieldText(tx('例行', 'Routine'), t.routine);
+      html += field(tx('\u72b6\u6001', 'Status'), tag(t.status || '', t.status === 'ok' ? 'ok' : 'error') + (t.degraded ? ' ' + tag(tx('降级', 'Degraded'), 'warn') : ''));
       html += fieldText(tx('\u5f00\u59cb\u65f6\u95f4', 'Started'), fmtTime(t.started_utc));
       html += fieldText(tx('\u8017\u65f6', 'Elapsed'), (t.elapsed_s || 0) + 's');
       if (t.error) html += fieldText(tx('\u9519\u8bef', 'Error'), t.error);
 
       const moves = Array.isArray(t.moves || t.steps) ? (t.moves || t.steps) : [];
       if (moves.length) {
-        html += `<div class="section-heading">Moves</div>`;
+        html += `<div class="section-heading">${tx('步骤', 'Moves')}</div>`;
         html += moves.map(m => `
           <div class="sub-item">
             <div class="item-main">
@@ -81,13 +81,13 @@ registerPanel('trails', {
 
       const cs = t.cortex_summary || {};
       if (cs.total_calls) {
-        html += `<div class="section-heading">Cortex Summary</div>`;
+        html += `<div class="section-heading">${tx('Cortex 概览', 'Cortex Summary')}</div>`;
         html += fieldText(tx('\u603b\u8c03\u7528', 'Total Calls'), String(cs.total_calls || 0));
-        html += fieldText('Input Tokens', (cs.total_in_tokens || 0).toLocaleString());
-        html += fieldText('Output Tokens', (cs.total_out_tokens || 0).toLocaleString());
+        html += fieldText(tx('输入 Tokens', 'Input Tokens'), (cs.total_in_tokens || 0).toLocaleString());
+        html += fieldText(tx('输出 Tokens', 'Output Tokens'), (cs.total_out_tokens || 0).toLocaleString());
         const bp = cs.by_provider || {};
         if (Object.keys(bp).length) {
-          html += `<div class="section-heading">By Provider</div>`;
+          html += `<div class="section-heading">${tx('按提供方', 'By Provider')}</div>`;
           html += Object.entries(bp).map(([p, v]) => `
             <div class="sub-item">
               <div class="item-main">

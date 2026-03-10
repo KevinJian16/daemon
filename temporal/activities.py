@@ -61,7 +61,7 @@ class DaemonActivities:
             from psyche.instinct import InstinctPsyche
             from runtime.cortex import Cortex
 
-            self._instinct = InstinctPsyche(self._home / "state" / "instinct.db")
+            self._instinct = InstinctPsyche(self._home / "state" / "psyche" / "instinct.db")
             self._cortex = Cortex(self._instinct)
         except Exception as exc:
             activity.logger.warning("Failed to initialize worker Cortex: %s", exc)
@@ -367,14 +367,14 @@ class DaemonActivities:
             if folio_id and str(row.get("folio_id") or "") != folio_id:
                 continue
             scoped.append(row)
-        scoped.sort(key=lambda row: str(row.get("updated_utc") or row.get("submitted_utc") or ""), reverse=True)
+        scoped.sort(key=lambda row: str(row.get("updated_utc") or row.get("created_utc") or ""), reverse=True)
         return [
             {
                 "deed_id": str(row.get("deed_id") or ""),
                 "title": str(row.get("deed_title") or row.get("title") or row.get("objective") or ""),
                 "status": str(row.get("deed_status") or ""),
                 "summary": str(row.get("last_error") or ""),
-                "updated_utc": str(row.get("updated_utc") or row.get("submitted_utc") or ""),
+                "updated_utc": str(row.get("updated_utc") or row.get("created_utc") or ""),
             }
             for row in scoped[: max(1, min(limit, 8))]
         ]
@@ -383,7 +383,7 @@ class DaemonActivities:
         try:
             from psyche.memory import MemoryPsyche
 
-            memory = MemoryPsyche(self._home / "state" / "memory.db")
+            memory = MemoryPsyche(self._home / "state" / "psyche" / "memory.db")
         except Exception:
             return []
 
@@ -758,7 +758,7 @@ class DaemonActivities:
     def _resolve_offering_root(self) -> Path:
         return resolve_offering_root(self._home / "state")
 
-    def _update_deed_status(self, deed_root: str, plan: dict, deed_status: str, offering_path: str | None = None) -> None:
+    def _update_deed_status(self, deed_root: str, plan: dict, deed_status: str, offering_path: str | None = None, result_summary: str | None = None) -> None:
         deed_id = str(plan.get("deed_id") or "")
         brief = plan.get("brief") or {}
         metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
@@ -769,7 +769,7 @@ class DaemonActivities:
         phase = "history"
         if requested_status in {"running", "queued", "paused", "cancel_requested", "cancelling"}:
             phase = "running"
-        elif requested_status in {"awaiting_eval", "pending_review"}:
+        elif requested_status in {"awaiting_eval"}:
             phase = "awaiting_eval"
         elif requested_status == "completed":
             final_status = "awaiting_eval"
@@ -791,6 +791,10 @@ class DaemonActivities:
                     row["deed_status"] = final_status
                     row["phase"] = phase
                     row["updated_utc"] = now_utc
+                    if final_status == "running" and not row.get("started_utc"):
+                        row["started_utc"] = now_utc
+                    if final_status in {"completed", "failed", "cancelled", "awaiting_eval"} and not row.get("ended_utc"):
+                        row["ended_utc"] = now_utc
                     row["deed_id"] = deed_id
                     row["deed_title"] = str(
                         plan.get("deed_title") or plan.get("title")
@@ -805,6 +809,8 @@ class DaemonActivities:
                         row["last_error"] = last_error
                     if offering_path:
                         row["offering_path"] = offering_path
+                    if result_summary:
+                        row["result_summary"] = result_summary
                     if final_status == "awaiting_eval":
                         row["exec_completed_utc"] = now_utc
                         row["eval_window_hours"] = eval_window_hours

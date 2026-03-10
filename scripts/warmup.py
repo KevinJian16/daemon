@@ -271,9 +271,11 @@ def main() -> None:
     print(f"  Home:  {home}")
     print(f"  State: {state}\n")
 
-    memory   = MemoryPsyche(state / "memory.db")
-    lore     = LorePsyche(state / "lore.db")
-    instinct = InstinctPsyche(state / "instinct.db")
+    psyche_dir = state / "psyche"
+    psyche_dir.mkdir(parents=True, exist_ok=True)
+    memory   = MemoryPsyche(psyche_dir / "memory.db")
+    lore     = LorePsyche(psyche_dir / "lore.db")
+    instinct = InstinctPsyche(psyche_dir / "instinct.db")
     cortex   = Cortex(instinct)
     nerve    = Nerve()
     trail    = Trail(state / "trails")

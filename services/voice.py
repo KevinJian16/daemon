@@ -33,11 +33,13 @@ class VoiceService:
         openclaw_home: Path | None = None,
         folio_writ_manager: Any | None = None,
         cortex: Any | None = None,
+        lore: Any | None = None,
     ) -> None:
         self._instinct = instinct
         self._oc_home = openclaw_home
         self._folio_writ = folio_writ_manager
         self._cortex = cortex
+        self._lore = lore
         self._oc_cfg: dict | None = None
         self._sessions: dict[str, dict] = {}
         if openclaw_home:
@@ -181,34 +183,8 @@ class VoiceService:
 
     @staticmethod
     def _validate_plan_convergence(plan: dict) -> tuple[bool, str]:
-        moves = plan.get("moves") or []
-        if not isinstance(moves, list) or not moves:
-            return False, "empty moves"
-        valid_agents = {"scout", "sage", "artificer", "arbiter", "scribe", "envoy", "counsel", "spine"}
-        ids: set[str] = set()
-        normalized: list[tuple[str, dict]] = []
-        for i, st in enumerate(moves):
-            if not isinstance(st, dict):
-                return False, f"move {i} not a dict"
-            sid = str(st.get("id") or f"move_{i}")
-            if sid in ids:
-                return False, f"duplicate id: {sid}"
-            ids.add(sid)
-            normalized.append((sid, st))
-            agent = str(st.get("agent") or "")
-            if agent and agent not in valid_agents:
-                return False, f"unknown agent: {agent}"
-        for sid, st in normalized:
-            for dep in st.get("depends_on") or []:
-                if dep not in ids:
-                    return False, f"move {sid} depends on unknown {dep}"
-        brief = Brief.from_dict(plan.get("brief") if isinstance(plan.get("brief"), dict) else {})
-        if len(moves) > int(brief.dag_budget):
-            return False, f"moves {len(moves)} > dag_budget {brief.dag_budget}"
-        terminal = [s for s in moves if not any(str(s.get("id") or "") in (other.get("depends_on") or []) for other in moves if other is not s)]
-        if not terminal:
-            return False, "no terminal moves (possible cycle)"
-        return True, ""
+        from runtime.design_validator import validate_design
+        return validate_design(plan)
 
     def _extract_message_text(self, msg: dict) -> str:
         raw = msg.get("content")
@@ -248,6 +224,19 @@ class VoiceService:
             slip_title = self._generate_title(brief.objective or latest_message)
         out["slip_title"] = slip_title
         out["title"] = slip_title
+
+        # Consult Slip-level planning habits for repeat executions (P3: Slip learning).
+        slip_id = str(metadata.get("slip_id") or "").strip()
+        if slip_id and self._lore:
+            try:
+                habits = self._lore.slip_planning_habits(slip_id)
+                if habits and habits.get("sample_size", 0) >= 2:
+                    metadata["slip_planning_habits"] = habits
+                    if habits.get("avg_dag_budget") and not out.get("brief", {}).get("dag_budget"):
+                        brief.dag_budget = max(brief.dag_budget, int(habits["avg_dag_budget"]))
+                        out["brief"] = brief.to_dict()
+            except Exception as exc:
+                logger.debug("Slip planning habits lookup failed for %s: %s", slip_id, exc)
 
         affinity = self._folios_for_text(brief.objective or latest_message)
         if affinity and not str(metadata.get("folio_id") or "").strip():

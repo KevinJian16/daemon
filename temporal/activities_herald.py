@@ -14,15 +14,9 @@ async def run_finalize_herald(self, deed_root: str, plan: dict, move_results: li
             "detail": "No scribe output found",
         }
 
-    quality_check = self._quality_floor_check(deed_root, plan, scribe_path, move_results)
-    plan["_quality_check"] = quality_check
-    if not quality_check.get("ok"):
-        return {
-            "ok": False,
-            "error_code": str(quality_check.get("reason") or "quality_floor_not_met"),
-            "detail": "Offering quality floor not met",
-            "quality": quality_check,
-        }
+    # Quality judgment is Arbiter's responsibility (SPEC §9.4, QA §6.3).
+    # Herald only handles logistics: archive offering, update index, emit events.
+    quality_check = {"ok": True, "source": "arbiter_upstream"}
 
     offering_root = self._resolve_offering_root()
     offering_path = self._archive_offering(deed_root, plan, scribe_path, move_results, offering_root=offering_root)
@@ -33,6 +27,7 @@ async def run_finalize_herald(self, deed_root: str, plan: dict, move_results: li
         plan,
         "completed",
         offering_path=str(offering_path),
+        result_summary=str(quality_check.get("summary") or ""),
     )
 
     feedback_survey: dict[str, Any] | None = None

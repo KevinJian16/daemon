@@ -420,7 +420,7 @@ def _write_daily_stats(self) -> dict:
         "date": today,
         "deeds_total": len(deeds),
         "deeds_running": sum(1 for d in deeds if str(d.get("deed_status") or "") in {"running", "queued", "paused", "cancelling"}),
-        "deeds_awaiting_eval": sum(1 for d in deeds if str(d.get("deed_status") or "") in {"awaiting_eval", "pending_review"}),
+        "deeds_awaiting_eval": sum(1 for d in deeds if str(d.get("deed_status") or "") == "awaiting_eval"),
         "offerings_total": len(herald),
         "avg_quality": float((health or {}).get("avg_quality") or 0.0),
         "success_rate": float((health or {}).get("success_rate") or 0.0),
@@ -441,7 +441,7 @@ def _backup_state(home: Path) -> dict:
 
     files_to_backup = [
         "deeds.json", "ward.json", "schedule_history.json",
-        "herald_log.jsonl", "instinct.db",
+        "herald_log.jsonl", "psyche/instinct.db",
     ]
     copied = 0
     for fname in files_to_backup:

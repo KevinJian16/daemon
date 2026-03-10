@@ -60,40 +60,8 @@ class Will:
         self._temporal = temporal_client
 
     def validate(self, plan: dict) -> tuple[bool, str]:
-        moves = plan.get("moves") or []
-        if not isinstance(moves, list) or not moves:
-            return False, "plan must contain a non-empty moves list"
-
-        valid_agents = {"scout", "sage", "artificer", "arbiter", "scribe", "envoy"}
-        ids: set[str] = set()
-        normalized: list[tuple[str, dict]] = []
-        for i, st in enumerate(moves):
-            if not isinstance(st, dict):
-                return False, f"move {i} is not an object"
-            sid = str(st.get("id") or f"move_{i}")
-            if sid in ids:
-                return False, f"duplicate move id: {sid}"
-            ids.add(sid)
-            normalized.append((sid, st))
-            agent = str(st.get("agent") or "")
-            if agent and agent not in valid_agents:
-                return False, f"move {sid}: unknown agent type {agent!r}"
-        for sid, st in normalized:
-            for dep in st.get("depends_on") or []:
-                if dep not in ids:
-                    return False, f"move {sid}: depends_on unknown move {dep!r}"
-
-        brief = Brief.from_dict(plan.get("brief") if isinstance(plan.get("brief"), dict) else {})
-        if len(moves) > int(brief.dag_budget):
-            return False, f"move count {len(moves)} exceeds dag_budget {brief.dag_budget}"
-
-        terminal = [s for s in moves if not any(
-            s["id"] in (other.get("depends_on") or []) for other in moves if other["id"] != s["id"]
-        )]
-        if not terminal:
-            return False, "plan has no terminal moves (DAG cycle suspected)"
-
-        return True, ""
+        from runtime.design_validator import validate_design
+        return validate_design(plan)
 
     def enrich(self, plan: dict) -> dict:
         plan = dict(plan)
@@ -308,15 +276,6 @@ class Will:
 
         writ_id = str(metadata.get("writ_id") or plan.get("writ_id") or "").strip()
         create_writ = metadata.get("create_writ") if isinstance(metadata.get("create_writ"), dict) else {}
-        if folio_id and not writ_id and create_writ:
-            writ = self._folio_writ.create_writ(
-                folio_id=folio_id,
-                title=str(create_writ.get("title") or plan.get("title") or "新成文"),
-                match=create_writ.get("match") if isinstance(create_writ.get("match"), dict) else {},
-                action=create_writ.get("action") if isinstance(create_writ.get("action"), dict) else {},
-                metadata=create_writ.get("metadata") if isinstance(create_writ.get("metadata"), dict) else {},
-            )
-            writ_id = str(writ.get("writ_id") or "")
 
         draft_id = str(metadata.get("draft_id") or plan.get("draft_id") or "").strip()
         if not draft_id:
@@ -342,6 +301,32 @@ class Will:
                 standing=brief.standing,
             )
             slip_id = str(slip.get("slip_id") or "")
+
+        # Create Writ AFTER Slip so we can inject slip_id into spawn_deed action.
+        if folio_id and not writ_id and create_writ:
+            writ_action = dict(create_writ.get("action") if isinstance(create_writ.get("action"), dict) else {})
+            if str(writ_action.get("type") or "") == "spawn_deed" and not writ_action.get("slip_id"):
+                writ_action["slip_id"] = slip_id
+            writ = self._folio_writ.create_writ(
+                folio_id=folio_id,
+                title=str(create_writ.get("title") or plan.get("title") or "新成文"),
+                match=create_writ.get("match") if isinstance(create_writ.get("match"), dict) else {},
+                action=writ_action,
+                metadata=create_writ.get("metadata") if isinstance(create_writ.get("metadata"), dict) else {},
+            )
+            writ_id = str(writ.get("writ_id") or "")
+        elif not writ_id and brief.standing and slip_id:
+            # Standing Slip without explicit Writ — use ensure_standing_writ convenience API.
+            schedule = str((create_writ.get("match") or {}).get("schedule") or "").strip()
+            if not schedule:
+                schedule = str((brief.to_dict().get("schedule") or "")).strip()
+            if schedule and folio_id:
+                result = self._folio_writ.ensure_standing_writ(
+                    slip_id, schedule=schedule,
+                    title=str(plan.get("slip_title") or plan.get("title") or ""),
+                )
+                if result:
+                    writ_id = str(result.get("writ_id") or "")
 
         metadata["folio_id"] = folio_id or None
         metadata["writ_id"] = writ_id or None
@@ -535,7 +520,10 @@ class Will:
                     "objective": objective,
                     "deed_status": deed_status,
                     "deed_root": deed_root,
-                    "submitted_utc": _utc(),
+                    "created_utc": _utc(),
+                    "started_utc": "",
+                    "ended_utc": "",
+                    "result_summary": "",
                     "updated_utc": _utc(),
                     "priority": metadata.get("priority", 5),
                     "slip_title": str(plan.get("slip_title") or plan.get("title") or objective),

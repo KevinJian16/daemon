@@ -290,6 +290,59 @@ class LorePsyche:
             rows = conn.execute(sql, params).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
+    def slip_planning_habits(self, slip_id: str, limit: int = 10) -> dict:
+        """Aggregate planning patterns for a Slip from its Deed history.
+
+        Returns: {avg_dag_budget, avg_move_count, common_agents, success_rate, sample_size}
+        """
+        if not slip_id:
+            return {}
+        records = self.list_records(slip_id=slip_id, limit=limit)
+        if not records:
+            return {}
+        budgets = [r.get("dag_budget") or 6 for r in records]
+        move_counts = [r.get("move_count") or 0 for r in records]
+        successes = sum(1 for r in records if r.get("success"))
+        agent_freq: dict[str, int] = {}
+        for r in records:
+            ps = r.get("plan_structure") if isinstance(r.get("plan_structure"), dict) else {}
+            for agent in ps.get("agents", []):
+                agent_freq[agent] = agent_freq.get(agent, 0) + 1
+        common_agents = sorted(agent_freq, key=agent_freq.get, reverse=True)[:5]
+        return {
+            "slip_id": slip_id,
+            "avg_dag_budget": round(sum(budgets) / len(budgets), 1),
+            "avg_move_count": round(sum(move_counts) / len(move_counts), 1),
+            "common_agents": common_agents,
+            "success_rate": round(successes / len(records), 3),
+            "sample_size": len(records),
+        }
+
+    def writ_trigger_summary(self, writ_id: str, limit: int = 20) -> dict:
+        """Aggregate trigger outcomes for a Writ."""
+        if not writ_id:
+            return {}
+        records = self.list_records(writ_id=writ_id, limit=limit)
+        if not records:
+            return {}
+        successes = sum(1 for r in records if r.get("success"))
+        feedback_scores = []
+        for r in records:
+            fb = r.get("user_feedback") if isinstance(r.get("user_feedback"), dict) else {}
+            score = fb.get("score")
+            if score is not None:
+                try:
+                    feedback_scores.append(float(score))
+                except (TypeError, ValueError):
+                    pass
+        return {
+            "writ_id": writ_id,
+            "total_triggered": len(records),
+            "success_rate": round(successes / len(records), 3),
+            "avg_feedback_score": round(sum(feedback_scores) / len(feedback_scores), 3) if feedback_scores else None,
+            "sample_size": len(records),
+        }
+
     def decay(self, stale_days: int = 180) -> dict:
         """Prune stale, low-value records as Lore decay."""
         cutoff_days = max(30, int(stale_days))

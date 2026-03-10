@@ -4,7 +4,7 @@ registerPanel('routines', {
     this._data = await api('/console/routines');
   },
   render() {
-    if (!this._data.length) return `<div class="empty">No Routines</div>`;
+    if (!this._data.length) return `<div class="empty">${tx('暂无例行。', 'No routines yet.')}</div>`;
     return this._data.map(r => `
       <div class="list-item" onclick="PANELS.routines.openDetail('${esc(r.routine)}')">
         <div class="item-main">
@@ -38,7 +38,7 @@ registerPanel('routines', {
     try {
       const history = await api('/console/routines/history?limit=20&routine=' + encodeURIComponent(r.routine));
       if (history && history.length) {
-        html += `<div class="section-heading">Execution History</div>`;
+        html += `<div class="section-heading">${tx('执行记录', 'Execution History')}</div>`;
         html += history.slice(0, 10).map(h => `
           <div class="sub-item">
             <div class="item-main">
@@ -57,7 +57,7 @@ registerPanel('routines', {
 
 async function _triggerRoutine(name) {
   const ok = await confirmAction(
-    'Trigger Routine',
+    tx('触发例行', 'Trigger Routine'),
     tx(`\u786e\u8ba4\u7acb\u5373\u89e6\u53d1 ${name}\uff1f`, `Trigger ${name} now?`)
   );
   if (!ok) return;
@@ -75,7 +75,7 @@ async function _toggleRoutine(routine) {
   const currentEnabled = row.enabled !== false;
   const action = currentEnabled ? tx('\u7981\u7528', 'Disable') : tx('\u542f\u7528', 'Enable');
   const ok = await confirmAction(
-    'Toggle Routine',
+    tx('切换例行', 'Toggle Routine'),
     tx(`${action} ${routine}\uff1f`, `${action} ${routine}?`)
   );
   if (!ok) return;

@@ -76,8 +76,8 @@ Commands:
   psyche memory               Show Memory Psyche stats
   psyche lore                 Show active Lore methods
   psyche instinct             Show Instinct priorities + rations
-  norm get <name>             Show a quality profile
-  norm set <name>             Set quality profile (reads JSON from stdin)
+  ration get <name>           Show a ration
+  ration set <name>           Set a ration limit
   trails [--routine R]        Show recent trails
 
 Examples:
@@ -88,7 +88,7 @@ Examples:
   daemon offerings --limit 10
   daemon chat
   daemon spine trigger pulse
-  daemon norm get research_report
+  daemon ration get openai
 """.strip())
 
 
@@ -287,24 +287,24 @@ def cmd_psyche(args: list[str]) -> None:
         _die(f"Unknown psyche subcommand: {sub}")
 
 
-def cmd_norm(args: list[str]) -> None:
+def cmd_ration(args: list[str]) -> None:
     if len(args) < 2:
-        _die("Usage: daemon norm <get|set> <name>")
+        _die("Usage: daemon ration <get|set> <name>")
     sub, name = args[0], args[1]
     if sub == "get":
-        d = _get(f"/console/norm/{name}")
-        print(json.dumps(d.get("rules") or d, indent=2, ensure_ascii=False))
+        d = _get(f"/console/rations/{name}")
+        print(json.dumps(d, indent=2, ensure_ascii=False))
     elif sub == "set":
-        print(f"Enter JSON rules for '{name}' (then Ctrl+D):")
+        print(f"Enter a numeric daily limit for '{name}' (then Ctrl+D):")
         raw = sys.stdin.read()
         try:
-            rules = json.loads(raw)
-        except json.JSONDecodeError as e:
-            _die(f"Invalid JSON: {e}")
-        result = _put(f"/console/norm/{name}", {"rules": rules})
-        print(f"✓ Policy '{name}' updated" if result.get("ok") else f"✗ {result}")
+            daily_limit = float(str(raw).strip())
+        except Exception:
+            _die("Daily limit must be numeric")
+        result = _put(f"/console/rations/{name}", {"daily_limit": daily_limit})
+        print(f"✓ Ration '{name}' updated" if result.get("ok") else f"✗ {result}")
     else:
-        _die(f"Unknown norm subcommand: {sub}")
+        _die(f"Unknown ration subcommand: {sub}")
 
 
 def cmd_trails(args: list[str]) -> None:
@@ -352,7 +352,7 @@ COMMANDS = {
     "chat": (cmd_chat, 0),
     "spine": (cmd_spine, 1),
     "psyche": (cmd_psyche, 1),
-    "norm": (cmd_norm, 2),
+    "ration": (cmd_ration, 2),
     "trails": (cmd_trails, 0),
 }
 

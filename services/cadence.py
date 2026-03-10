@@ -665,7 +665,7 @@ class Cadence:
         def _mutate(deeds: list[dict]) -> None:
             for row in deeds:
                 status = str(row.get("deed_status") or "").strip().lower()
-                if status not in {"awaiting_eval", "pending_review"}:
+                if status != "awaiting_eval":
                     continue
                 deadline = self._parse_utc_iso(str(row.get("eval_deadline_utc") or ""))
                 if deadline is None:

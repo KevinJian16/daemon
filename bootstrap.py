@@ -154,8 +154,15 @@ def bootstrap(daemon_home: Path | None = None, openclaw_home: Path | None | obje
         "warnings": [],
     }
 
-    db_dir = home / "state"
+    db_dir = home / "state" / "psyche"
     db_dir.mkdir(parents=True, exist_ok=True)
+
+    # Migrate DBs from state/ root to state/psyche/ if they exist at the old location.
+    for _db_name in ("memory.db", "lore.db", "instinct.db"):
+        _old = home / "state" / _db_name
+        _new = db_dir / _db_name
+        if _old.exists() and not _new.exists():
+            _old.rename(_new)
 
     # ── Memory Psyche ─────────────────────────────────────────────────────────
     mem_db = db_dir / "memory.db"

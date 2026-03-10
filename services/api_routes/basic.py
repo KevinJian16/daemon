@@ -63,7 +63,7 @@ def register_basic_routes(
 
     def _sort_deeds(rows: list[dict]) -> list[dict]:
         def _ts(row: dict) -> float:
-            for key in ("updated_utc", "submitted_utc", "created_utc"):
+            for key in ("updated_utc", "started_utc", "created_utc"):
                 raw = str(row.get(key) or "").strip()
                 if not raw:
                     continue
@@ -85,7 +85,7 @@ def register_basic_routes(
         deed_st = _deed_status(row).lower()
         if deed_st in {"running", "queued", "paused", "cancel_requested", "cancelling"}:
             return "running"
-        if deed_st in {"awaiting_eval", "pending_review"}:
+        if deed_st == "awaiting_eval":
             return "awaiting_eval"
         return "history"
 
@@ -105,7 +105,7 @@ def register_basic_routes(
         changed = False
         for row in rows:
             status = _deed_status(row).lower()
-            if status not in {"awaiting_eval", "pending_review"}:
+            if status != "awaiting_eval":
                 continue
             raw = str(row.get("eval_deadline_utc") or "").strip()
             if not raw:
@@ -235,7 +235,7 @@ def register_basic_routes(
         if not isinstance(row, dict):
             raise HTTPException(status_code=404, detail="deed not found")
         cur_status = _deed_status(row).lower()
-        if cur_status in {"completed", "awaiting_eval", "pending_review", "cancelled", "failed"}:
+        if cur_status in {"completed", "awaiting_eval", "cancelled", "failed"}:
             raise HTTPException(status_code=409, detail=f"cancel_not_allowed_for_deed_status:{cur_status}")
 
         await ensure_temporal_client(retries=2, delay_s=0.3)
@@ -335,7 +335,7 @@ def register_basic_routes(
         if not isinstance(row, dict):
             raise HTTPException(status_code=404, detail="deed not found")
         status = _deed_status(row).lower()
-        if status in {"completed", "cancelled", "failed", "awaiting_eval", "pending_review"}:
+        if status in {"completed", "cancelled", "failed", "awaiting_eval"}:
             raise HTTPException(status_code=409, detail=f"pause_not_allowed_for_deed_status:{status}")
         workflow_id = await _signal_workflow(deed_id, row, signal_name="pause_execution", payload={"source": "api"})
         now = _utc()

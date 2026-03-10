@@ -184,9 +184,10 @@ async def run_spine_routine(self, deed_root: str, plan: dict, routine_name: str)
 
     home = self._home
     state = home / "state"
-    memory = MemoryPsyche(state / "memory.db")
-    lore = LorePsyche(state / "lore.db")
-    instinct = InstinctPsyche(state / "instinct.db")
+    psyche_dir = state / "psyche"
+    memory = MemoryPsyche(psyche_dir / "memory.db")
+    lore = LorePsyche(psyche_dir / "lore.db")
+    instinct = InstinctPsyche(psyche_dir / "instinct.db")
     cortex = Cortex(instinct)
     nerve = Nerve()
     trail = Trail(state / "trails")

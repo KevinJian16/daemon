@@ -1,12 +1,23 @@
 """Console trails and cortex usage routes."""
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
 
 def register_console_observe_routes(app: FastAPI, *, ctx: Any) -> None:
+    @app.get("/console/lexicon")
+    def console_lexicon():
+        path = getattr(ctx, "lexicon_path", None)
+        if not path or not path.exists():
+            raise HTTPException(status_code=404, detail="lexicon_missing")
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"lexicon_invalid:{exc}") from exc
+
     # ── Console — Trails ──────────────────────────────────────────────────────
 
     @app.get("/console/trails")

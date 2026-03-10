@@ -10,6 +10,7 @@ import secrets
 import time
 from contextlib import suppress
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,13 @@ from services.api_routes.chat import register_chat_routes
 from services.api_routes.feedback import register_feedback_routes
 from services.api_routes.submit import register_submit_route
 from services.api_routes.system import register_system_routes
+from services.api_routes.portal_shell import register_portal_shell_routes
+from services.api_routes.console_admin import register_console_admin_routes
+from services.api_routes.console_agents_skill import register_console_agents_skill_routes
+from services.api_routes.console_observe import register_console_observe_routes
+from services.api_routes.console_rations import register_console_rations_routes
+from services.api_routes.console_runtime import register_console_runtime_routes
+from services.api_routes.console_spine import register_console_spine_routes
 from services.cadence import Cadence
 from services.ledger import Ledger
 from services.folio_writ import FolioWritManager
@@ -104,9 +112,11 @@ def create_app() -> FastAPI:
     ledger = Ledger(state)
 
     # Initialize Psyche.
-    memory = MemoryPsyche(state / "memory.db")
-    lore = LorePsyche(state / "lore.db")
-    instinct = InstinctPsyche(state / "instinct.db")
+    psyche_dir = state / "psyche"
+    psyche_dir.mkdir(parents=True, exist_ok=True)
+    memory = MemoryPsyche(psyche_dir / "memory.db")
+    lore = LorePsyche(psyche_dir / "lore.db")
+    instinct = InstinctPsyche(psyche_dir / "instinct.db")
 
     # Initialize infrastructure.
     cortex = Cortex(instinct)
@@ -127,7 +137,7 @@ def create_app() -> FastAPI:
     folio_writ = FolioWritManager(state_dir=state, nerve=nerve, ledger=ledger)
     will = Will(lore, instinct, nerve, state, cortex=cortex, folio_writ_manager=folio_writ)
     cadence = Cadence(canon, routines, instinct, nerve, state, will=will)
-    voice = VoiceService(instinct, oc_home, folio_writ_manager=folio_writ, cortex=cortex)
+    voice = VoiceService(instinct, oc_home, folio_writ_manager=folio_writ, cortex=cortex, lore=lore)
     reset_manager = SystemResetManager(home)
     ether = Ether(state, source="api")
     telemetry_dir = state / "telemetry"
@@ -540,7 +550,7 @@ p{
             status_lower = deed_status.lower()
             if status_lower in {"running", "queued", "paused", "cancel_requested", "cancelling"}:
                 phase = "running"
-            elif status_lower in {"awaiting_eval", "pending_review"}:
+            elif status_lower == "awaiting_eval":
                 phase = "awaiting_eval"
             else:
                 phase = "history"
@@ -739,12 +749,43 @@ p{
         }
 
     async def _consume_writ_trigger(payload: dict[str, Any]) -> None:
-        brief_template = payload.get("brief_template") if isinstance(payload.get("brief_template"), dict) else {}
+        action = payload.get("action") if isinstance(payload.get("action"), dict) else {}
+        action_type = str(action.get("type") or "spawn_deed").strip()
+        writ_id = str(payload.get("writ_id") or "")
+        folio_id = str(payload.get("folio_id") or "")
+
+        try:
+            if action_type == "spawn_deed":
+                await _writ_action_spawn_deed(payload, action, writ_id, folio_id)
+            elif action_type == "create_draft":
+                _writ_action_create_draft(action, writ_id, folio_id)
+            elif action_type == "crystallize_draft":
+                _writ_action_crystallize_draft(action, writ_id)
+            elif action_type == "advance_slip":
+                _writ_action_advance_slip(action, writ_id)
+            elif action_type == "park_slip":
+                _writ_action_update_slip_status(action, "parked", writ_id)
+            elif action_type == "archive_slip":
+                _writ_action_update_slip_status(action, "archived", writ_id)
+            elif action_type == "attach_slip_to_folio":
+                _writ_action_attach_slip(action, writ_id)
+            elif action_type == "create_folio":
+                _writ_action_create_folio(action, writ_id)
+            else:
+                logger.warning("Writ %s: unknown action type %r", writ_id, action_type)
+        except Exception as exc:
+            logger.warning("Writ %s action %s failed: %s", writ_id, action_type, exc)
+
+    async def _writ_action_spawn_deed(payload: dict, action: dict, writ_id: str, folio_id: str) -> None:
+        brief_template = action.get("brief_template") if isinstance(action.get("brief_template"), dict) else (
+            payload.get("brief_template") if isinstance(payload.get("brief_template"), dict) else {}
+        )
         ctx = _build_writ_context(payload)
         rendered = _render_template_value(brief_template, ctx)
         objective = str(rendered.get("objective") or brief_template.get("objective") or "").strip()
         if not objective:
-            objective = f"Writ {str(payload.get('writ_id') or '')}"
+            objective = f"Writ {writ_id}"
+        slip_id = str(action.get("slip_id") or payload.get("slip_id") or "")
         plan = {
             "brief": {
                 "objective": objective,
@@ -763,16 +804,82 @@ p{
             ],
             "metadata": {
                 "source": "writ_trigger",
-                "writ_id": str(payload.get("writ_id") or ""),
-                "folio_id": str(payload.get("folio_id") or ""),
+                "writ_id": writ_id,
+                "folio_id": folio_id,
+                "slip_id": slip_id,
                 "trigger_event": str(payload.get("trigger_event") or ""),
             },
         }
+        if slip_id:
+            plan["slip_id"] = slip_id
         result = await will.submit(plan)
         if result.get("ok") and result.get("deed_id"):
-            folio_writ.record_writ_triggered(str(payload.get("writ_id") or ""), str(result.get("deed_id") or ""))
+            folio_writ.record_writ_triggered(writ_id, str(result.get("deed_id") or ""))
         else:
-            logger.warning("Writ trigger submit failed for %s: %s", payload.get("writ_id"), result)
+            logger.warning("Writ spawn_deed failed for %s: %s", writ_id, result)
+
+    def _writ_action_create_draft(action: dict, writ_id: str, folio_id: str) -> None:
+        draft = folio_writ.create_draft(
+            source="writ",
+            folio_id=folio_id or str(action.get("folio_id") or ""),
+            intent_snapshot=str(action.get("intent") or action.get("objective") or ""),
+        )
+        folio_writ.record_writ_triggered(writ_id, str(draft.get("draft_id") or ""))
+
+    def _writ_action_crystallize_draft(action: dict, writ_id: str) -> None:
+        draft_id = str(action.get("draft_id") or "")
+        if not draft_id:
+            logger.warning("Writ %s crystallize_draft: missing draft_id", writ_id)
+            return
+        draft = folio_writ.get_draft(draft_id)
+        if not draft:
+            logger.warning("Writ %s crystallize_draft: draft %s not found", writ_id, draft_id)
+            return
+        candidate_brief = draft.get("candidate_brief") if isinstance(draft.get("candidate_brief"), dict) else {}
+        candidate_design = draft.get("candidate_design") if isinstance(draft.get("candidate_design"), dict) else {}
+        result = folio_writ.crystallize_draft(
+            draft_id,
+            title=str(action.get("title") or draft.get("intent_snapshot") or ""),
+            objective=str(draft.get("intent_snapshot") or ""),
+            brief=candidate_brief,
+            design=candidate_design,
+            folio_id=str(action.get("folio_id") or draft.get("folio_id") or "") or None,
+            standing=bool(action.get("standing") or candidate_brief.get("standing")),
+        )
+        if result:
+            folio_writ.record_writ_triggered(writ_id, str(result.get("slip_id") or draft_id))
+
+    def _writ_action_advance_slip(action: dict, writ_id: str) -> None:
+        slip_id = str(action.get("slip_id") or "")
+        new_status = str(action.get("status") or "active")
+        if not slip_id:
+            logger.warning("Writ %s advance_slip: missing slip_id", writ_id)
+            return
+        folio_writ.update_slip(slip_id, {"status": new_status})
+        folio_writ.record_writ_triggered(writ_id, slip_id)
+
+    def _writ_action_update_slip_status(action: dict, status: str, writ_id: str) -> None:
+        slip_id = str(action.get("slip_id") or "")
+        if not slip_id:
+            logger.warning("Writ %s %s: missing slip_id", writ_id, status)
+            return
+        folio_writ.update_slip(slip_id, {"status": status})
+        folio_writ.record_writ_triggered(writ_id, slip_id)
+
+    def _writ_action_attach_slip(action: dict, writ_id: str) -> None:
+        slip_id = str(action.get("slip_id") or "")
+        target_folio_id = str(action.get("folio_id") or "")
+        if not slip_id or not target_folio_id:
+            logger.warning("Writ %s attach_slip: missing slip_id or folio_id", writ_id)
+            return
+        folio_writ.attach_slip_to_folio(slip_id, target_folio_id)
+        folio_writ.record_writ_triggered(writ_id, slip_id)
+
+    def _writ_action_create_folio(action: dict, writ_id: str) -> None:
+        title = str(action.get("title") or "自动开卷")
+        summary = str(action.get("summary") or "")
+        result = folio_writ.create_folio(title=title, summary=summary)
+        folio_writ.record_writ_triggered(writ_id, str(result.get("folio_id") or ""))
 
     def _register_runtime_handlers() -> None:
         ws_events = {
@@ -1086,6 +1193,53 @@ p{
     register_chat_routes(app, voice=voice, log_portal_event=_log_portal_event)
     register_folio_writ_routes(app, folio_writ)
 
+    route_ctx = SimpleNamespace(
+        state=state,
+        ledger=ledger,
+        folio_writ=folio_writ,
+        will=will,
+        trail=trail,
+        cadence=cadence,
+        canon=canon,
+        nerve=nerve,
+        cortex=cortex,
+        instinct=instinct,
+        oc_home=oc_home,
+        logger=logger,
+        model_policy_path=model_policy_path,
+        model_registry_path=model_registry_path,
+        lexicon_path=home / "config" / "lexicon.json",
+        utc=_utc,
+        utc_from_ts=_utc_from_ts,
+        deed_view=_deed_view,
+        log_portal_event=_log_portal_event,
+        append_deed_message=_append_deed_message,
+        load_deed_messages=_load_deed_messages,
+        feedback_state=_feedback_state,
+        submit_feedback_internal=lambda *args, **kwargs: _submit_feedback_internal(*args, **kwargs),
+        require_offering_root=_require_offering_root,
+        offering_entry_for_deed=_offering_entry_for_deed,
+        ensure_temporal_client=_ensure_temporal_client,
+        get_temporal_client=lambda: temporal_client,
+        audit_console=_audit_console,
+        sync_skill_proposals=_sync_skill_proposals,
+        write_json_list=_write_json_list,
+        skill_queue_path=skill_queue_path,
+        sandbox_ward_open=_sandbox_ward_open,
+        apply_evolution_proposal=_apply_evolution_proposal,
+        validate_model_policy=_validate_model_policy,
+        validate_model_registry=_validate_model_registry,
+        model_registry_aliases=_model_registry_aliases,
+        sync_instinct_provider_rations_from_policy=_sync_instinct_provider_rations_from_policy,
+    )
+    register_portal_shell_routes(app, ctx=route_ctx)
+    register_console_runtime_routes(app, ctx=route_ctx)
+    register_console_admin_routes(app, ctx=route_ctx)
+    register_console_observe_routes(app, ctx=route_ctx)
+    register_console_agents_skill_routes(app, ctx=route_ctx)
+    register_console_rations_routes(app, ctx=route_ctx)
+    register_console_spine_routes(app, ctx=route_ctx)
+
     @app.websocket("/ws")
     async def websocket_events(ws: WebSocket):
         await ws_hub.connect(ws)
@@ -1386,7 +1540,7 @@ p{
                     if str(row.get("deed_id") or "") != deed_id:
                         continue
                     status = str(row.get("deed_status") or "").strip().lower()
-                    if status in {"awaiting_eval", "pending_review"}:
+                    if status == "awaiting_eval":
                         row["deed_status"] = "completed"
                         row["phase"] = "history"
                         row["updated_utc"] = now
@@ -1396,6 +1550,29 @@ p{
                     break
 
             ledger.mutate_deeds(_close_eval)
+
+        # Flow feedback to Writ trigger statistics (P5: feedback→Writ learning).
+        if first_scored_feedback and deed_record:
+            plan = deed_record.get("plan") if isinstance(deed_record.get("plan"), dict) else {}
+            metadata_fb = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
+            writ_id_fb = str(deed_record.get("writ_id") or metadata_fb.get("writ_id") or "")
+            if writ_id_fb:
+                try:
+                    writ = folio_writ.get_writ(writ_id_fb)
+                    if writ:
+                        stats = writ.get("trigger_stats") if isinstance(writ.get("trigger_stats"), dict) else {}
+                        stats["total_triggered"] = int(stats.get("total_triggered") or 0) + 0  # already counted
+                        stats["total_feedback"] = int(stats.get("total_feedback") or 0) + 1
+                        stats["avg_rating"] = round(
+                            (float(stats.get("avg_rating") or 0) * max(0, int(stats.get("total_feedback") or 1) - 1) + (rating or 3))
+                            / max(1, int(stats.get("total_feedback") or 1)),
+                            2,
+                        )
+                        if score is not None and score < 0.4:
+                            stats["misfire_count"] = int(stats.get("misfire_count") or 0) + 1
+                        folio_writ.update_writ(writ_id_fb, {"trigger_stats": stats})
+                except Exception as exc:
+                    logger.warning("Failed to update Writ trigger stats for %s: %s", writ_id_fb, exc)
 
         if rating is not None:
             nerve.emit("user_feedback_received", {"deed_id": deed_id, "rating": rating, "score": score})
@@ -1459,12 +1636,12 @@ p{
         async def _serve_portal_index():
             return _FileResponse(_portal_index, media_type="text/html")
 
-        @app.get("/portal/topics/{topic_slug}", include_in_schema=False)
-        async def _serve_portal_topic(topic_slug: str):
+        @app.get("/portal/folios/{folio_slug}", include_in_schema=False)
+        async def _serve_portal_folio(folio_slug: str):
             return _FileResponse(_portal_index, media_type="text/html")
 
-        @app.get("/portal/tasks/{task_slug}", include_in_schema=False)
-        async def _serve_portal_task(task_slug: str):
+        @app.get("/portal/slips/{slip_slug}", include_in_schema=False)
+        async def _serve_portal_slip(slip_slug: str):
             return _FileResponse(_portal_index, media_type="text/html")
 
         app.mount("/_portal", StaticFiles(directory=portal_dir), name="portal_static")

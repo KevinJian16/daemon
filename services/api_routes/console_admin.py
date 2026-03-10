@@ -2,24 +2,47 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from services.storage_paths import load_storage_roots, save_storage_roots, storage_status
 
 
 def register_console_admin_routes(app: FastAPI, *, ctx: Any) -> None:
+    def _is_within_24h(value: str) -> bool:
+        raw = str(value or "").strip()
+        if not raw:
+            return False
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc) >= datetime.now(timezone.utc) - timedelta(hours=24)
+        except Exception:
+            return False
+
     @app.get("/console/dashboard")
     def console_dashboard():
         ward = ctx.ledger.load_ward()
         deeds = ctx.ledger.load_deeds()
+        folios = ctx.folio_writ.list_folios() if getattr(ctx, "folio_writ", None) else []
+        slips = ctx.folio_writ.list_slips() if getattr(ctx, "folio_writ", None) else []
+        writs = ctx.folio_writ.list_writs() if getattr(ctx, "folio_writ", None) else []
+        storage = storage_status(ctx.state)
         return {
             "ward": ward,
+            "system_status": ctx.ledger.load_system_status(),
             "running_deeds": sum(1 for row in deeds if str(row.get("deed_status") or "") in {"running", "queued", "paused", "cancelling"}),
-            "awaiting_eval": sum(1 for row in deeds if str(row.get("deed_status") or "") in {"awaiting_eval", "pending_review"}),
-            "memory": ctx.memory.stats(),
-            "lore": ctx.lore.stats(),
-            "instinct": ctx.instinct.stats(),
+            "awaiting_eval": sum(1 for row in deeds if str(row.get("deed_status") or "") == "awaiting_eval"),
+            "failed_24h": sum(1 for row in deeds if str(row.get("deed_status") or "") == "failed" and _is_within_24h(str(row.get("updated_utc") or row.get("failed_utc") or ""))),
+            "active_folios": sum(1 for row in folios if str(row.get("status") or "") == "active"),
+            "parked_folios": sum(1 for row in folios if str(row.get("status") or "") == "parked"),
+            "active_slips": sum(1 for row in slips if str(row.get("status") or "") == "active"),
+            "open_drafts": sum(1 for row in ctx.folio_writ.list_drafts() if str(row.get("status") or "") in {"open", "refining"}),
+            "active_writs": sum(1 for row in writs if str(row.get("status") or "") == "active"),
+            "storage_ready": bool(storage.get("ready")),
             "cortex_usage": ctx.cortex.usage_today(),
         }
 
@@ -30,7 +53,6 @@ def register_console_admin_routes(app: FastAPI, *, ctx: Any) -> None:
         instances = data.get("instances") if isinstance(data, dict) and isinstance(data.get("instances"), list) else []
         occupied = sum(1 for row in instances if str(row.get("status") or "") == "occupied")
         return {
-            "path": str(path),
             "total": len(instances),
             "occupied": occupied,
             "idle": max(0, len(instances) - occupied),
@@ -198,38 +220,31 @@ def register_console_admin_routes(app: FastAPI, *, ctx: Any) -> None:
 
     @app.get("/console/system/storage")
     def console_system_storage():
-        cfg = ctx.ledger.load_json("managed_storage.json", {"daemon_dir_name": "daemon"})
-        daemon_dir_name = str(cfg.get("daemon_dir_name") or "daemon")
-        root = Path.home() / "My Drive" / daemon_dir_name
-        vault_root = root / "vault"
-        offering_root = root / "offerings"
+        cfg = load_storage_roots(ctx.state)
+        status = storage_status(ctx.state)
         return {
-            "daemon_dir_name": daemon_dir_name,
-            "my_drive_root": str(root),
-            "vault_root": str(vault_root),
-            "offering_root": str(offering_root),
-            "ready": root.exists(),
-            "error": "" if root.exists() else "drive_root_missing",
+            "vault_root": cfg["vault_root"],
+            "offering_root": cfg["offering_root"],
+            "ready": bool(status.get("ready")),
+            "vault_ready": bool(status.get("vault_ready")),
+            "offering_ready": bool(status.get("offering_ready")),
         }
 
     @app.put("/console/system/storage")
     async def console_put_system_storage(request: Request):
         body = await request.json()
-        daemon_dir_name = str(body.get("daemon_dir_name") or "").strip()
-        if not daemon_dir_name:
-            raise HTTPException(status_code=400, detail="daemon_dir_name_required")
-        before = ctx.ledger.load_json("managed_storage.json", {"daemon_dir_name": "daemon"})
-        cfg = {"daemon_dir_name": daemon_dir_name, "updated_utc": ctx.utc()}
-        ctx.ledger.save_json("managed_storage.json", cfg)
-        root = Path.home() / "My Drive" / daemon_dir_name
-        (root / "vault").mkdir(parents=True, exist_ok=True)
-        (root / "offerings").mkdir(parents=True, exist_ok=True)
+        vault_root = str(body.get("vault_root") or "").strip()
+        offering_root = str(body.get("offering_root") or "").strip()
+        if not vault_root or not offering_root:
+            raise HTTPException(status_code=400, detail="vault_root_and_offering_root_required")
+        before = load_storage_roots(ctx.state)
+        cfg = save_storage_roots(ctx.state, vault_root=vault_root, offering_root=offering_root, updated_utc=ctx.utc())
+        Path(cfg["vault_root"]).expanduser().mkdir(parents=True, exist_ok=True)
+        Path(cfg["offering_root"]).expanduser().mkdir(parents=True, exist_ok=True)
         ctx.audit_console("update", "managed_storage", before, cfg)
         return {
-            "daemon_dir_name": daemon_dir_name,
-            "my_drive_root": str(root),
-            "vault_root": str(root / "vault"),
-            "offering_root": str(root / "offerings"),
+            **cfg,
             "ready": True,
-            "error": "",
+            "vault_ready": True,
+            "offering_ready": True,
         }

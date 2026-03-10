@@ -146,6 +146,53 @@ class FolioWritManager:
     def _save_rows(self, filename: str, rows: list[dict]) -> None:
         self._ledger.save_json(filename, [row for row in rows if isinstance(row, dict)])
 
+    def _sync_slug(self, rows: list[dict], row: dict, *, id_key: str, title: str, fallback: str) -> None:
+        object_id = str(row.get(id_key) or "").strip()
+        if not object_id:
+            return
+        base = _slugify(title, fallback)
+        current_slug = str(row.get("slug") or "").strip()
+        history = [str(item).strip() for item in (row.get("slug_history") or []) if str(item).strip()]
+        reserved: set[str] = set()
+        for other in rows:
+            if not isinstance(other, dict):
+                continue
+            if str(other.get(id_key) or "").strip() == object_id:
+                continue
+            slug = str(other.get("slug") or "").strip()
+            if slug:
+                reserved.add(slug)
+            for alias in other.get("slug_history") or []:
+                alias_text = str(alias or "").strip()
+                if alias_text:
+                    reserved.add(alias_text)
+        desired = base
+        if desired in reserved:
+            suffix = object_id.split("_")[-1][:4]
+            desired = f"{base}-{suffix}" if suffix else base
+        counter = 2
+        while desired in reserved:
+            desired = f"{base}-{counter}"
+            counter += 1
+        if current_slug and current_slug != desired and current_slug not in history:
+            history.append(current_slug)
+        row["slug"] = desired
+        row["slug_history"] = list(dict.fromkeys(alias for alias in history if alias and alias != desired))
+
+    def _resolve_by_slug(self, rows: list[dict], slug: str, *, id_key: str) -> dict | None:
+        target = str(slug or "").strip()
+        if not target:
+            return None
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if target == str(row.get("slug") or "").strip():
+                return row
+            history = row.get("slug_history") if isinstance(row.get("slug_history"), list) else []
+            if target in [str(item).strip() for item in history if str(item).strip()]:
+                return row
+        return None
+
     # Drafts
     def list_drafts(self) -> list[dict]:
         rows = self._load_rows(self._drafts_file)
@@ -220,6 +267,9 @@ class FolioWritManager:
                 return row
         return None
 
+    def get_folio_by_slug(self, slug: str) -> dict | None:
+        return self._resolve_by_slug(self.list_folios(), slug, id_key="folio_id")
+
     def create_folio(self, title: str, *, summary: str = "", metadata: dict | None = None) -> dict:
         folio = {
             "folio_id": _uuid("folio"),
@@ -240,6 +290,7 @@ class FolioWritManager:
                 folio["summary"] = str(metadata.get("summary") or "")
         rows = self.list_folios()
         rows.append(folio)
+        self._sync_slug(rows, folio, id_key="folio_id", title=folio["title"], fallback="folio")
         self._save_rows(self._folios_file, rows)
         self._nerve.emit("folio_created", {"folio_id": folio["folio_id"]})
         return folio
@@ -254,6 +305,7 @@ class FolioWritManager:
             break
         if not target:
             return None
+        title_changed = False
         for key in ("title", "summary", "status", "slip_ids", "writ_ids"):
             if key not in updates:
                 continue
@@ -261,6 +313,10 @@ class FolioWritManager:
             if key == "status" and str(value or "") not in VALID_FOLIO_STATUSES:
                 continue
             target[key] = value
+            if key == "title":
+                title_changed = True
+        if title_changed:
+            self._sync_slug(rows, target, id_key="folio_id", title=str(target.get("title") or ""), fallback="folio")
         target["updated_utc"] = _utc()
         self._save_rows(self._folios_file, rows)
         self._nerve.emit("folio_updated", {"folio_id": folio_id, "status": target.get("status")})
@@ -294,6 +350,9 @@ class FolioWritManager:
                 return row
         return None
 
+    def get_slip_by_slug(self, slug: str) -> dict | None:
+        return self._resolve_by_slug(self.list_slips(), slug, id_key="slip_id")
+
     def create_slip(
         self,
         *,
@@ -326,6 +385,7 @@ class FolioWritManager:
                 slip["status"] = str(metadata.get("status"))
         rows = self.list_slips()
         rows.append(slip)
+        self._sync_slug(rows, slip, id_key="slip_id", title=slip["title"], fallback="slip")
         self._save_rows(self._slips_file, rows)
         if folio_id:
             self._attach_slip_to_folio(slip["slip_id"], folio_id)
@@ -344,6 +404,7 @@ class FolioWritManager:
             break
         if not target:
             return None
+        title_changed = False
         for key in ("folio_id", "title", "objective", "brief", "design", "status", "standing", "latest_deed_id", "deed_ids"):
             if key not in updates:
                 continue
@@ -351,6 +412,10 @@ class FolioWritManager:
             if key == "status" and str(value or "") not in VALID_SLIP_STATUSES:
                 continue
             target[key] = value
+            if key == "title":
+                title_changed = True
+        if title_changed:
+            self._sync_slug(rows, target, id_key="slip_id", title=str(target.get("title") or ""), fallback="slip")
         target["updated_utc"] = _utc()
         self._save_rows(self._slips_file, rows)
         current_folio_id = str(target.get("folio_id") or "")
@@ -450,6 +515,9 @@ class FolioWritManager:
         self._nerve.emit("writ_created", {"writ_id": writ["writ_id"], "folio_id": folio_id})
         return writ
 
+    # Canonical fields whose change requires version increment (QA §1.7).
+    _WRIT_CANONICAL_FIELDS = frozenset({"title", "match", "action", "priority", "suppression"})
+
     def update_writ(self, writ_id: str, updates: dict) -> dict | None:
         rows = self.list_writs()
         target: dict | None = None
@@ -460,17 +528,22 @@ class FolioWritManager:
             break
         if not target:
             return None
-        for key in ("title", "match", "action", "status", "priority", "suppression", "version", "deed_history", "last_triggered_utc"):
+        canonical_changed = False
+        for key in ("title", "match", "action", "status", "priority", "suppression", "deed_history", "last_triggered_utc", "trigger_stats"):
             if key not in updates:
                 continue
             value = updates[key]
             if key == "status" and str(value or "") not in VALID_WRIT_STATUSES:
                 continue
+            if key in self._WRIT_CANONICAL_FIELDS and target.get(key) != value:
+                canonical_changed = True
             target[key] = value
+        if canonical_changed:
+            target["version"] = int(target.get("version") or 0) + 1
         target["updated_utc"] = _utc()
         self._save_rows(self._writs_file, rows)
         self._register_trigger(target)
-        self._nerve.emit("writ_updated", {"writ_id": writ_id, "status": target.get("status")})
+        self._nerve.emit("writ_updated", {"writ_id": writ_id, "status": target.get("status"), "version": target.get("version")})
         return target
 
     def delete_writ(self, writ_id: str) -> bool:
@@ -663,6 +736,47 @@ class FolioWritManager:
                 break
         return summaries
 
+    def ensure_standing_writ(
+        self,
+        slip_id: str,
+        *,
+        schedule: str,
+        title: str = "",
+    ) -> dict | None:
+        """For a standing Slip, ensure a matching schedule→spawn_deed Writ exists.
+
+        If the Slip has no Folio, one is created automatically.
+        If a Writ already targets this Slip with spawn_deed, it is returned as-is.
+        """
+        slip = self.get_slip(slip_id)
+        if not slip:
+            return None
+        folio_id = str(slip.get("folio_id") or "").strip()
+        if not folio_id:
+            folio = self.create_folio(
+                title=str(slip.get("title") or "常驻签札"),
+                summary=str(slip.get("objective") or ""),
+            )
+            folio_id = str(folio.get("folio_id") or "")
+            if not folio_id:
+                logger.warning("ensure_standing_writ: failed to create Folio for Slip %s", slip_id)
+                return None
+            self.update_slip(slip_id, {"folio_id": folio_id})
+
+        for writ in self.list_writs(folio_id=folio_id):
+            if str(writ.get("status") or "") != "active":
+                continue
+            action = writ.get("action") if isinstance(writ.get("action"), dict) else {}
+            if str(action.get("type") or "") == "spawn_deed" and str(action.get("slip_id") or "") == slip_id:
+                return writ
+
+        return self.create_writ(
+            folio_id=folio_id,
+            title=title or str(slip.get("title") or "定时成文"),
+            match={"schedule": schedule},
+            action={"type": "spawn_deed", "slip_id": slip_id},
+        )
+
     def active_folio_matches(self, text: str, *, limit: int = 3) -> list[dict]:
         hay = {token for token in str(text or "").lower().split() if token}
         ranked: list[tuple[int, dict]] = []
@@ -678,6 +792,12 @@ class FolioWritManager:
         return [row for _, row in ranked[: max(1, int(limit))]]
 
     # Internal attach helpers
+    def attach_slip_to_folio(self, slip_id: str, folio_id: str) -> None:
+        self._attach_slip_to_folio(slip_id, folio_id)
+        slip = self.get_slip(slip_id)
+        if slip and str(slip.get("folio_id") or "") != folio_id:
+            self.update_slip(slip_id, {"folio_id": folio_id})
+
     def _attach_slip_to_folio(self, slip_id: str, folio_id: str) -> None:
         folio = self.get_folio(folio_id)
         if not folio:

@@ -1,165 +1,92 @@
 <!DOCTYPE html>
 <html lang="zh">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Daemon</title>
-<link rel="stylesheet" href="./portal.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Daemon</title>
+  <link rel="stylesheet" href="/_portal/portal.css">
 </head>
 <body>
-<div id="app">
+  <div id="app">
+    <aside id="sidebar">
+      <div id="sidebar-head">
+        <div class="brand-stack">
+          <span id="brand" data-i18n="brand">Daemon</span>
+          <span id="ward-dot" title="Ward"></span>
+        </div>
+        <div class="head-actions">
+          <button class="head-btn" id="lang-btn" onclick="toggleLang()">EN</button>
+          <a class="head-btn" href="/console/" id="console-link">Console</a>
+          <button class="head-btn" id="new-draft-btn" onclick="openFreshDraft()" data-i18n="newDraft">新草稿</button>
+        </div>
+      </div>
+      <nav id="sidebar-nav">
+        <section class="nav-section">
+          <div class="nav-label" data-i18n="pending">待你阅看</div>
+          <div id="pending-list" class="nav-list"></div>
+        </section>
+        <section class="nav-section">
+          <div class="nav-label" data-i18n="live">正在行事</div>
+          <div id="live-list" class="nav-list"></div>
+        </section>
+        <section class="nav-section">
+          <div class="nav-label" data-i18n="folios">卷</div>
+          <div id="folio-list" class="nav-list"></div>
+        </section>
+        <section class="nav-section">
+          <div class="nav-label" data-i18n="recentSlips">近来离散签札</div>
+          <div id="recent-slip-list" class="nav-list"></div>
+        </section>
+      </nav>
+    </aside>
 
-<!-- ── Sidebar ── -->
-<aside id="sidebar">
-  <div id="sb-header">
-    <span id="brand">Daemon</span>
-    <span id="ward-dot" title="Ward: GREEN"></span>
-    <button class="icon-btn" id="lang-btn" onclick="toggleLang()">EN</button>
-    <a class="icon-btn" href="/console/" id="console-link" onclick="try{const raw=localStorage.getItem('d_console_view_state');const panel=String((raw?JSON.parse(raw):{}).panel||'').trim();const allow=['overview','routines','trails','model','agents','evolution','norm','endeavors','lexicon','system'];this.href=allow.includes(panel)?('/console/?panel='+encodeURIComponent(panel)):'/console/';}catch(_){this.href='/console/';}">Console</a>
-    <button class="icon-btn" id="compose-btn" onclick="showNewChat()" title="新建对话">✏</button>
+    <main id="main">
+      <section id="hero-empty" class="screen">
+        <div class="empty-stack">
+          <div class="empty-title" data-i18n="composeTitle">你要让我办什么事？</div>
+          <div class="empty-copy" data-i18n="composeHint">先说出目标。我会把它收敛成一张草稿，确认后落札行事。</div>
+          <div id="draft-card" class="hidden"></div>
+          <div id="draft-chat" class="message-stream"></div>
+        </div>
+      </section>
+
+      <section id="folio-screen" class="screen hidden">
+        <div id="folio-shell"></div>
+      </section>
+
+      <section id="slip-screen" class="screen hidden">
+        <div id="slip-shell"></div>
+        <div id="slip-messages" class="message-stream"></div>
+        <div id="slip-review" class="hidden"></div>
+        <div id="slip-result" class="hidden"></div>
+      </section>
+
+      <div id="composer-wrap">
+        <div id="composer-box">
+          <textarea id="composer-input" rows="1" oninput="autoResize(this)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();portalSend()}"></textarea>
+          <button id="composer-send" onclick="portalSend()" data-i18n="send">送出</button>
+        </div>
+      </div>
+    </main>
   </div>
 
-  <nav id="sb-nav">
-    <div class="nav-section" id="sec-pending">
-      <div class="nav-section-label">
-        <span data-i18n="pending">待处理</span>
-        <span class="pending-badge" id="pending-badge" style="display:none"></span>
+  <div id="drag-dock" class="hidden">
+    <div class="dock-hint" data-i18n="dockHint">拖动签札，到下方改变它的去向与姿态。</div>
+    <div class="dock-zones">
+      <div class="dock-zone" data-target="continue">
+        <span data-i18n="dockContinue">续办</span>
       </div>
-      <div id="pending-list"><div class="nav-empty" data-i18n="none">暂无</div></div>
-    </div>
-
-    <div class="nav-section" id="sec-running">
-      <div class="nav-section-label" data-i18n="running">进行中</div>
-      <div id="running-list"><div class="nav-empty" data-i18n="none">暂无</div></div>
-    </div>
-
-    <div class="nav-section" id="sec-history">
-      <div class="nav-section-label">
-        <span data-i18n="history">历史</span>
+      <div class="dock-zone" data-target="park">
+        <span data-i18n="dockPark">搁置</span>
       </div>
-      <div id="history-search-wrap" style="padding:2px 10px 6px">
-        <input id="history-search" type="search"
-          placeholder="搜索…" data-ph-zh="搜索…" data-ph-en="Search…"
-          oninput="filterHistory(this.value)"
-          style="width:100%;background:var(--hover);border:1px solid var(--border);border-radius:7px;padding:5px 10px;font-size:12px;color:var(--text);outline:none;transition:border-color .15s"
-          onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
-      </div>
-      <div id="history-groups"></div>
-    </div>
-
-  </nav>
-</aside>
-
-<!-- ── Main: unified chat view ── -->
-<main id="main">
-
-  <!-- Chat header (visible when viewing a deed) -->
-  <div id="chat-header" class="hidden">
-    <div id="ch-info">
-      <div id="ch-title"></div>
-      <div id="ch-meta">
-        <span id="ch-status" class="sbadge"></span>
-        <span id="ch-passage" class="ch-passage"></span>
-        <span id="ch-time" class="det-time"></span>
-      </div>
-    </div>
-    <div id="ch-controls">
-      <button class="btn btn-ghost btn-sm" id="btn-resume" onclick="deedResume()" style="display:none" data-i18n="resume">继续</button>
-      <button class="btn btn-ghost btn-sm" id="btn-pause" onclick="deedPause()" style="display:none" data-i18n="pause">暂停</button>
-      <button class="btn btn-ghost btn-sm" id="btn-redirect" onclick="deedRedirect()" style="display:none" data-i18n="redirect">调整方向</button>
-      <button class="btn btn-ghost btn-sm" id="btn-retry" onclick="deedRetry()" style="display:none" data-i18n="retry">重新执行</button>
-      <button class="btn btn-danger btn-sm" id="btn-cancel" onclick="deedCancel()" style="display:none" data-i18n="cancel">取消</button>
-    </div>
-  </div>
-
-  <!-- Chat scroll area -->
-  <div id="chat-scroll">
-    <!-- Empty state (new conversation) -->
-    <div id="chat-empty">
-      <div style="height:15vh"></div>
-      <div style="text-align:center;pointer-events:none">
-        <div style="font-size:24px;font-weight:600;letter-spacing:-.3px;margin-bottom:6px" data-i18n="composeTitle">需要做什么？</div>
-        <div style="font-size:14px;color:var(--muted);max-width:560px;line-height:1.6;margin:0 auto;text-wrap:balance" data-i18n="composeHint">描述你的目标。</div>
-      </div>
-    </div>
-
-    <!-- Messages area -->
-    <div id="chat-messages"></div>
-
-    <!-- Plan card (dynamic content generated by showPlanCard / showDeedPlan) -->
-    <div id="plan-card"></div>
-
-    <!-- Inline feedback (shown for awaiting_eval deeds) -->
-    <div id="fb-inline" class="hidden">
-      <div class="cmsg assistant">
-        <div id="fb-ask" data-i18n="fbAsk">做好了，想听听你的想法。</div>
-        <div id="fb-choices" class="fb-choices">
-          <button class="fb-choice" data-v="satisfactory" onclick="pickFeedback(this)" data-i18n="fbSatisfactory">符合预期，质量满意</button>
-          <button class="fb-choice" data-v="acceptable" onclick="pickFeedback(this)" data-i18n="fbAcceptable">基本达标，尚可接受</button>
-          <button class="fb-choice" data-v="unsatisfactory" onclick="pickFeedback(this)" data-i18n="fbUnsatisfactory">未达预期，存在明显问题</button>
-          <button class="fb-choice" data-v="wrong" onclick="pickFeedback(this)" data-i18n="fbWrong">方向偏离，需要重新审视</button>
-        </div>
-        <!-- Issue multiselect (shown for unsatisfactory/wrong) -->
-        <div id="fb-issues" class="hidden">
-          <div class="fb-issues-list">
-            <label><input type="checkbox" value="missing_info" onchange="refreshFbSubmit()"><span data-i18n="fbIssueMissing">关键信息缺失</span></label>
-            <label><input type="checkbox" value="depth_insufficient" onchange="refreshFbSubmit()"><span data-i18n="fbIssueDepth">分析深度不足</span></label>
-            <label><input type="checkbox" value="factual_error" onchange="refreshFbSubmit()"><span data-i18n="fbIssueFactual">存在事实性错误</span></label>
-            <label><input type="checkbox" value="format_issue" onchange="refreshFbSubmit()"><span data-i18n="fbIssueFormat">格式或排版不当</span></label>
-            <label><input type="checkbox" value="wrong_direction" onchange="refreshFbSubmit()"><span data-i18n="fbIssueDirection">偏离了原始需求方向</span></label>
-          </div>
-        </div>
-        <!-- Follow-up comment -->
-        <div id="fb-comment-wrap" class="hidden">
-          <div class="fb-followup" data-i18n="fbFollowUp">还有什么想说的吗？</div>
-          <textarea id="fb-comment"
-            data-ph-zh="写一段评价…" data-ph-en="Write a comment…"
-            placeholder="写一段评价…"
-            oninput="refreshFbSubmit()"></textarea>
-        </div>
-        <div id="fb-actions" class="hidden">
-          <button class="btn btn-primary btn-sm" id="fb-submit-btn" onclick="submitFeedbackFollowUp()" data-i18n="submitRating">提交评价</button>
-          <span id="fb-status"></span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Offering preview card (shown for completed deeds) -->
-    <div id="offering-card" class="hidden">
-      <div id="offering-body"></div>
-    </div>
-  </div>
-
-  <!-- Input area -->
-  <div id="chat-input-wrap">
-    <div id="compose-box">
-      <div id="compose-file-chips"></div>
-      <textarea id="compose-textarea" rows="1"
-        placeholder="描述你的目标…"
-        data-ph-zh="描述你的目标…" data-ph-en="Describe your objective…"
-        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();chatSend()}"
-        oninput="autoResize(this)"></textarea>
-      <div id="compose-actions">
-        <button id="compose-attach-btn" onclick="document.getElementById('compose-file-input').click()" title="添加附件">📎</button>
-        <input type="file" id="compose-file-input" multiple onchange="onFilesSelected(this)">
-        <button id="compose-send-btn" class="btn btn-primary btn-sm" onclick="chatSend()" data-i18n="send">发送</button>
+      <div class="dock-zone" data-target="archive">
+        <span data-i18n="dockArchive">收起</span>
       </div>
     </div>
   </div>
 
-</main>
-</div>
-
-<script src="./js/i18n.js"></script>
-<script src="./js/api.js"></script>
-<script src="./js/ws.js"></script>
-<script src="./js/views.js"></script>
-<script src="./js/sync.js"></script>
-<script src="./js/run_list.js"></script>
-<script src="./js/review.js"></script>
-<script src="./js/controls.js"></script>
-<script src="./js/compose.js"></script>
-<script src="./js/history.js"></script>
-<script src="./js/bootstrap.js"></script>
+  <script src="/_portal/js/i18n.js"></script>
+  <script src="/_portal/js/api.js"></script>
+  <script src="/_portal/js/app.js"></script>
 </body>
 </html>
