@@ -37,11 +37,12 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS records (
     record_id           TEXT PRIMARY KEY,
     deed_id             TEXT NOT NULL UNIQUE,
-    dominion_id         TEXT,
+    folio_id            TEXT,
+    slip_id             TEXT,
     writ_id             TEXT,
     objective_text      TEXT NOT NULL,
     objective_embedding BLOB,
-    complexity          TEXT NOT NULL,
+    dag_budget          INTEGER NOT NULL DEFAULT 6,
     move_count          INTEGER NOT NULL DEFAULT 0,
     plan_structure      TEXT NOT NULL DEFAULT '{}',
     offering_quality    TEXT NOT NULL DEFAULT '{}',
@@ -53,7 +54,9 @@ CREATE TABLE IF NOT EXISTS records (
     created_utc         TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_records_complexity ON records(complexity);
+CREATE INDEX IF NOT EXISTS idx_records_folio_id ON records(folio_id);
+CREATE INDEX IF NOT EXISTS idx_records_slip_id ON records(slip_id);
+CREATE INDEX IF NOT EXISTS idx_records_dag_budget ON records(dag_budget);
 CREATE INDEX IF NOT EXISTS idx_records_success    ON records(success);
 CREATE INDEX IF NOT EXISTS idx_records_created    ON records(created_utc);
 """
@@ -129,16 +132,20 @@ class LorePsyche:
     def _ensure_columns(self, conn: sqlite3.Connection) -> None:
         rows = conn.execute("PRAGMA table_info(records)").fetchall()
         cols = {str(row["name"]) for row in rows}
-        if "dominion_id" not in cols:
-            conn.execute("ALTER TABLE records ADD COLUMN dominion_id TEXT")
+        if "folio_id" not in cols:
+            conn.execute("ALTER TABLE records ADD COLUMN folio_id TEXT")
+        if "slip_id" not in cols:
+            conn.execute("ALTER TABLE records ADD COLUMN slip_id TEXT")
         if "writ_id" not in cols:
             conn.execute("ALTER TABLE records ADD COLUMN writ_id TEXT")
+        if "dag_budget" not in cols:
+            conn.execute("ALTER TABLE records ADD COLUMN dag_budget INTEGER NOT NULL DEFAULT 6")
 
     def record(
         self,
         deed_id: str,
         objective_text: str,
-        complexity: str,
+        dag_budget: int,
         move_count: int,
         plan_structure: dict,
         offering_quality: dict,
@@ -148,7 +155,8 @@ class LorePsyche:
         user_feedback: dict | None = None,
         rework_history: dict | None = None,
         objective_embedding: list[float] | None = None,
-        dominion_id: str | None = None,
+        folio_id: str | None = None,
+        slip_id: str | None = None,
         writ_id: str | None = None,
     ) -> str:
         record_id = _new_id()
@@ -156,14 +164,14 @@ class LorePsyche:
         with self._conn() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO records "
-                "(record_id, deed_id, dominion_id, writ_id, objective_text, objective_embedding, complexity, move_count, "
+                "(record_id, deed_id, folio_id, slip_id, writ_id, objective_text, objective_embedding, dag_budget, move_count, "
                 "plan_structure, offering_quality, token_consumption, success, duration_s, "
                 "user_feedback, rework_history, created_utc) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    record_id, deed_id, str(dominion_id or ""), str(writ_id or ""), objective_text,
+                    record_id, deed_id, str(folio_id or ""), str(slip_id or ""), str(writ_id or ""), objective_text,
                     _serialize_embedding(objective_embedding),
-                    complexity, move_count,
+                    max(1, int(dag_budget or 1)), move_count,
                     json.dumps(plan_structure, ensure_ascii=False),
                     json.dumps(offering_quality, ensure_ascii=False),
                     json.dumps(token_consumption, ensure_ascii=False),
@@ -187,21 +195,21 @@ class LorePsyche:
     def consult(
         self,
         query_embedding: list[float] | None = None,
-        complexity: str | None = None,
-        dominion_id: str | None = None,
+        folio_id: str | None = None,
+        slip_id: str | None = None,
         writ_id: str | None = None,
+        dag_budget: int | None = None,
         top_k: int = 3,
     ) -> list[dict]:
         """Retrieve relevant experience records.
 
-        Score = sim(embedding) * 0.6 + recency * 0.2 + quality_bonus * 0.2
-        Complexity is a hard filter when provided.
+        Score = sim(embedding) * 0.6 + recency * 0.2 + quality_bonus * 0.2.
         """
         with self._conn() as conn:
-            if complexity:
+            if dag_budget is not None:
                 rows = conn.execute(
-                    "SELECT * FROM records WHERE complexity=? ORDER BY created_utc DESC LIMIT 200",
-                    (complexity,),
+                    "SELECT * FROM records WHERE dag_budget=? ORDER BY created_utc DESC LIMIT 200",
+                    (max(1, int(dag_budget)),),
                 ).fetchall()
             else:
                 rows = conn.execute(
@@ -222,8 +230,10 @@ class LorePsyche:
             quality = _quality_bonus(rec["offering_quality"], rec["success"])
 
             score = sim * 0.6 + recency * 0.2 + quality * 0.2
-            if dominion_id and str(rec.get("dominion_id") or "") == str(dominion_id):
+            if folio_id and str(rec.get("folio_id") or "") == str(folio_id):
                 score += 0.1
+            if slip_id and str(rec.get("slip_id") or "") == str(slip_id):
+                score += 0.08
             if writ_id and str(rec.get("writ_id") or "") == str(writ_id):
                 score += 0.05
             rec["relevance_score"] = round(score, 4)
@@ -246,22 +256,26 @@ class LorePsyche:
 
     def list_records(
         self,
-        complexity: str | None = None,
         success_only: bool = False,
-        dominion_id: str | None = None,
+        folio_id: str | None = None,
+        slip_id: str | None = None,
         writ_id: str | None = None,
+        dag_budget: int | None = None,
         limit: int = 50,
     ) -> list[dict]:
         clauses = []
         params: list[Any] = []
-        if complexity:
-            clauses.append("complexity=?")
-            params.append(complexity)
+        if dag_budget is not None:
+            clauses.append("dag_budget=?")
+            params.append(max(1, int(dag_budget)))
         if success_only:
             clauses.append("success=1")
-        if dominion_id:
-            clauses.append("dominion_id=?")
-            params.append(dominion_id)
+        if folio_id:
+            clauses.append("folio_id=?")
+            params.append(folio_id)
+        if slip_id:
+            clauses.append("slip_id=?")
+            params.append(slip_id)
         if writ_id:
             clauses.append("writ_id=?")
             params.append(writ_id)
@@ -311,7 +325,7 @@ class LorePsyche:
         """Export recent successful records for agent consumption."""
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT record_id, deed_id, objective_text, complexity, move_count, success, "
+                "SELECT record_id, deed_id, folio_id, slip_id, writ_id, objective_text, dag_budget, move_count, success, "
                 "offering_quality, duration_s, created_utc "
                 "FROM records WHERE success=1 ORDER BY created_utc DESC LIMIT 50"
             ).fetchall()
@@ -326,16 +340,16 @@ class LorePsyche:
         with self._conn() as conn:
             total = conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
             successes = conn.execute("SELECT COUNT(*) FROM records WHERE success=1").fetchone()[0]
-            by_complexity = {}
+            by_dag_budget = {}
             for row in conn.execute(
-                "SELECT complexity, COUNT(*) as cnt FROM records GROUP BY complexity"
+                "SELECT dag_budget, COUNT(*) as cnt FROM records GROUP BY dag_budget"
             ).fetchall():
-                by_complexity[row["complexity"]] = row["cnt"]
+                by_dag_budget[str(row["dag_budget"])] = row["cnt"]
         return {
             "total_records": total,
             "success_count": successes,
             "success_rate": round(successes / max(total, 1), 4),
-            "by_complexity": by_complexity,
+            "by_dag_budget": by_dag_budget,
         }
 
     def _row_to_dict(self, row: sqlite3.Row) -> dict:

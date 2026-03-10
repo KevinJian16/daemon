@@ -15,11 +15,6 @@ from typing import Any
 from temporalio import activity
 from runtime.ether import Ether
 from runtime.openclaw import OpenClawAdapter
-from temporal.activities_endeavor import (
-    run_endeavor_bootstrap as _run_endeavor_bootstrap_impl,
-    run_endeavor_record_passage as _run_endeavor_record_passage_impl,
-    run_endeavor_set_status as _run_endeavor_set_status_impl,
-)
 from temporal.activities_herald import (
     run_finalize_herald as _run_finalize_herald_impl,
     run_update_deed_status as _run_update_deed_status_impl,
@@ -30,6 +25,7 @@ from temporal.activities_exec import (
 )
 from runtime.retinue import Retinue
 from services.ledger import Ledger
+from services.storage_paths import resolve_offering_root
 
 
 def _utc() -> str:
@@ -101,29 +97,6 @@ class DaemonActivities:
         """Update deed status in state/deeds.json (append-only for safety)."""
         return await _run_update_deed_status_impl(self, deed_root, plan, deed_status)
 
-    # ── Endeavor state ────────────────────────────────────────────────────────
-
-    @activity.defn(name="activity_endeavor_bootstrap")
-    async def activity_endeavor_bootstrap(self, deed_root: str, plan: dict) -> dict:
-        """Initialize or refresh endeavor manifest and passage layout."""
-        return await _run_endeavor_bootstrap_impl(self, deed_root, plan)
-
-    @activity.defn(name="activity_endeavor_record_passage")
-    async def activity_endeavor_record_passage(self, endeavor_id: str, passage_index: int, result: dict) -> dict:
-        """Persist one passage result and update manifest pointer/status."""
-        return await _run_endeavor_record_passage_impl(self, endeavor_id, passage_index, result)
-
-    @activity.defn(name="activity_endeavor_set_status")
-    async def activity_endeavor_set_status(
-        self,
-        endeavor_id: str,
-        endeavor_status: str,
-        endeavor_phase: str,
-        extra: dict | None = None,
-    ) -> dict:
-        """Update endeavor manifest status/phase with mergeable metadata."""
-        return await _run_endeavor_set_status_impl(self, endeavor_id, endeavor_status, endeavor_phase, extra)
-
     # ── Retinue management ────────────────────────────────────────────────────
 
     @activity.defn(name="activity_allocate_retinue")
@@ -185,34 +158,31 @@ class DaemonActivities:
                 activity.logger.warning("Failed to read runtime hints %s: %s", hints_path, exc)
         brief = plan.get("brief") or {}
         metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
-        dominion_id = str(plan.get("dominion_id") or metadata.get("dominion_id") or "").strip()
+        folio_id = str(plan.get("folio_id") or metadata.get("folio_id") or "").strip()
         writ_id = str(plan.get("writ_id") or metadata.get("writ_id") or "").strip()
         context["execution_contract"] = {
             "deed_id": str(plan.get("deed_id") or ""),
-            "deed_title": str(plan.get("deed_title") or plan.get("title") or ""),
+            "slip_title": str(plan.get("slip_title") or plan.get("title") or ""),
             "brief": brief,
-            "complexity": str(plan.get("complexity") or brief.get("complexity") or "charge"),
+            "dag_budget": int((brief or {}).get("dag_budget") or 0),
             "agent_model_map": plan.get("agent_model_map") or {},
-            "dominion_id": dominion_id,
+            "folio_id": folio_id,
             "writ_id": writ_id,
             "review_emphasis": plan.get("review_emphasis") or {},
         }
-        coordination = self._coordination_context(dominion_id=dominion_id, writ_id=writ_id)
+        coordination = self._coordination_context(folio_id=folio_id, writ_id=writ_id)
         if coordination:
             context["coordination_context"] = coordination
         recent_deeds = self._recent_deed_context(
             current_deed_id=str(plan.get("deed_id") or ""),
-            dominion_id=dominion_id,
+            folio_id=folio_id,
             writ_id=writ_id,
         )
         if recent_deeds:
             context["recent_deeds"] = recent_deeds
-        memory_context = self._memory_context(dominion_id=dominion_id, writ_id=writ_id)
+        memory_context = self._memory_context(folio_id=folio_id, writ_id=writ_id)
         if memory_context:
             context["memory_context"] = memory_context
-        endeavor_context = plan.get("endeavor_context") if isinstance(plan.get("endeavor_context"), list) else []
-        if endeavor_context:
-            context["endeavor_context"] = endeavor_context[-8:]
         return context
 
     def _apply_context_window_precheck(
@@ -333,25 +303,26 @@ class DaemonActivities:
                 break
         return refs
 
-    def _coordination_context(self, *, dominion_id: str, writ_id: str) -> dict:
+    def _coordination_context(self, *, folio_id: str, writ_id: str) -> dict:
         out: dict[str, Any] = {}
         state_dir = self._home / "state"
-        if dominion_id:
+        if folio_id:
             try:
-                dominions = json.loads((state_dir / "dominions.json").read_text(encoding="utf-8"))
+                folios = json.loads((state_dir / "folios.json").read_text(encoding="utf-8"))
             except Exception:
-                dominions = []
-            if isinstance(dominions, list):
-                for row in dominions:
+                folios = []
+            if isinstance(folios, list):
+                for row in folios:
                     if not isinstance(row, dict):
                         continue
-                    if str(row.get("dominion_id") or "") != dominion_id:
+                    if str(row.get("folio_id") or "") != folio_id:
                         continue
-                    out["dominion"] = {
-                        "dominion_id": dominion_id,
-                        "objective": str(row.get("objective") or ""),
+                    out["folio"] = {
+                        "folio_id": folio_id,
+                        "title": str(row.get("title") or ""),
+                        "summary": str(row.get("summary") or ""),
                         "status": str(row.get("status") or ""),
-                        "progress_notes": list(row.get("progress_notes") or [])[-5:],
+                        "slip_ids": list(row.get("slip_ids") or [])[-5:],
                     }
                     break
         if writ_id:
@@ -367,9 +338,9 @@ class DaemonActivities:
                         continue
                     out["writ"] = {
                         "writ_id": writ_id,
-                        "label": str(row.get("label") or ""),
+                        "title": str(row.get("title") or ""),
                         "status": str(row.get("status") or ""),
-                        "trigger": row.get("trigger") if isinstance(row.get("trigger"), dict) else {},
+                        "match": row.get("match") if isinstance(row.get("match"), dict) else {},
                         "deed_history": list(row.get("deed_history") or [])[-5:],
                     }
                     break
@@ -379,7 +350,7 @@ class DaemonActivities:
         self,
         *,
         current_deed_id: str,
-        dominion_id: str,
+        folio_id: str,
         writ_id: str,
         limit: int = 3,
     ) -> list[dict]:
@@ -393,7 +364,7 @@ class DaemonActivities:
                 continue
             if writ_id and str(row.get("writ_id") or "") != writ_id:
                 continue
-            if dominion_id and str(row.get("dominion_id") or "") != dominion_id:
+            if folio_id and str(row.get("folio_id") or "") != folio_id:
                 continue
             scoped.append(row)
         scoped.sort(key=lambda row: str(row.get("updated_utc") or row.get("submitted_utc") or ""), reverse=True)
@@ -408,7 +379,7 @@ class DaemonActivities:
             for row in scoped[: max(1, min(limit, 8))]
         ]
 
-    def _memory_context(self, *, dominion_id: str, writ_id: str, limit: int = 3) -> list[dict]:
+    def _memory_context(self, *, folio_id: str, writ_id: str, limit: int = 3) -> list[dict]:
         try:
             from psyche.memory import MemoryPsyche
 
@@ -430,9 +401,9 @@ class DaemonActivities:
                     return
 
         if writ_id:
-            _merge(memory.search_by_tags([f"writ_id:{writ_id}"], limit=limit, dominion_id=dominion_id or None))
-        if len(hits) < limit and dominion_id:
-            _merge(memory.search_by_tags([f"dominion_id:{dominion_id}"], limit=limit, dominion_id=dominion_id))
+            _merge(memory.search_by_tags([f"writ_id:{writ_id}"], limit=limit, folio_id=folio_id or None))
+        if len(hits) < limit and folio_id:
+            _merge(memory.search_by_tags([f"folio_id:{folio_id}"], limit=limit, folio_id=folio_id))
 
         return [
             {
@@ -464,55 +435,6 @@ class DaemonActivities:
             sid = str(st.get("id") or st.get("move_id") or f"move_{i}").strip()
             out.append({**st, "id": sid})
         return out
-
-    def _derive_endeavor_passages(self, plan: dict, moves: list[dict]) -> list[dict]:
-        explicit = plan.get("passages")
-        by_id = {str(st.get("id") or ""): st for st in moves if str(st.get("id") or "")}
-        passages: list[dict] = []
-        if isinstance(explicit, list) and explicit:
-            for i, row in enumerate(explicit):
-                if not isinstance(row, dict):
-                    continue
-                sid_list = row.get("move_ids") if isinstance(row.get("move_ids"), list) else []
-                selected_moves = [by_id.get(str(sid)) for sid in sid_list if str(sid) in by_id]
-                if not selected_moves:
-                    continue
-                passages.append(
-                    {
-                        "passage_id": str(row.get("passage_id") or row.get("id") or f"m{i + 1:02d}"),
-                        "title": str(row.get("title") or f"Passage {i + 1}"),
-                        "expected_output": str(row.get("expected_output") or ""),
-                        "input_dependencies": row.get("input_dependencies") if isinstance(row.get("input_dependencies"), list) else [],
-                        "moves": selected_moves,
-                        "objective_rework_ration": int(row.get("objective_rework_ration") or 2),
-                    }
-                )
-            if passages:
-                return passages
-
-        if not moves:
-            return []
-        probe = plan.get("complexity_probe") if isinstance(plan.get("complexity_probe"), dict) else {}
-        estimated_phases = int(probe.get("estimated_phases") or plan.get("estimated_phases") or 4)
-        phases = max(2, min(estimated_phases, len(moves)))
-        chunk = max(1, int(math.ceil(len(moves) / phases)))
-        prev_passage = ""
-        for i in range(0, len(moves), chunk):
-            chunk_moves = moves[i:i + chunk]
-            idx = len(passages) + 1
-            passage_id = f"m{idx:02d}"
-            passages.append(
-                {
-                    "passage_id": passage_id,
-                    "title": f"Passage {idx}",
-                    "expected_output": f"Complete {len(chunk_moves)} endeavor moves",
-                    "input_dependencies": [prev_passage] if prev_passage else [],
-                    "moves": chunk_moves,
-                    "objective_rework_ration": 2,
-                }
-            )
-            prev_passage = passage_id
-        return passages
 
     def _read_move_checkpoint(self, deed_root: str, move_id: str) -> dict | None:
         path = self._move_checkpoint_path(deed_root, move_id)
@@ -678,20 +600,14 @@ class DaemonActivities:
     def _generate_feedback_survey(self, *, plan: dict, offering_path: Path) -> dict:
         deed_id = str(plan.get("deed_id") or "")
         brief = plan.get("brief") or {}
-        complexity = str(plan.get("complexity") or brief.get("complexity") or "charge").strip().lower() or "charge"
         title = str(plan.get("deed_title") or plan.get("title") or brief.get("objective", "") or deed_id)[:200]
         channels = ["portal", "telegram"]
-        required = complexity in {"errand", "charge", "endeavor"}
-        if complexity == "endeavor":
-            survey_type = "endeavor_final"
-            prompt = "你对本次 Endeavor 最终交付是否满意？"
-        else:
-            survey_type = "herald_final"
-            prompt = "你对本次任务交付是否满意？"
+        required = True
+        survey_type = "herald_final"
+        prompt = "你对本次签札交付是否满意？"
         return {
             "survey_id": f"svy_{deed_id}",
             "deed_id": deed_id,
-            "complexity": complexity,
             "title": title,
             "survey_type": survey_type,
             "prompt": prompt,
@@ -734,7 +650,7 @@ class DaemonActivities:
     def _find_scribe_output(self, deed_root: str, move_results: list[dict]) -> Path | None:
         rp = Path(deed_root)
         # Prefer explicit output_path attached to move results. This is critical for
-        # endeavor resume deeds where move outputs may come from earlier deed_root.
+        # Resume deeds may reuse existing move outputs from earlier deed roots.
         for res in reversed(move_results):
             if not isinstance(res, dict):
                 continue
@@ -827,13 +743,12 @@ class DaemonActivities:
             rel_path = str(offering_path)
         brief = plan.get("brief") or {}
         metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
-        complexity = str(plan.get("complexity") or brief.get("complexity") or "charge")
         entry = {
             "path": rel_path,
             "title": plan.get("deed_title", plan.get("title", "")),
-            "complexity": complexity,
             "deed_id": plan.get("deed_id", ""),
-            "dominion_id": plan.get("dominion_id") or metadata.get("dominion_id", ""),
+            "folio_id": plan.get("folio_id") or metadata.get("folio_id", ""),
+            "slip_id": plan.get("slip_id") or metadata.get("slip_id", ""),
             "writ_id": plan.get("writ_id") or metadata.get("writ_id", ""),
             "score": ((plan.get("_quality_check") or {}).get("score") if isinstance(plan.get("_quality_check"), dict) else None),
             "delivered_utc": _utc(),
@@ -841,15 +756,12 @@ class DaemonActivities:
         self._ledger.append_herald_log(entry)
 
     def _resolve_offering_root(self) -> Path:
-        root = self._home / "offerings"
-        root.mkdir(parents=True, exist_ok=True)
-        return root
+        return resolve_offering_root(self._home / "state")
 
     def _update_deed_status(self, deed_root: str, plan: dict, deed_status: str, offering_path: str | None = None) -> None:
         deed_id = str(plan.get("deed_id") or "")
         brief = plan.get("brief") or {}
         metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
-        complexity = str(plan.get("complexity") or brief.get("complexity") or "charge")
         last_error = str(plan.get("last_error") or "")
         now_utc = _utc()
         requested_status = str(deed_status or "").strip()
@@ -880,17 +792,15 @@ class DaemonActivities:
                     row["phase"] = phase
                     row["updated_utc"] = now_utc
                     row["deed_id"] = deed_id
-                    row["complexity"] = complexity
                     row["deed_title"] = str(
                         plan.get("deed_title") or plan.get("title")
                         or brief.get("objective", "")
                         or row.get("deed_title") or ""
                     )
                     row["title"] = row.get("deed_title") or row.get("title") or ""
-                    row["dominion_id"] = plan.get("dominion_id") or metadata.get("dominion_id", "")
+                    row["folio_id"] = plan.get("folio_id") or metadata.get("folio_id", "")
+                    row["slip_id"] = plan.get("slip_id") or metadata.get("slip_id", "")
                     row["writ_id"] = plan.get("writ_id") or metadata.get("writ_id", "")
-                    if plan.get("endeavor_id"):
-                        row["endeavor_id"] = str(plan.get("endeavor_id") or "")
                     if last_error:
                         row["last_error"] = last_error
                     if offering_path:
@@ -907,13 +817,12 @@ class DaemonActivities:
                     "deed_id": deed_id,
                     "deed_title": str(plan.get("deed_title") or plan.get("title") or brief.get("objective", "") or deed_id),
                     "title": str(plan.get("deed_title") or plan.get("title") or brief.get("objective", "") or deed_id),
-                    "complexity": complexity,
-                    "endeavor_id": str(plan.get("endeavor_id") or ""),
                     "deed_status": final_status,
                     "phase": phase,
                     "updated_utc": now_utc,
                     "deed_root": deed_root,
-                    "dominion_id": plan.get("dominion_id") or metadata.get("dominion_id", ""),
+                    "folio_id": plan.get("folio_id") or metadata.get("folio_id", ""),
+                    "slip_id": plan.get("slip_id") or metadata.get("slip_id", ""),
                     "writ_id": plan.get("writ_id") or metadata.get("writ_id", ""),
                 }
                 if last_error:

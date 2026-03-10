@@ -691,8 +691,9 @@ class Cadence:
                     "eval_expiring",
                     {
                         "deed_id": str(row.get("deed_id") or ""),
-                        "deed_title": str(row.get("deed_title") or row.get("title") or ""),
-                        "complexity": str(row.get("complexity") or ""),
+                        "slip_id": str(row.get("slip_id") or ""),
+                        "folio_id": str(row.get("folio_id") or ""),
+                        "deed_title": str(row.get("slip_title") or row.get("deed_title") or row.get("title") or ""),
                         "eval_deadline_utc": str(row.get("eval_deadline_utc") or ""),
                     },
                 )
@@ -704,9 +705,9 @@ class Cadence:
                     "deed_eval_expired",
                     {
                         "deed_id": str(row.get("deed_id") or ""),
-                        "deed_title": str(row.get("deed_title") or row.get("title") or ""),
-                        "complexity": str(row.get("complexity") or ""),
-                        "endeavor_id": str(row.get("endeavor_id") or ""),
+                        "slip_id": str(row.get("slip_id") or ""),
+                        "folio_id": str(row.get("folio_id") or ""),
+                        "deed_title": str(row.get("slip_title") or row.get("deed_title") or row.get("title") or ""),
                         "feedback_expired": True,
                     },
                 )

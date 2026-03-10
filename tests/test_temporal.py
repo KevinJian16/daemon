@@ -134,7 +134,10 @@ class TestDaemonActivities:
         os.environ["DAEMON_HOME"] = str(tmp_path)
         (tmp_path / "offerings").mkdir()
         acts = DaemonActivities()
-        acts._update_offering_index(tmp_path / "offerings" / "2026-03" / "deed1", {"title": "T", "complexity": "charge", "deed_id": "t1"})
+        acts._update_offering_index(
+            tmp_path / "offerings" / "2026-03" / "deed1",
+            {"title": "T", "deed_id": "t1", "slip_id": "sl_1", "folio_id": "fo_1"},
+        )
         log = acts._ledger.load_herald_log()
         assert len(log) == 1
         assert log[0]["deed_id"] == "t1"

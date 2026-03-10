@@ -6,6 +6,7 @@ import logging
 import shutil
 import time
 from pathlib import Path
+from services.storage_paths import resolve_vault_root
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +129,7 @@ def _build_runtime_hints(mem_snap: dict, lore_snap: dict, inst_snap: dict) -> di
         "recent_records": [
             {
                 "objective": r.get("objective_text", "")[:100],
-                "complexity": r.get("complexity"),
+                "dag_budget": r.get("dag_budget"),
                 "success": r.get("success"),
             }
             for r in recent_records
@@ -145,7 +146,7 @@ def _vault_completed_deeds(self) -> int:
     if not deeds_dir.exists():
         return 0
 
-    drive_vault = Path.home() / "My Drive" / "daemon" / "vault"
+    drive_vault = resolve_vault_root(self.state_dir)
     vaulted = 0
     deed_rows = {
         str(row.get("deed_id") or ""): row
@@ -219,7 +220,7 @@ def _vault_completed_deeds(self) -> int:
 
 def _expire_old_vaults(self) -> int:
     """Delete vaults older than 90 days."""
-    drive_vault = Path.home() / "My Drive" / "daemon" / "vault"
+    drive_vault = resolve_vault_root(self.state_dir)
     if not drive_vault.exists():
         return 0
 
@@ -254,7 +255,7 @@ def _clean_old_deed_roots(self) -> int:
         return 0
 
     cutoff = time.time() - 7 * 86400
-    drive_vault = Path.home() / "My Drive" / "daemon" / "vault"
+    drive_vault = resolve_vault_root(self.state_dir)
     cleaned = 0
     deed_rows = {
         str(row.get("deed_id") or ""): row

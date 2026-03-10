@@ -64,13 +64,13 @@ def run_witness(self) -> dict:
             "review_user_conflicts": review_user_conflicts,
         })
 
-        dominion_stats: dict[str, dict] = {}
+        folio_stats: dict[str, dict] = {}
         for r in records:
-            dominion_id = str(r.get("dominion_id") or "").strip()
-            if not dominion_id:
+            folio_id = str(r.get("folio_id") or "").strip()
+            if not folio_id:
                 continue
-            row = dominion_stats.setdefault(
-                dominion_id,
+            row = folio_stats.setdefault(
+                folio_id,
                 {"count": 0, "success": 0, "quality_sum": 0.0, "quality_n": 0, "latest_deed_id": "", "latest_objective": ""},
             )
             row["count"] += 1
@@ -95,13 +95,13 @@ def run_witness(self) -> dict:
             "feedback_distribution": feedback_dist,
             "review_user_conflicts": review_user_conflicts,
             "sample_size": len(records),
-            "dominions": {
-                dominion_id: {
+            "folios": {
+                folio_id: {
                     "count": row["count"],
                     "success_rate": round(row["success"] / max(row["count"], 1), 4),
                     "avg_quality": round(row["quality_sum"] / max(row["quality_n"], 1), 4) if row["quality_n"] else 0.0,
                 }
-                for dominion_id, row in dominion_stats.items()
+                for folio_id, row in folio_stats.items()
             },
         }
         self._store.save_json("system_health.json", health)
@@ -112,19 +112,19 @@ def run_witness(self) -> dict:
         if avg_quality > 0.8 and success_rate > 0.8:
             self.instinct.observe_pref("default_depth", "study")
 
-        dominions = self._store.load_json("dominions.json", [])
-        if isinstance(dominions, list) and dominion_stats:
+        folios = self._store.load_json("folios.json", [])
+        if isinstance(folios, list) and folio_stats:
             changed = False
             progress_updates = 0
             completion_candidates = 0
-            for dominion in dominions:
-                if not isinstance(dominion, dict):
+            for folio in folios:
+                if not isinstance(folio, dict):
                     continue
-                dominion_id = str(dominion.get("dominion_id") or "").strip()
-                if dominion_id not in dominion_stats:
+                folio_id = str(folio.get("folio_id") or "").strip()
+                if folio_id not in folio_stats:
                     continue
-                stats = dominion_stats[dominion_id]
-                progress_notes = dominion.get("progress_notes") if isinstance(dominion.get("progress_notes"), list) else []
+                stats = folio_stats[folio_id]
+                progress_notes = folio.get("progress_notes") if isinstance(folio.get("progress_notes"), list) else []
                 latest_deed_id = str(stats.get("latest_deed_id") or "")
                 if latest_deed_id and not any(str(note.get("deed_id") or "") == latest_deed_id for note in progress_notes if isinstance(note, dict)):
                     avg = round(stats["quality_sum"] / max(stats["quality_n"], 1), 3) if stats["quality_n"] else 0.0
@@ -134,15 +134,15 @@ def run_witness(self) -> dict:
                         "summary": f"Recent progress: {stats['latest_objective']} (quality={avg})".strip(),
                     }
                     progress_notes.append(note)
-                    dominion["progress_notes"] = progress_notes[-100:]
-                    dominion["updated_utc"] = _utc()
+                    folio["progress_notes"] = progress_notes[-100:]
+                    folio["updated_utc"] = _utc()
                     changed = True
                     progress_updates += 1
                     try:
                         self.nerve.emit(
-                            "dominion_progress_update",
+                            "folio_progress_update",
                             {
-                                "dominion_id": dominion_id,
+                                "folio_id": folio_id,
                                 "deed_id": latest_deed_id,
                                 "summary": note["summary"],
                             },
@@ -150,7 +150,7 @@ def run_witness(self) -> dict:
                     except Exception:
                         pass
                 if (
-                    str(dominion.get("status") or "").strip() == "active"
+                    str(folio.get("status") or "").strip() == "active"
                     and stats["count"] >= 3
                     and stats["success"] >= max(2, stats["count"] - 1)
                     and (stats["quality_sum"] / max(stats["quality_n"], 1) if stats["quality_n"] else 0.0) >= 0.85
@@ -158,17 +158,17 @@ def run_witness(self) -> dict:
                     completion_candidates += 1
                     try:
                         self.nerve.emit(
-                            "dominion_goal_candidate_completed",
+                            "folio_goal_candidate_completed",
                             {
-                                "dominion_id": dominion_id,
-                                "objective": str(dominion.get("objective") or ""),
+                                "folio_id": folio_id,
+                                "objective": str(folio.get("title") or folio.get("objective") or ""),
                             },
                         )
                     except Exception:
                         pass
             if changed:
-                self._store.save_json("dominions.json", dominions)
-            ctx.step("dominion_progress", {"updated": progress_updates, "completion_candidates": completion_candidates})
+                self._store.save_json("folios.json", folios)
+            ctx.step("folio_progress", {"updated": progress_updates, "completion_candidates": completion_candidates})
 
         result = {
             "analyzed": len(records),
@@ -177,7 +177,7 @@ def run_witness(self) -> dict:
             "avg_quality": round(avg_quality, 3),
             "feedback_dist": feedback_dist,
             "review_user_conflicts": review_user_conflicts,
-            "dominions": len(dominion_stats),
+            "folios": len(folio_stats),
         }
         ctx.set_result(result)
     return result
@@ -276,16 +276,16 @@ def run_focus(self) -> dict:
         mem_stats = self.memory.stats()
         ctx.step("memory_stats", mem_stats)
 
-        dominions = self._store.load_json("dominions.json", [])
-        active_dominions = [
-            row for row in dominions
+        folios = self._store.load_json("folios.json", [])
+        active_folios = [
+            row for row in folios
             if isinstance(row, dict) and str(row.get("status") or "").strip() == "active"
         ]
 
         result = {
             "total_entries": mem_stats.get("total_entries", 0),
             "with_embedding": mem_stats.get("with_embedding", 0),
-            "active_dominions": len(active_dominions),
+            "active_folios": len(active_folios),
         }
         ctx.set_result(result)
     return result

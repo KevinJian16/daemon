@@ -93,7 +93,7 @@ class TestLorePsyche:
         record_id = lore.record(
             deed_id="deed_001",
             objective_text="Test research report",
-            complexity="charge",
+            dag_budget=6,
             move_count=4,
             plan_structure={"moves": ["scout", "sage", "arbiter", "scribe"]},
             offering_quality={"quality_score": 0.85},
@@ -101,13 +101,13 @@ class TestLorePsyche:
             success=True,
             duration_s=300.0,
         )
-        assert record_id.startswith("rec_") or record_id  # Has a valid ID
+        assert record_id.startswith("pb_") or record_id
 
     def test_record_and_get(self, lore):
         lore.record(
             deed_id="deed_002",
             objective_text="Deep analysis task",
-            complexity="charge",
+            dag_budget=8,
             move_count=3,
             plan_structure={"moves": ["sage", "arbiter", "scribe"]},
             offering_quality={"quality_score": 0.90},
@@ -118,7 +118,7 @@ class TestLorePsyche:
         rec = lore.get("deed_002")
         assert rec is not None
         assert rec["objective_text"] == "Deep analysis task"
-        assert rec["complexity"] == "charge"
+        assert rec["dag_budget"] == 8
         assert rec["success"] == 1 or rec["success"] is True
 
     def test_consult_returns_relevant(self, lore):
@@ -126,7 +126,7 @@ class TestLorePsyche:
             lore.record(
                 deed_id=f"deed_c{i}",
                 objective_text=f"Research topic {i}",
-                complexity="charge",
+                dag_budget=6,
                 move_count=4,
                 plan_structure={"moves": ["scout", "sage"]},
                 offering_quality={"quality_score": 0.80 + i * 0.05},
@@ -134,14 +134,14 @@ class TestLorePsyche:
                 success=True,
                 duration_s=300.0,
             )
-        results = lore.consult(complexity="charge", top_k=5)
+        results = lore.consult(dag_budget=6, top_k=5)
         assert len(results) >= 1
 
-    def test_consult_filters_by_complexity(self, lore):
+    def test_consult_filters_by_dag_budget(self, lore):
         lore.record(
-            deed_id="deed_errand",
+            deed_id="deed_small",
             objective_text="Quick task",
-            complexity="errand",
+            dag_budget=3,
             move_count=1,
             plan_structure={"moves": ["scribe"]},
             offering_quality={"quality_score": 0.9},
@@ -150,9 +150,9 @@ class TestLorePsyche:
             duration_s=60.0,
         )
         lore.record(
-            deed_id="deed_charge",
+            deed_id="deed_large",
             objective_text="Standard task",
-            complexity="charge",
+            dag_budget=7,
             move_count=4,
             plan_structure={"moves": ["scout", "sage", "arbiter", "scribe"]},
             offering_quality={"quality_score": 0.85},
@@ -160,14 +160,14 @@ class TestLorePsyche:
             success=True,
             duration_s=300.0,
         )
-        errand_results = lore.consult(complexity="errand", top_k=10)
-        assert all(r.get("complexity") == "errand" for r in errand_results)
+        small_results = lore.consult(dag_budget=3, top_k=10)
+        assert all(r.get("dag_budget") == 3 for r in small_results)
 
     def test_update_feedback(self, lore):
         lore.record(
             deed_id="deed_fb",
             objective_text="Feedback test",
-            complexity="charge",
+            dag_budget=6,
             move_count=2,
             plan_structure={},
             offering_quality={},
@@ -185,7 +185,7 @@ class TestLorePsyche:
         lore.record(
             deed_id="deed_snap",
             objective_text="Snapshot test",
-            complexity="errand",
+            dag_budget=2,
             move_count=1,
             plan_structure={},
             offering_quality={},
@@ -201,7 +201,7 @@ class TestLorePsyche:
         lore.record(
             deed_id="deed_st",
             objective_text="Stats test",
-            complexity="charge",
+            dag_budget=6,
             move_count=3,
             plan_structure={},
             offering_quality={},
@@ -211,6 +211,7 @@ class TestLorePsyche:
         )
         stats = lore.stats()
         assert stats["total_records"] >= 1
+        assert stats["by_dag_budget"]["6"] >= 1
 
 
 # -- Instinct Psyche -----------------------------------------------------------

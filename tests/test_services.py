@@ -73,16 +73,16 @@ class TestWill:
 
     def test_enrich_assigns_deed_id(self, lore, instinct, nerve, state_dir):
         d = self._make_will(lore, instinct, nerve, state_dir)
-        plan = {"moves": [{"id": "s1"}], "brief": {"complexity": "charge"}}
+        plan = {"moves": [{"id": "s1"}], "brief": {"dag_budget": 6}}
         enriched = d.enrich(plan)
         assert "deed_id" in enriched
         assert enriched["deed_id"].startswith("deed_")
 
-    def test_enrich_sets_complexity(self, lore, instinct, nerve, state_dir):
+    def test_enrich_sets_single_slip_budget(self, lore, instinct, nerve, state_dir):
         d = self._make_will(lore, instinct, nerve, state_dir)
-        plan = {"moves": [{"id": "s1"}], "brief": {"complexity": "errand"}}
+        plan = {"moves": [{"id": "s1"}], "brief": {"dag_budget": 4}}
         enriched = d.enrich(plan)
-        assert enriched["complexity"] == "errand"
+        assert enriched["brief"]["dag_budget"] == 4
 
     def test_enrich_ward_red_queues(self, lore, instinct, nerve, state_dir):
         (state_dir / "ward.json").write_text(json.dumps({"status": "RED"}))
@@ -91,17 +91,17 @@ class TestWill:
         enriched = d.enrich(plan)
         assert enriched.get("queued") is True
 
-    def test_enrich_ward_yellow_queues_endeavor(self, lore, instinct, nerve, state_dir):
+    def test_enrich_ward_yellow_queues_large_slip(self, lore, instinct, nerve, state_dir):
         (state_dir / "ward.json").write_text(json.dumps({"status": "YELLOW"}))
         d = self._make_will(lore, instinct, nerve, state_dir)
-        plan = {"moves": [{"id": "s1"}], "brief": {"complexity": "endeavor"}}
+        plan = {"moves": [{"id": "s1"}], "brief": {"dag_budget": 6}}
         enriched = d.enrich(plan)
         assert enriched.get("queued") is True
 
-    def test_enrich_ward_yellow_does_not_queue_charge(self, lore, instinct, nerve, state_dir):
+    def test_enrich_ward_yellow_does_not_queue_small_slip(self, lore, instinct, nerve, state_dir):
         (state_dir / "ward.json").write_text(json.dumps({"status": "YELLOW"}))
         d = self._make_will(lore, instinct, nerve, state_dir)
-        plan = {"moves": [{"id": "s1"}], "brief": {"complexity": "charge"}}
+        plan = {"moves": [{"id": "s1"}], "brief": {"dag_budget": 4}}
         enriched = d.enrich(plan)
         assert not enriched.get("queued")
 
@@ -117,7 +117,7 @@ class TestWill:
         d = self._make_will(lore, instinct, nerve, state_dir)
         plan = {
             "moves": [{"id": "scout", "agent": "scout", "depends_on": []}],
-            "brief": {"complexity": "charge"},
+            "brief": {"dag_budget": 6},
         }
         result = await d.submit(plan)
         assert result["ok"] is False
@@ -141,7 +141,7 @@ class TestHeraldService:
 
     def test_deliver_no_scribe_output(self, instinct, nerve, tmp_path):
         d = self._make_herald(instinct, nerve, tmp_path)
-        result = d.deliver("deed_999", {"complexity": "charge"}, [])
+        result = d.deliver("deed_999", {"brief": {"dag_budget": 6}}, [])
         assert result["ok"] is False
         assert result["error_code"] == "scribe_output_missing"
 
@@ -152,7 +152,7 @@ class TestHeraldService:
         scribe_dir = deed_root / "moves" / "scribe_1" / "output"
         scribe_dir.mkdir(parents=True)
         (scribe_dir / "output.md").write_text("# Report\n\n" + "Content word. " * 120)
-        plan = {"deed_id": "t1", "title": "Test", "complexity": "charge"}
+        plan = {"deed_id": "t1", "title": "Test", "brief": {"dag_budget": 6}}
         result = d.deliver(str(deed_root), plan, [{"move_id": "scribe_1", "status": "ok"}])
         assert result["ok"] is True
         assert "offering_path" in result
@@ -161,7 +161,7 @@ class TestHeraldService:
         d = self._make_herald(instinct, nerve, tmp_path)
         scribe_file = tmp_path / "report.md"
         scribe_file.write_text("# Report\n\nContent here.")
-        plan = {"deed_id": "t1", "title": "Test Report", "complexity": "charge"}
+        plan = {"deed_id": "t1", "title": "Test Report", "brief": {"dag_budget": 6}}
         dest = d._vault("deed_001", plan, scribe_file)
         # Vault copies scribe file, no manifest.json
         assert any(dest.glob("*.md"))
@@ -170,11 +170,12 @@ class TestHeraldService:
         d = self._make_herald(instinct, nerve, tmp_path)
         dest = tmp_path / "offerings" / "2026-03" / "test"
         dest.mkdir(parents=True)
-        plan = {"deed_id": "t1", "title": "T", "complexity": "charge"}
+        plan = {"deed_id": "t1", "title": "T", "slip_id": "sl_1", "folio_id": "fo_1", "brief": {"dag_budget": 6}}
         d._update_index(dest, plan)
         log = d._ledger.load_herald_log()
         assert len(log) == 1
-        assert log[0]["complexity"] == "charge"
+        assert log[0]["slip_id"] == "sl_1"
+        assert log[0]["folio_id"] == "fo_1"
 
 
 # -- Cadence helpers -----------------------------------------------------------

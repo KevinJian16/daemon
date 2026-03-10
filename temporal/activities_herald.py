@@ -47,8 +47,9 @@ async def run_finalize_herald(self, deed_root: str, plan: dict, move_results: li
     deed_id = str(plan.get("deed_id") or "")
     herald_payload = {
         "deed_id": deed_id,
-        "deed_title": str(plan.get("deed_title") or plan.get("title") or deed_id),
-        "dominion_id": str(plan.get("dominion_id") or metadata.get("dominion_id") or ""),
+        "deed_title": str(plan.get("slip_title") or plan.get("deed_title") or plan.get("title") or deed_id),
+        "slip_id": str(plan.get("slip_id") or metadata.get("slip_id") or ""),
+        "folio_id": str(plan.get("folio_id") or metadata.get("folio_id") or ""),
         "writ_id": str(plan.get("writ_id") or metadata.get("writ_id") or ""),
         "plan": plan,
         "move_results": move_results,

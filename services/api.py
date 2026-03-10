@@ -28,24 +28,20 @@ from runtime.retinue import Retinue
 from runtime.cortex import Cortex
 from runtime.ether import Ether
 from runtime.temporal import TemporalClient
+from runtime.brief import SINGLE_SLIP_DEFAULTS
 from services.will import Will
 from services.voice import VoiceService
 from services.api_routes.basic import register_basic_routes
-from services.api_routes.endeavors import register_endeavor_routes
 from services.api_routes.chat import register_chat_routes
-from services.api_routes.console_agents_skill import register_console_agents_skill_routes
-from services.api_routes.console_observe import register_console_observe_routes
-from services.api_routes.console_norm import register_console_norm_routes
-from services.api_routes.console_admin import register_console_admin_routes
-from services.api_routes.console_spine import register_console_spine_routes
 from services.api_routes.feedback import register_feedback_routes
 from services.api_routes.submit import register_submit_route
 from services.api_routes.system import register_system_routes
 from services.cadence import Cadence
 from services.ledger import Ledger
-from services.dominion_writ import DominionWritManager
-from services.api_routes.dominion_writ_routes import register_dominion_writ_routes
+from services.folio_writ import FolioWritManager
+from services.api_routes.folio_writ_routes import register_folio_writ_routes
 from services.system_reset import SystemResetManager
+from services.storage_paths import resolve_offering_root
 from daemon_env import load_daemon_env
 from bootstrap import normalize_openclaw_config
 
@@ -128,10 +124,10 @@ def create_app() -> FastAPI:
         daemon_home=home, openclaw_home=oc_home,
     )
     # Initialize Services.
-    dominion_writ = DominionWritManager(state_dir=state, nerve=nerve, ledger=ledger)
-    will = Will(lore, instinct, nerve, state, cortex=cortex, dominion_writ_manager=dominion_writ)
+    folio_writ = FolioWritManager(state_dir=state, nerve=nerve, ledger=ledger)
+    will = Will(lore, instinct, nerve, state, cortex=cortex, folio_writ_manager=folio_writ)
     cadence = Cadence(canon, routines, instinct, nerve, state, will=will)
-    voice = VoiceService(instinct, oc_home, dominion_writ_manager=dominion_writ, cortex=cortex)
+    voice = VoiceService(instinct, oc_home, folio_writ_manager=folio_writ, cortex=cortex)
     reset_manager = SystemResetManager(home)
     ether = Ether(state, source="api")
     telemetry_dir = state / "telemetry"
@@ -329,7 +325,7 @@ p{
         except Exception as exc:
             logger.warning("Retinue recovery failed: %s", exc)
         await _ensure_temporal_client(retries=20, delay_s=0.5)
-        trigger_count = dominion_writ.register_all_triggers()
+        trigger_count = folio_writ.register_all_triggers()
         if trigger_count:
             logger.info("Registered %d active Writ triggers", trigger_count)
         _register_runtime_handlers()
@@ -381,62 +377,14 @@ p{
                                     )
                                 except Exception as exc:
                                     logger.warning("Feedback survey telegram notify error: %s", exc)
-                        if event_name == "endeavor_passage_recorded":
-                            _append_jsonl(
-                                telemetry_dir / "endeavor_progress.jsonl",
-                                {"event": event_name, "payload": payload, "created_utc": _utc()},
-                            )
-                            try:
-                                notify = await _notify_endeavor_progress_telegram(payload)
-                                _append_jsonl(
-                                    telemetry_dir / "endeavor_progress.jsonl",
-                                    {
-                                        "event": "endeavor_progress_telegram_notified",
-                                        "payload": payload,
-                                        "result": notify,
-                                        "created_utc": _utc(),
-                                    },
-                                )
-                            except Exception as exc:
-                                logger.warning("Endeavor passage telegram notify error: %s", exc)
-                            passage_payload = {
-                                "endeavor_id": str(payload.get("endeavor_id") or ""),
-                                "deed_id": str(payload.get("deed_id") or ""),
-                                "passage_idx": int(payload.get("passage_index") or 0) + 1,
-                                "passage_status": str(payload.get("passage_status") or ""),
-                                "summary": str(payload.get("summary") or ""),
-                                "next_passage_title": str(payload.get("next_passage_title") or ""),
-                                "deed_title": str(payload.get("title") or payload.get("endeavor_id") or ""),
-                            }
-                            nerve.emit("passage_completed", passage_payload)
-                        if event_name == "endeavor_status_changed":
-                            _append_jsonl(
-                                telemetry_dir / "endeavor_progress.jsonl",
-                                {"event": event_name, "payload": payload, "created_utc": _utc()},
-                            )
-                            endeavor_phase = str(payload.get("endeavor_phase") or "")
-                            if endeavor_phase in {"phase0_waiting_confirmation", "passage_waiting_feedback", "passage_failed", "herald_failed"}:
-                                try:
-                                    notify = await _notify_endeavor_status_telegram(payload)
-                                    _append_jsonl(
-                                        telemetry_dir / "endeavor_progress.jsonl",
-                                        {
-                                            "event": "endeavor_status_telegram_notified",
-                                            "payload": payload,
-                                            "result": notify,
-                                            "created_utc": _utc(),
-                                        },
-                                    )
-                                except Exception as exc:
-                                    logger.warning("Endeavor status telegram notify error: %s", exc)
                         if event_name in {
                             "deed_completed",
                             "deed_failed",
                             "deed_rework_exhausted",
                             "eval_expiring",
                             "ward_changed",
-                            "dominion_progress_update",
-                            "dominion_goal_candidate_completed",
+                            "folio_progress_update",
+                            "folio_goal_candidate_completed",
                         }:
                             try:
                                 await _notify_via_adapter(event_name, payload)
@@ -465,6 +413,10 @@ p{
     def _utc() -> str:
         import time
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    def _utc_from_ts(ts: float) -> str:
+        import time
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(ts)))
 
     def _schedule_task(coro) -> None:
         if runtime_loop is None:
@@ -500,7 +452,7 @@ p{
         await ws_hub.broadcast({"event": event, "payload": payload, "created_utc": _utc()})
 
     def _progress_text(event: str, payload: dict[str, Any]) -> str:
-        move_label = str(payload.get("move_label") or payload.get("move_id") or payload.get("passage_title") or "").strip()
+        move_label = str(payload.get("move_label") or payload.get("move_id") or "").strip()
         if event == "deed_progress":
             phase = str(payload.get("phase") or "").strip()
             if phase == "started":
@@ -515,13 +467,9 @@ p{
             return str(payload.get("summary") or "任务已完成。")
         if event == "deed_failed":
             return f"任务失败：{str(payload.get('error') or payload.get('last_error') or '未知错误')[:180]}"
-        if event == "passage_completed":
+        if event == "folio_progress_update":
             summary = str(payload.get("summary") or "").strip()
-            next_step = str(payload.get("next_passage_title") or "").strip()
-            text = summary or f"Passage {int(payload.get('passage_idx') or 0)} 已完成。"
-            if next_step:
-                text += f"\n下一阶段：{next_step}"
-            return text
+            return summary or "卷中有新的推进。"
         return ""
 
     def _record_ws_message(event: str, payload: dict[str, Any]) -> None:
@@ -578,13 +526,12 @@ p{
         out = dict(deed)
         plan = out.get("plan") if isinstance(out.get("plan"), dict) else {}
         brief = plan.get("brief") or {}
-        deed_id = str(out.get("deed_id") or "")
-        deed_status = str(out.get("deed_status") or "")
-        complexity = str(out.get("complexity") or plan.get("complexity") or brief.get("complexity") or "charge")
-        endeavor_id = str(out.get("endeavor_id") or plan.get("endeavor_id") or "")
+        deed_id = str(out.get("deed_id") or out.get("run_id") or "")
+        deed_status = str(out.get("deed_status") or out.get("run_status") or "")
         deed_title = str(
             out.get("deed_title") or out.get("title")
-            or plan.get("deed_title") or plan.get("title")
+            or out.get("run_title")
+            or plan.get("deed_title") or plan.get("title") or plan.get("run_title")
             or brief.get("objective", "")
             or deed_id
         )
@@ -603,18 +550,32 @@ p{
         out["phase"] = phase
         out["deed_title"] = deed_title
         out["title"] = deed_title
-        out["complexity"] = complexity
-        if endeavor_id:
-            out.setdefault("endeavor_id", endeavor_id)
+        if plan and not isinstance(plan.get("plan_display"), dict):
+            steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
+            if steps:
+                plan["plan_display"] = {
+                    "mode": "slip",
+                    "show_timeline": True,
+                    "timeline": [
+                        {
+                            "id": str(step.get("id") or ""),
+                            "agent": str(step.get("agent") or ""),
+                            "label": str(step.get("instruction") or step.get("message") or "")[:80],
+                        }
+                        for step in steps
+                        if isinstance(step, dict)
+                    ],
+                }
+                out["plan"] = plan
         out.setdefault("global_score_components", plan.get("global_score_components") or {})
         out.setdefault("eval_window_hours", plan.get("eval_window_hours", 48))
         out.setdefault("exec_completed_utc", out.get("exec_completed_utc", ""))
         out.setdefault("eval_deadline_utc", out.get("eval_deadline_utc", ""))
-        dominion_id = str(out.get("dominion_id") or plan.get("dominion_id") or "")
-        if dominion_id:
-            dominion = dominion_writ.get_dominion(dominion_id)
-            if dominion:
-                out["group_label"] = str(dominion.get("objective") or deed_title)
+        folio_id = str(out.get("folio_id") or plan.get("folio_id") or "")
+        if folio_id:
+            folio = folio_writ.get_folio(folio_id)
+            if folio:
+                out["group_label"] = str(folio.get("title") or deed_title)
         else:
             out.setdefault("group_label", "Independent")
         return out
@@ -624,9 +585,7 @@ p{
         path.write_text(json.dumps(items, ensure_ascii=False, indent=2))
 
     def _require_offering_root() -> Path:
-        p = home / "offerings"
-        p.mkdir(parents=True, exist_ok=True)
-        return p
+        return resolve_offering_root(state)
 
     def _feedback_survey_path(deed_id: str) -> Path:
         return feedback_surveys_dir / f"{deed_id}.json"
@@ -683,6 +642,12 @@ p{
         rows.sort(key=lambda x: str(x.get("created_utc") or ""), reverse=True)
         return rows[: max(1, min(limit, 500))]
 
+    def _offering_entry_for_deed(deed_id: str) -> dict | None:
+        for entry in reversed(ledger.load_herald_log()):
+            if str(entry.get("deed_id") or "") == str(deed_id or ""):
+                return entry
+        return None
+
     async def _notify_via_adapter(event: str, payload: dict) -> dict:
         adapter_url = os.environ.get("TELEGRAM_ADAPTER_URL", "http://127.0.0.1:8001").strip()
         if not adapter_url:
@@ -720,35 +685,9 @@ p{
             "feedback_survey",
             {
                 "deed_id": deed_id,
+                "slip_id": str(payload.get("slip_id") or ""),
+                "folio_id": str(payload.get("folio_id") or ""),
                 "deed_title": str(payload.get("title") or deed_id),
-                "complexity": str(payload.get("complexity") or ""),
-            },
-        )
-
-    async def _notify_endeavor_progress_telegram(payload: dict) -> dict:
-        if os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() == "":
-            return {"sent": 0, "skipped": True}
-        return await _notify_via_adapter(
-            "passage_completed",
-            {
-                "endeavor_id": str(payload.get("endeavor_id") or ""),
-                "passage_idx": int(payload.get("passage_index") or 0) + 1,
-                "deed_title": str(payload.get("title") or payload.get("endeavor_id") or ""),
-                "passage_status": str(payload.get("passage_status") or ""),
-            },
-        )
-
-    async def _notify_endeavor_status_telegram(payload: dict) -> dict:
-        if os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() == "":
-            return {"sent": 0, "skipped": True}
-        return await _notify_via_adapter(
-            "endeavor_status",
-            {
-                "endeavor_id": str(payload.get("endeavor_id") or ""),
-                "deed_title": str(payload.get("endeavor_id") or ""),
-                "endeavor_status": str(payload.get("endeavor_status") or ""),
-                "endeavor_phase": str(payload.get("endeavor_phase") or ""),
-                "current_passage_index": int(payload.get("current_passage_index") or 0),
             },
         )
 
@@ -769,24 +708,24 @@ p{
 
     def _build_writ_context(payload: dict[str, Any]) -> dict[str, Any]:
         writ_id = str(payload.get("writ_id") or "")
-        dominion_id = str(payload.get("dominion_id") or "")
+        folio_id = str(payload.get("folio_id") or "")
         brief_template = payload.get("brief_template") if isinstance(payload.get("brief_template"), dict) else {}
         trigger_payload = payload.get("trigger_payload") if isinstance(payload.get("trigger_payload"), dict) else {}
         trigger_utc = str(trigger_payload.get("tick_utc") or _utc())
         objective_text = str(brief_template.get("objective") or "")
         memory_hits = memory.search_by_tags(
-            [f"dominion_id:{dominion_id}", f"writ_id:{writ_id}"],
+            [f"folio_id:{folio_id}", f"writ_id:{writ_id}"],
             limit=3,
-            dominion_id=dominion_id or None,
+            folio_id=folio_id or None,
         )
-        lore_hits = lore.list_records(dominion_id=dominion_id or None, writ_id=writ_id or None, limit=3)
-        recent_deeds = dominion_writ.recent_deed_summaries(writ_id, limit=3) if writ_id else []
-        dominion = dominion_writ.get_dominion(dominion_id) if dominion_id else None
+        lore_hits = lore.list_records(folio_id=folio_id or None, writ_id=writ_id or None, limit=3)
+        recent_deeds = folio_writ.recent_deed_summaries(writ_id, limit=3) if writ_id else []
+        folio = folio_writ.get_folio(folio_id) if folio_id else None
         return {
             "date": trigger_utc[:10],
             "tick_utc": trigger_utc,
             "trigger_event": str(payload.get("trigger_event") or ""),
-            "dominion_objective": str((dominion or {}).get("objective") or ""),
+            "folio_title": str((folio or {}).get("title") or ""),
             "recent_titles": " / ".join(str(row.get("title") or "") for row in recent_deeds if row.get("title")),
             "recent_summary": "\n".join(
                 f"- {row.get('title') or row.get('deed_id')}: {row.get('status') or ''}"
@@ -795,7 +734,7 @@ p{
             "memory_summary": "\n".join(str(row.get("content") or "")[:240] for row in memory_hits),
             "lore_summary": "\n".join(str(row.get("objective_text") or "")[:160] for row in lore_hits),
             "writ_id": writ_id,
-            "dominion_id": dominion_id,
+            "folio_id": folio_id,
             "objective": objective_text,
         }
 
@@ -809,10 +748,11 @@ p{
         plan = {
             "brief": {
                 "objective": objective,
-                "complexity": str(rendered.get("complexity") or "charge"),
                 "language": str(rendered.get("language") or "bilingual"),
                 "format": str(rendered.get("format") or "markdown"),
                 "depth": str(rendered.get("depth") or "study"),
+                "dag_budget": int(rendered.get("dag_budget") or SINGLE_SLIP_DEFAULTS["dag_budget"]),
+                "fit_confidence": str(rendered.get("fit_confidence") or "medium"),
                 "references": rendered.get("references") if isinstance(rendered.get("references"), list) else [],
                 "quality_hints": rendered.get("quality_hints") if isinstance(rendered.get("quality_hints"), list) else [],
             },
@@ -824,13 +764,13 @@ p{
             "metadata": {
                 "source": "writ_trigger",
                 "writ_id": str(payload.get("writ_id") or ""),
-                "dominion_id": str(payload.get("dominion_id") or ""),
+                "folio_id": str(payload.get("folio_id") or ""),
                 "trigger_event": str(payload.get("trigger_event") or ""),
             },
         }
         result = await will.submit(plan)
         if result.get("ok") and result.get("deed_id"):
-            dominion_writ.record_writ_triggered(str(payload.get("writ_id") or ""), str(result.get("deed_id") or ""))
+            folio_writ.record_writ_triggered(str(payload.get("writ_id") or ""), str(result.get("deed_id") or ""))
         else:
             logger.warning("Writ trigger submit failed for %s: %s", payload.get("writ_id"), result)
 
@@ -840,11 +780,10 @@ p{
             "deed_failed",
             "deed_progress",
             "deed_message",
-            "passage_completed",
             "ward_changed",
             "eval_expiring",
-            "dominion_progress_update",
-            "dominion_goal_candidate_completed",
+            "folio_progress_update",
+            "folio_goal_candidate_completed",
         }
 
         def _make_ws_handler(event_name: str):
@@ -861,179 +800,6 @@ p{
             _schedule_task(_consume_writ_trigger(payload if isinstance(payload, dict) else {}))
 
         nerve.on("writ_trigger_ready", _writ_handler)
-
-    def _endeavor_root(endeavor_id: str | None = None) -> Path:
-        root = state / "endeavors"
-        return root / endeavor_id if endeavor_id else root
-
-    def _normalize_endeavor_passage_row(row: dict) -> dict:
-        item = dict(row or {})
-        passage_status = str(item.get("passage_status") or "").strip()
-        if passage_status:
-            item["passage_status"] = passage_status
-        return item
-
-    def _normalize_endeavor_manifest(manifest: dict) -> dict:
-        out = dict(manifest or {})
-        endeavor_status = str(out.get("endeavor_status") or "").strip()
-        endeavor_phase = str(out.get("endeavor_phase") or "").strip()
-        if endeavor_status:
-            out["endeavor_status"] = endeavor_status
-        if endeavor_phase:
-            out["endeavor_phase"] = endeavor_phase
-        passages = out.get("passages")
-        if isinstance(passages, list):
-            normalized: list[dict] = []
-            for row in passages:
-                if not isinstance(row, dict):
-                    continue
-                normalized.append(_normalize_endeavor_passage_row(row))
-            out["passages"] = normalized
-        return out
-
-    def _load_endeavor_manifest(endeavor_id: str) -> dict | None:
-        path = _endeavor_root(endeavor_id) / "manifest.json"
-        if not path.exists():
-            return None
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return None
-        return _normalize_endeavor_manifest(data) if isinstance(data, dict) else None
-
-    def _save_endeavor_manifest(endeavor_id: str, manifest: dict) -> None:
-        path = _endeavor_root(endeavor_id) / "manifest.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = _normalize_endeavor_manifest(manifest if isinstance(manifest, dict) else {})
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    def _endeavor_summaries(limit: int = 200) -> list[dict]:
-        root = _endeavor_root()
-        if not root.exists():
-            return []
-        rows: list[dict] = []
-        for p in root.glob("*/manifest.json"):
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if not isinstance(data, dict):
-                continue
-            normalized = _normalize_endeavor_manifest(data)
-            endeavor_status = str(normalized.get("endeavor_status") or "")
-            endeavor_phase = str(normalized.get("endeavor_phase") or "")
-            rows.append(
-                {
-                    "endeavor_id": str(normalized.get("endeavor_id") or p.parent.name),
-                    "deed_id": str(normalized.get("deed_id") or ""),
-                    "title": str(normalized.get("title") or ""),
-                    "endeavor_status": endeavor_status,
-                    "endeavor_phase": endeavor_phase,
-                    "current_passage_index": int(normalized.get("current_passage_index") or 0),
-                    "total_passages": int(normalized.get("total_passages") or len(normalized.get("passages") or [])),
-                    "updated_utc": str(normalized.get("updated_utc") or ""),
-                    "workflow_id": str(normalized.get("workflow_id") or ""),
-                }
-            )
-        rows.sort(key=lambda x: str(x.get("updated_utc") or ""), reverse=True)
-        return rows[: max(1, min(limit, 1000))]
-
-    def _endeavor_result_rows(endeavor_id: str, limit: int = 200) -> list[dict]:
-        passages_dir = _endeavor_root(endeavor_id) / "passages"
-        if not passages_dir.exists():
-            return []
-        rows: list[dict] = []
-        for p in sorted(passages_dir.glob("*/result.json")):
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if isinstance(data, dict):
-                rows.append(_normalize_endeavor_passage_row(data))
-        return rows[: max(1, min(limit, 2000))]
-
-    def _append_endeavor_feedback(endeavor_id: str, passage_index: int, feedback: dict) -> None:
-        result_path = _endeavor_root(endeavor_id) / "passages" / str(max(1, int(passage_index) + 1)) / "result.json"
-        result_path.parent.mkdir(parents=True, exist_ok=True)
-        data: dict[str, Any] = {}
-        if result_path.exists():
-            try:
-                old = json.loads(result_path.read_text(encoding="utf-8"))
-                if isinstance(old, dict):
-                    data = old
-            except Exception:
-                data = {}
-        logs = data.get("user_feedback_log") if isinstance(data.get("user_feedback_log"), list) else []
-        logs.append({**feedback, "created_utc": _utc()})
-        data["user_feedback_log"] = logs[-100:]
-        result_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    def _endeavor_result_payload(endeavor_id: str, passage_index: int) -> dict:
-        result_path = _endeavor_root(endeavor_id) / "passages" / str(max(1, int(passage_index) + 1)) / "result.json"
-        if not result_path.exists():
-            return {}
-        try:
-            data = json.loads(result_path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-        if not isinstance(data, dict):
-            return {}
-        return _normalize_endeavor_passage_row(data)
-
-    def _feedback_satisfied(feedback: dict) -> bool:
-        if not isinstance(feedback, dict):
-            return False
-        if "satisfied" in feedback:
-            return bool(feedback.get("satisfied"))
-        try:
-            rating = int(feedback.get("rating"))
-            return rating >= 3
-        except Exception:
-            pass
-        verdict = str(feedback.get("verdict") or feedback.get("decision") or "").strip().lower()
-        return verdict in {"yes", "y", "ok", "pass", "satisfied", "满意"}
-
-    def _apply_endeavor_feedback_decision(
-        endeavor_id: str,
-        passage_index: int,
-        feedback: dict,
-        *,
-        source: str,
-    ) -> dict:
-        result_path = _endeavor_root(endeavor_id) / "passages" / str(max(1, int(passage_index) + 1)) / "result.json"
-        result_path.parent.mkdir(parents=True, exist_ok=True)
-        data: dict[str, Any] = {}
-        if result_path.exists():
-            try:
-                old = json.loads(result_path.read_text(encoding="utf-8"))
-                if isinstance(old, dict):
-                    data = old
-            except Exception:
-                data = {}
-
-        decision = data.get("user_feedback_decision") if isinstance(data.get("user_feedback_decision"), dict) else None
-        row = {
-            "source": str(source or "unknown"),
-            "feedback": feedback,
-            "created_utc": _utc(),
-        }
-        accepted = False
-        if not decision:
-            data["user_feedback_decision"] = row
-            accepted = True
-        else:
-            late = data.get("user_feedback_late") if isinstance(data.get("user_feedback_late"), list) else []
-            late.append(row)
-            data["user_feedback_late"] = late[-100:]
-        logs = data.get("user_feedback_log") if isinstance(data.get("user_feedback_log"), list) else []
-        logs.append(row)
-        data["user_feedback_log"] = logs[-200:]
-        result_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        return {
-            "accepted": accepted,
-            "decision": data.get("user_feedback_decision") if isinstance(data.get("user_feedback_decision"), dict) else {},
-            "result_path": str(result_path),
-        }
 
     def _proposal_id(item: dict) -> str:
         raw = f"{item.get('skill','')}|{item.get('proposed_change','')}|{item.get('evidence','')}"
@@ -1290,7 +1056,7 @@ p{
         memory=memory,
         lore=lore,
         instinct=instinct,
-        dominion_writ=dominion_writ,
+        folio_writ=folio_writ,
         append_deed_message=_append_deed_message,
         load_deed_messages=_load_deed_messages,
         schedule_broadcast=lambda event, payload: _schedule_task(_broadcast_event(event, payload)),
@@ -1317,62 +1083,8 @@ p{
         log_portal_event=_log_portal_event,
     )
 
-    console_ctx = type("ConsoleRouteContext", (), {})()
-    console_ctx.logger = logger
-    console_ctx.state = state
-    console_ctx.oc_home = oc_home
-    console_ctx.cadence = cadence
-    console_ctx.canon = canon
-    console_ctx.nerve = nerve
-    console_ctx.memory = memory
-    console_ctx.lore = lore
-    console_ctx.instinct = instinct
-    console_ctx.cortex = cortex
-    console_ctx.trail = trail
-    console_ctx.ledger = ledger
-    console_ctx.will = will
-    console_ctx.skill_queue_path = skill_queue_path
-    console_ctx.utc = _utc
-    console_ctx.sync_skill_proposals = _sync_skill_proposals
-    console_ctx.write_json_list = _write_json_list
-    console_ctx.sandbox_ward_open = _sandbox_ward_open
-    console_ctx.apply_evolution_proposal = _apply_evolution_proposal
-    console_ctx.model_policy_path = model_policy_path
-    console_ctx.model_registry_path = model_registry_path
-    console_ctx.validate_model_registry = _validate_model_registry
-    console_ctx.validate_model_policy = _validate_model_policy
-    console_ctx.model_registry_aliases = _model_registry_aliases
-    console_ctx.sync_instinct_provider_rations_from_policy = _sync_instinct_provider_rations_from_policy
-    console_ctx.audit_console = _audit_console
-
-    register_console_admin_routes(app, ctx=console_ctx)
-    register_console_spine_routes(app, ctx=console_ctx)
-    register_console_norm_routes(app, ctx=console_ctx)
-    register_console_observe_routes(app, ctx=console_ctx)
-    register_console_agents_skill_routes(app, ctx=console_ctx)
-
-    endeavor_ctx = type("EndeavorRouteContext", (), {})()
-    endeavor_ctx.logger = logger
-    endeavor_ctx.state = state
-    endeavor_ctx.will = will
-    endeavor_ctx.telemetry_dir = telemetry_dir
-    endeavor_ctx.time_time = time.time
-    endeavor_ctx.utc = _utc
-    endeavor_ctx.ensure_temporal_client = _ensure_temporal_client
-    endeavor_ctx.get_temporal_client = lambda: temporal_client
-    endeavor_ctx.endeavor_summaries = _endeavor_summaries
-    endeavor_ctx.load_endeavor_manifest = _load_endeavor_manifest
-    endeavor_ctx.save_endeavor_manifest = _save_endeavor_manifest
-    endeavor_ctx.endeavor_result_rows = _endeavor_result_rows
-    endeavor_ctx.append_endeavor_feedback = _append_endeavor_feedback
-    endeavor_ctx.apply_endeavor_feedback_decision = _apply_endeavor_feedback_decision
-    endeavor_ctx.endeavor_result_payload = _endeavor_result_payload
-    endeavor_ctx.feedback_satisfied = _feedback_satisfied
-    endeavor_ctx.append_jsonl = _append_jsonl
-
-    register_endeavor_routes(app, ctx=endeavor_ctx)
     register_chat_routes(app, voice=voice, log_portal_event=_log_portal_event)
-    register_dominion_writ_routes(app, dominion_writ)
+    register_folio_writ_routes(app, folio_writ)
 
     @app.websocket("/ws")
     async def websocket_events(ws: WebSocket):
@@ -1406,8 +1118,15 @@ p{
 
         plan = deed_record.get("plan") or {}
         brief = plan.get("brief") or {}
-        title = str(plan.get("title") or brief.get("objective", "") or deed_id)
-        complexity = str(plan.get("complexity") or brief.get("complexity") or "charge")
+        metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
+        title = str(plan.get("slip_title") or plan.get("title") or brief.get("objective", "") or deed_id)
+        dag_budget = int(
+            brief.get("dag_budget")
+            or metadata.get("dag_budget")
+            or plan.get("dag_budget")
+            or len(plan.get("moves") or [])
+            or 1
+        )
 
         # Load offering content snippet.
         content_snippet = ""
@@ -1465,7 +1184,7 @@ p{
 
         prompt = (
             "你是一个AI产出评估专家。根据以下运行信息，生成3-4个针对性反馈问题。\n\n"
-            f"复杂度: {complexity}\n"
+            f"签札计划步数预算: {dag_budget}\n"
             f"运行标题: {title}\n"
         )
         if content_snippet:
@@ -1473,7 +1192,7 @@ p{
         prompt += (
             "要求：\n"
             "1. 第一个问题必须是整体满意度（key=\"overall\", isRating=true），选项val为整数1-5\n"
-            "2. 其余2-3个问题根据这份产出的具体内容和运行类型量身定制，不要用泛泛的通用问题\n"
+            "2. 其余2-3个问题根据这份产出的具体内容和计划规模量身定制，不要用泛泛的通用问题\n"
             "3. 每个问题3-4个选项，其余问题val为0.0-1.0的小数\n"
             "4. 所有问题和选项必须用中文\n"
             "5. 仅返回JSON数组，不要解释或其他内容\n\n"
@@ -1525,14 +1244,14 @@ p{
             if fb_type == "deep" and rating is None and not has_partial:
                 raise HTTPException(status_code=400, detail="deep_feedback_requires_comment_or_rating")
 
-        # Find deed record to get complexity.
+        # Find deed record to derive slip-level feedback hints.
         deed_record = ledger.get_deed(deed_id)
 
-        complexity = ""
+        slip_id = ""
         if deed_record:
             plan = deed_record.get("plan") if isinstance(deed_record.get("plan"), dict) else {}
-            brief = plan.get("brief") or {}
-            complexity = str(brief.get("complexity") or plan.get("complexity") or "")
+            metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
+            slip_id = str(deed_record.get("slip_id") or metadata.get("slip_id") or plan.get("slip_id") or "")
 
         survey = _load_feedback_survey(deed_id) or {"deed_id": deed_id}
         prev_response = survey.get("response") if isinstance(survey.get("response"), dict) else {}
@@ -1570,32 +1289,39 @@ p{
             except Exception as exc:
                 logger.warning("Failed to update lore feedback for %s: %s", deed_id, exc)
 
-        if first_scored_feedback and complexity == "endeavor":
+        if first_scored_feedback:
             summary_zh = (
-                f"Endeavor 用户反馈：rating={rating}/5；comment={comment or '无'}；"
+                f"签札用户反馈：rating={rating}/5；comment={comment or '无'}；"
                 f"aspects={json.dumps(aspects, ensure_ascii=False)}"
             )
             summary_en = (
-                f"Endeavor final feedback: rating={rating}/5; comment={comment or 'n/a'}; "
+                f"Slip feedback: rating={rating}/5; comment={comment or 'n/a'}; "
                 f"aspects={json.dumps(aspects, ensure_ascii=False)}"
             )
             try:
                 memory.add(
                     content=f"{summary_zh}\n\n{summary_en}",
-                    tags=["domain:user_feedback", "tier:deep", "source_type:human", "source_agent:user", f"deed_id:{deed_id}"],
+                    tags=[
+                        "domain:user_feedback",
+                        "tier:deep",
+                        "source_type:human",
+                        "source_agent:user",
+                        f"deed_id:{deed_id}",
+                        f"slip_id:{slip_id}",
+                    ],
                     source=f"{source}.feedback",
                 )
             except Exception as exc:
-                logger.warning("Failed to store endeavor feedback into memory: %s", exc)
+                logger.warning("Failed to store slip feedback into memory: %s", exc)
 
         # Persist feedback aspects as Instinct prefs for the learning system.
-        if aspects and complexity:
+        if aspects:
             for aspect_key, aspect_val in aspects.items():
                 try:
                     v = float(aspect_val)
                     if 0.0 <= v <= 1.0:
                         instinct.set_pref(
-                            f"feedback.{complexity}.{aspect_key}",
+                            f"feedback.slip.{aspect_key}",
                             str(round(v, 4)),
                             source="user_feedback",
                             changed_by="user",
@@ -1648,7 +1374,7 @@ p{
                 "comment": comment,
                 "aspects": aspects,
                 "answers": answers,
-                "complexity": complexity,
+                "slip_id": slip_id,
                 "created_utc": now,
             },
         )
@@ -1724,7 +1450,24 @@ p{
     portal_dir = home / "interfaces" / "portal"
     console_dir = home / "interfaces" / "console"
     if portal_dir.exists():
-        app.mount("/portal", StaticFiles(directory=portal_dir, html=True), name="portal")
+        from starlette.responses import FileResponse as _FileResponse
+
+        _portal_index = portal_dir / "index.html"
+
+        @app.get("/portal", include_in_schema=False)
+        @app.get("/portal/", include_in_schema=False)
+        async def _serve_portal_index():
+            return _FileResponse(_portal_index, media_type="text/html")
+
+        @app.get("/portal/topics/{topic_slug}", include_in_schema=False)
+        async def _serve_portal_topic(topic_slug: str):
+            return _FileResponse(_portal_index, media_type="text/html")
+
+        @app.get("/portal/tasks/{task_slug}", include_in_schema=False)
+        async def _serve_portal_task(task_slug: str):
+            return _FileResponse(_portal_index, media_type="text/html")
+
+        app.mount("/_portal", StaticFiles(directory=portal_dir), name="portal_static")
     if console_dir.exists():
         from starlette.responses import FileResponse as _FileResponse
 

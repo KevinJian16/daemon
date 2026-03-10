@@ -20,8 +20,8 @@ def register_submit_route(
         log_portal_event(
             "submit_requested",
             {
-                "complexity": str((plan.get("brief") or {}).get("complexity") or plan.get("complexity") or ""),
-                "deed_title": str(plan.get("deed_title") or plan.get("title") or "")[:120],
+                "dag_budget": int((plan.get("brief") or {}).get("dag_budget") or plan.get("dag_budget") or 0),
+                "slip_title": str(plan.get("slip_title") or plan.get("deed_title") or plan.get("title") or "")[:120],
                 "priority": plan.get("priority"),
             },
             request,

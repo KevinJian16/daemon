@@ -55,12 +55,9 @@ class GraphWillWorkflow:
     @workflow.run
     async def run(self, inp: DeedInput) -> dict:
         plan = inp.plan or {}
-        endeavor_child = bool(plan.get("endeavor_child"))
-        complexity = str(plan.get("complexity") or "charge").strip().lower()
 
         async def _mark_failure(message: str) -> None:
-            if not endeavor_child:
-                await self._mark_deed_status(inp.deed_root, plan, "failed", message[:200])
+            await self._mark_deed_status(inp.deed_root, plan, "failed", message[:200])
 
         moves = plan.get("moves") or plan.get("graph", {}).get("moves") or []
         if not isinstance(moves, list) or not moves:
@@ -154,11 +151,11 @@ class GraphWillWorkflow:
         try:
             while pending or running:
                 if self._pause_requested and not running:
-                    if not endeavor_child and not pause_state_marked:
+                    if not pause_state_marked:
                         await self._mark_deed_status(inp.deed_root, plan, "paused", "paused_by_request")
                         pause_state_marked = True
                     await workflow.wait_condition(lambda: not self._pause_requested)
-                    if not endeavor_child and pause_state_marked:
+                    if pause_state_marked:
                         await self._mark_deed_status(inp.deed_root, plan, "running", "")
                     pause_state_marked = False
                     continue
@@ -181,7 +178,7 @@ class GraphWillWorkflow:
                         if len(running) >= max_parallel:
                             break
                         base_move = move_by_id.get(sid, {})
-                        injected_move = self._inject_requirements(base_move, complexity=complexity)
+                        injected_move = self._inject_requirements(base_move)
                         ag = self._agent(injected_move)
                         if ag:
                             cur_count = agent_running.get(ag, 0)
@@ -212,8 +209,7 @@ class GraphWillWorkflow:
                     completed.add(sid)
 
         except asyncio.CancelledError:
-            if not endeavor_child:
-                await self._mark_deed_status(inp.deed_root, plan, "cancelled", "cancelled_by_request")
+            await self._mark_deed_status(inp.deed_root, plan, "cancelled", "cancelled_by_request")
             await self._release_retinue_safe(deed_id, retinue_allocations)
             raise
         except ApplicationError as e:
@@ -234,14 +230,6 @@ class GraphWillWorkflow:
             await _mark_failure(f"{len(errors)} move(s) failed")
             await self._release_retinue_safe(deed_id, retinue_allocations)
             raise ApplicationError(f"{len(errors)} move(s) failed", non_retryable=True)
-
-        if endeavor_child:
-            await self._release_retinue_safe(deed_id, retinue_allocations)
-            return {
-                "ok": True,
-                "endeavor_child": True,
-                "move_results": ordered,
-            }
 
         # Arbiter-driven rework loop: if the last arbiter move rejects, re-run selected moves.
         arbiter_result = self._last_arbiter_result(ordered)
@@ -311,9 +299,7 @@ class GraphWillWorkflow:
         overrides: dict = plan.get("agent_concurrency") or {}
         return {**system_defaults, **overrides}
 
-    def _inject_requirements(self, move: dict, *, complexity: str) -> dict:
-        if complexity == "errand":
-            return dict(move)
+    def _inject_requirements(self, move: dict) -> dict:
         if not self._active_requirements:
             return dict(move)
         out = dict(move)

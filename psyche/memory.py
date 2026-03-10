@@ -155,7 +155,7 @@ class MemoryPsyche:
         top_k: int = 10,
         threshold: float = SIMILARITY_THRESHOLD,
         *,
-        dominion_id: str | None = None,
+        folio_id: str | None = None,
     ) -> list[dict]:
         """Retrieve entries by embedding cosine similarity."""
         with self._conn() as conn:
@@ -164,7 +164,7 @@ class MemoryPsyche:
         scored = []
         for row in rows:
             entry = self._row_to_dict(row)
-            if dominion_id and self._tag_value(entry.get("tags") or [], "dominion_id") != dominion_id:
+            if folio_id and self._tag_value(entry.get("tags") or [], "folio_id") != folio_id:
                 continue
             emb = _deserialize_embedding(row["embedding"])
             if emb is None:
@@ -177,7 +177,7 @@ class MemoryPsyche:
         scored.sort(key=lambda x: x["similarity"], reverse=True)
         return scored[:top_k]
 
-    def search_by_tags(self, tags: list[str], limit: int = 50, *, dominion_id: str | None = None) -> list[dict]:
+    def search_by_tags(self, tags: list[str], limit: int = 50, *, folio_id: str | None = None) -> list[dict]:
         """Retrieve entries that contain any of the given tags."""
         with self._conn() as conn:
             rows = conn.execute(
@@ -189,7 +189,7 @@ class MemoryPsyche:
         tag_set = set(tags)
         for row in rows:
             entry_tags = json.loads(row["tags"] or "[]")
-            if dominion_id and self._tag_value(entry_tags, "dominion_id") != dominion_id:
+            if folio_id and self._tag_value(entry_tags, "folio_id") != folio_id:
                 continue
             if tag_set & set(entry_tags):
                 results.append(self._row_to_dict(row))
@@ -206,11 +206,11 @@ class MemoryPsyche:
         keyword: str | None = None,
         source_type: str | None = None,
         limit: int = 50,
-        dominion_id: str | None = None,
+        folio_id: str | None = None,
     ) -> list[dict]:
         """Best-effort query facade for Console views.
 
-        Memory rows stay schema-light; domain/tier/source_type/dominion_id are
+        Memory rows stay schema-light; domain/tier/source_type/folio_id are
         carried as tags using ``key:value`` pairs.
         """
         fetch = max(int(limit or 50) * 6, 300)
@@ -231,7 +231,7 @@ class MemoryPsyche:
                 continue
             if source_type and self._tag_value(tags, "source_type") != str(source_type):
                 continue
-            if dominion_id and self._tag_value(tags, "dominion_id") != str(dominion_id):
+            if folio_id and self._tag_value(tags, "folio_id") != str(folio_id):
                 continue
             if since:
                 ts = str(entry.get("updated_utc") or entry.get("created_utc") or "")
@@ -407,5 +407,5 @@ class MemoryPsyche:
             "tier": self._tag_value(tags, "tier") or "working",
             "source_type": self._tag_value(tags, "source_type") or str(entry.get("source") or "system"),
             "confidence": round(float(entry.get("relevance_score") or 0.0), 4),
-            "dominion_id": self._tag_value(tags, "dominion_id") or "",
+            "folio_id": self._tag_value(tags, "folio_id") or "",
         }

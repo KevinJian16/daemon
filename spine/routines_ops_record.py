@@ -13,11 +13,19 @@ def run_record(self, deed_id: str, plan: dict, move_results: list[dict], offerin
         quality_score = float(offering.get("score", 1.0 if success else 0.0))
 
         brief = plan.get("brief") or {}
+        metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
         objective_text = str(brief.get("objective") or plan.get("objective") or plan.get("title") or "")
-        complexity = str(brief.get("complexity") or plan.get("complexity") or "charge")
+        dag_budget = int(
+            brief.get("dag_budget")
+            or metadata.get("dag_budget")
+            or plan.get("dag_budget")
+            or len(plan.get("moves") or [])
+            or 1
+        )
 
         plan_structure = {
             "moves": plan.get("moves", []),
+            "slip_title": str(plan.get("slip_title") or plan.get("title") or ""),
         }
         offering_quality = offering.get("global_score_components") or {}
         if not offering_quality and quality_score > 0:
@@ -46,7 +54,7 @@ def run_record(self, deed_id: str, plan: dict, move_results: list[dict], offerin
         record_id = self.lore.record(
             deed_id=deed_id,
             objective_text=objective_text,
-            complexity=complexity,
+            dag_budget=dag_budget,
             move_count=len(move_results),
             plan_structure=plan_structure,
             offering_quality=offering_quality,
@@ -56,8 +64,9 @@ def run_record(self, deed_id: str, plan: dict, move_results: list[dict], offerin
             user_feedback=user_feedback,
             rework_history=rework_history,
             objective_embedding=objective_embedding,
-            dominion_id=str((plan.get("metadata") or {}).get("dominion_id") or plan.get("dominion_id") or ""),
-            writ_id=str((plan.get("metadata") or {}).get("writ_id") or plan.get("writ_id") or ""),
+            folio_id=str(metadata.get("folio_id") or plan.get("folio_id") or ""),
+            slip_id=str(metadata.get("slip_id") or plan.get("slip_id") or ""),
+            writ_id=str(metadata.get("writ_id") or plan.get("writ_id") or ""),
         )
         ctx.step("lore_recorded", {"record_id": record_id, "success": success})
 

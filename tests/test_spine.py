@@ -199,7 +199,7 @@ class TestSpineRoutines:
             spine_ctx.lore.record(
                 deed_id=f"deed_w{i}",
                 objective_text=f"Task {i}",
-                complexity="charge",
+                dag_budget=6,
                 move_count=3,
                 plan_structure={"moves": ["scout", "sage", "scribe"]},
                 offering_quality={"quality_score": 0.85},

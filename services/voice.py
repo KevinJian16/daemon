@@ -1,4 +1,4 @@
-"""Voice Service — Counsel Agent conversation management."""
+"""Voice Service — Counsel conversation and draft formation."""
 from __future__ import annotations
 
 import json
@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
-from runtime.brief import Brief
+from runtime.brief import Brief, SINGLE_SLIP_DEFAULTS
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +31,12 @@ class VoiceService:
         self,
         instinct: "InstinctPsyche",
         openclaw_home: Path | None = None,
-        dominion_writ_manager: Any | None = None,
+        folio_writ_manager: Any | None = None,
         cortex: Any | None = None,
     ) -> None:
         self._instinct = instinct
         self._oc_home = openclaw_home
-        self._dominion_writ = dominion_writ_manager
+        self._folio_writ = folio_writ_manager
         self._cortex = cortex
         self._oc_cfg: dict | None = None
         self._sessions: dict[str, dict] = {}
@@ -57,11 +57,11 @@ class VoiceService:
             "created_utc": _utc(),
             "last_active_ts": time.time(),
             "messages": [],
+            "latest_draft_id": "",
         }
         return session_id
 
     def chat(self, session_id: str, message: str) -> dict:
-        """Send a message to the Counsel Agent and return its response."""
         self._cleanup_sessions()
         if session_id not in self._sessions:
             return {"ok": False, "error": "session_not_found"}
@@ -70,7 +70,7 @@ class VoiceService:
         session["last_active_ts"] = time.time()
         session["messages"].append({"role": "user", "content": message, "timestamp": _utc()})
 
-        direct = self._handle_long_horizon_command(message)
+        direct = self._handle_folio_command(message)
         if direct is not None:
             session["messages"].append({"role": "assistant", "content": direct["content"], "timestamp": _utc()})
             return {**direct, "session_id": session_id}
@@ -78,13 +78,10 @@ class VoiceService:
         if not self._oc_cfg:
             return {"ok": False, "error": "OpenClaw not configured"}
 
-        # Keep daemon-only fallback to avoid accidentally binding old MAS defaults.
         gw_port = self._oc_cfg.get("gateway", {}).get("port", 18790)
         gw_token = self._oc_cfg.get("gateway", {}).get("auth", {}).get("token", "")
         gw_url = f"http://127.0.0.1:{gw_port}"
         headers = {"Authorization": f"Bearer {gw_token}", "Content-Type": "application/json"}
-
-        # Build session key for counsel.
         oc_session_key = f"agent:counsel:voice:{session_id}"
 
         try:
@@ -104,10 +101,9 @@ class VoiceService:
             if send_status in {"error", "forbidden", "failed"}:
                 err = str(send_details.get("error") or send_details.get("message") or send_status)
                 return {"ok": False, "error": err}
-        except Exception as e:
-            return {"ok": False, "error": str(e)[:200]}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)[:200]}
 
-        # Poll for response (up to 60s for voice).
         deadline = time.time() + 60
         last_content = ""
         while time.time() < deadline:
@@ -132,18 +128,15 @@ class VoiceService:
                 if latest.get("role") == "assistant" and content and content != last_content:
                     last_content = content
                     session["messages"].append({"role": "assistant", "content": content, "timestamp": _utc()})
-
-                    # Check for plan extraction.
                     plan = self._extract_plan(content)
                     if plan:
                         plan = self._enrich_plan(plan, session=session, latest_message=message)
-                    brief_summary = self._brief_summary(plan)
                     return {
                         "ok": True,
                         "content": content,
                         "session_id": session_id,
                         "plan": plan,
-                        "brief_summary": brief_summary,
+                        "brief_summary": self._brief_summary(plan),
                     }
             except Exception as exc:
                 logger.error("Voice chat error for session %s: %s", session_id, exc)
@@ -154,7 +147,6 @@ class VoiceService:
         return self._sessions.get(session_id)
 
     def _extract_plan(self, content: str) -> dict | None:
-        """Try to extract a structured plan from Counsel response and validate convergence."""
         if "```json" not in content:
             return None
         try:
@@ -162,32 +154,33 @@ class VoiceService:
             end = content.index("```", start)
             raw = content[start:end].strip()
             plan = json.loads(raw)
-            if not isinstance(plan, dict) or not plan.get("moves"):
+            if not isinstance(plan, dict):
+                return None
+            moves = plan.get("moves") if isinstance(plan.get("moves"), list) else []
+            if not moves:
                 return None
             if not isinstance(plan.get("brief"), dict):
                 brief = Brief(
-                    objective=str(plan.get("objective") or plan.get("title") or plan.get("charge_title") or ""),
-                    complexity=str(plan.get("complexity") or plan.get("work_scale") or "charge"),
-                    language=str(plan.get("language") or plan.get("output_lang") or "bilingual"),
-                    format=str(plan.get("format") or plan.get("deliverable") or "markdown"),
+                    objective=str(plan.get("objective") or plan.get("title") or ""),
+                    language=str(plan.get("language") or "bilingual"),
+                    format=str(plan.get("format") or "markdown"),
                     depth=str(plan.get("depth") or "study"),
+                    dag_budget=max(int(plan.get("dag_budget") or 0), min(len(moves), SINGLE_SLIP_DEFAULTS["dag_budget"])),
+                    fit_confidence=str(plan.get("fit_confidence") or "medium"),
                 )
                 plan["brief"] = brief.to_dict()
-            # Convergence validation: DAG must be valid before surfacing.
             valid, err = self._validate_plan_convergence(plan)
             if not valid:
-                logger.info("Voice plan failed convergence: %s", err)
                 plan["_convergence_error"] = err
             else:
                 plan["_convergence_validated"] = True
             return plan
         except Exception as exc:
             logger.debug("_extract_plan: failed to parse JSON plan: %s", exc)
-        return None
+            return None
 
     @staticmethod
     def _validate_plan_convergence(plan: dict) -> tuple[bool, str]:
-        """Validate plan DAG for convergence: no cycles, valid agents, terminal moves."""
         moves = plan.get("moves") or []
         if not isinstance(moves, list) or not moves:
             return False, "empty moves"
@@ -209,14 +202,10 @@ class VoiceService:
             for dep in st.get("depends_on") or []:
                 if dep not in ids:
                     return False, f"move {sid} depends on unknown {dep}"
-        brief = plan.get("brief") or {}
-        ration = int(brief.get("move_ration") or 999)
-        if len(moves) > ration:
-            return False, f"moves {len(moves)} > ration {ration}"
-        terminal = [s for s in moves if not any(
-            str(s.get("id") or "") in (other.get("depends_on") or [])
-            for other in moves if other is not s
-        )]
+        brief = Brief.from_dict(plan.get("brief") if isinstance(plan.get("brief"), dict) else {})
+        if len(moves) > int(brief.dag_budget):
+            return False, f"moves {len(moves)} > dag_budget {brief.dag_budget}"
+        terminal = [s for s in moves if not any(str(s.get("id") or "") in (other.get("depends_on") or []) for other in moves if other is not s)]
         if not terminal:
             return False, "no terminal moves (possible cycle)"
         return True, ""
@@ -244,10 +233,7 @@ class VoiceService:
 
     def _cleanup_sessions(self) -> None:
         cutoff = time.time() - self.SESSION_TTL_S
-        stale = [
-            sid for sid, row in self._sessions.items()
-            if float(row.get("last_active_ts") or 0.0) < cutoff
-        ]
+        stale = [sid for sid, row in self._sessions.items() if float(row.get("last_active_ts") or 0.0) < cutoff]
         for sid in stale:
             self._sessions.pop(sid, None)
 
@@ -256,51 +242,62 @@ class VoiceService:
         brief = Brief.from_dict(out.get("brief") if isinstance(out.get("brief"), dict) else {})
         metadata = out.get("metadata") if isinstance(out.get("metadata"), dict) else {}
         out["brief"] = brief.to_dict()
-        deed_title = str(out.get("deed_title") or out.get("title") or out.get("charge_title") or "").strip()
-        if not deed_title:
-            deed_title = self._generate_title(brief.objective or latest_message)
-        out["deed_title"] = deed_title
-        out["title"] = deed_title
 
-        affinity = self._dominions_for_text(brief.objective or latest_message)
-        if affinity and not str(metadata.get("dominion_id") or "").strip():
-            metadata["dominion_id"] = str(affinity[0].get("dominion_id") or "")
-        trigger = self._detect_recurring_trigger(latest_message)
-        if trigger and not str(metadata.get("writ_id") or "").strip():
-            metadata.setdefault("create_dominion_objective", brief.objective or deed_title)
-            metadata.setdefault("create_writ_label", deed_title)
-            metadata.setdefault("create_writ_trigger", trigger)
+        slip_title = str(out.get("slip_title") or out.get("title") or "").strip()
+        if not slip_title:
+            slip_title = self._generate_title(brief.objective or latest_message)
+        out["slip_title"] = slip_title
+        out["title"] = slip_title
+
+        affinity = self._folios_for_text(brief.objective or latest_message)
+        if affinity and not str(metadata.get("folio_id") or "").strip():
+            metadata["folio_id"] = str(affinity[0].get("folio_id") or "")
+
+        create_writ = self._detect_recurring_writ(latest_message)
+        if create_writ and not str(metadata.get("writ_id") or "").strip():
+            metadata.setdefault("create_folio_title", brief.objective or slip_title)
+            metadata.setdefault("create_writ", create_writ)
+
+        if self._folio_writ:
+            existing_draft_id = str(session.get("latest_draft_id") or "").strip()
+            if existing_draft_id and self._folio_writ.get_draft(existing_draft_id):
+                self._folio_writ.update_draft(
+                    existing_draft_id,
+                    {
+                        "intent_snapshot": str(brief.objective or latest_message),
+                        "candidate_brief": brief.to_dict(),
+                        "candidate_design": {"moves": out.get("moves") or []},
+                        "status": "refining",
+                    },
+                )
+                metadata["draft_id"] = existing_draft_id
+            else:
+                draft = self._folio_writ.create_draft(
+                    source="chat",
+                    intent_snapshot=str(brief.objective or latest_message),
+                    candidate_brief=brief.to_dict(),
+                    candidate_design={"moves": out.get("moves") or []},
+                    folio_id=str(metadata.get("folio_id") or "") or None,
+                )
+                metadata["draft_id"] = str(draft.get("draft_id") or "")
+                session["latest_draft_id"] = metadata["draft_id"]
+
         out["metadata"] = metadata
-        out["complexity"] = brief.complexity
         out["plan_display"] = self._display_metadata(brief, out)
         return out
 
     def _display_metadata(self, brief: Brief, plan: dict) -> dict:
         moves = plan.get("moves") if isinstance(plan.get("moves"), list) else []
-        complexity = brief.complexity
-        if complexity == "errand":
+        if len(moves) > int(brief.dag_budget):
+            chunk_count = max(2, (len(moves) + max(1, int(brief.dag_budget)) - 1) // max(1, int(brief.dag_budget)))
             return {
-                "mode": "errand",
+                "mode": "folio",
                 "show_timeline": False,
                 "summary": brief.objective,
-                "moves": [{"id": str(row.get("id") or ""), "agent": str(row.get("agent") or "")} for row in moves[:3]],
-            }
-        if complexity == "endeavor":
-            passages = plan.get("passages") if isinstance(plan.get("passages"), list) else []
-            return {
-                "mode": "endeavor",
-                "show_timeline": False,
-                "passages": [
-                    {
-                        "title": str(row.get("title") or f"Passage {idx + 1}"),
-                        "move_count": len(row.get("move_ids") or row.get("moves") or []),
-                    }
-                    for idx, row in enumerate(passages)
-                    if isinstance(row, dict)
-                ],
+                "folio_hint": {"slip_count": chunk_count, "move_count": len(moves)},
             }
         return {
-            "mode": "charge",
+            "mode": "slip",
             "show_timeline": True,
             "timeline": [
                 {
@@ -318,16 +315,16 @@ class VoiceService:
             return ""
         brief = Brief.from_dict(plan.get("brief") if isinstance(plan.get("brief"), dict) else {})
         refs = len(brief.references or [])
-        return f"{brief.objective} | {brief.complexity} | {brief.depth} | {brief.language} | refs={refs}"
+        return f"{brief.objective} | dag={brief.dag_budget} | {brief.depth} | {brief.language} | refs={refs}"
 
     def _generate_title(self, text: str) -> str:
         compact = re.sub(r"\s+", " ", str(text or "")).strip()
         if not compact:
-            return "Untitled Deed"
+            return "未命名签札"
         if self._cortex and self._cortex.is_available():
             try:
                 prompt = (
-                    "Generate one concise Deed title in the same language as the request. "
+                    "Generate one concise Slip title in the same language as the request. "
                     "Return plain text only, under 18 words.\n\n"
                     f"Request:\n{compact[:800]}"
                 )
@@ -339,15 +336,15 @@ class VoiceService:
                 pass
         return compact[:60]
 
-    def _dominions_for_text(self, text: str) -> list[dict]:
-        if not self._dominion_writ:
+    def _folios_for_text(self, text: str) -> list[dict]:
+        if not self._folio_writ:
             return []
         try:
-            return self._dominion_writ.active_dominion_matches(text, limit=3)
+            return self._folio_writ.active_folio_matches(text, limit=3)
         except Exception:
             return []
 
-    def _detect_recurring_trigger(self, message: str) -> dict | None:
+    def _detect_recurring_writ(self, message: str) -> dict | None:
         text = str(message or "").lower()
         if not text:
             return None
@@ -360,27 +357,32 @@ class VoiceService:
             schedule = "0 9 1 * *"
         if not schedule:
             return None
-        return {"schedule": schedule}
+        return {
+            "title": "定时成文",
+            "match": {"schedule": schedule},
+            "action": {"type": "spawn_deed"},
+        }
 
-    def _handle_long_horizon_command(self, message: str) -> dict | None:
-        if not self._dominion_writ:
+    def _handle_folio_command(self, message: str) -> dict | None:
+        if not self._folio_writ:
             return None
         raw = str(message or "").strip()
         lowered = raw.lower()
-        matches = self._dominions_for_text(raw)
+        matches = self._folios_for_text(raw)
         target = matches[0] if matches else None
         if target and any(token in lowered for token in ["不用看了", "停止跟踪", "stop tracking", "stop monitoring"]):
             count = 0
-            for writ in self._dominion_writ.list_writs(dominion_id=str(target.get("dominion_id") or "")):
+            for writ in self._folio_writ.list_writs(folio_id=str(target.get("folio_id") or "")):
                 if str(writ.get("status") or "") != "disabled":
-                    self._dominion_writ.update_writ(str(writ.get("writ_id") or ""), {"status": "disabled"})
+                    self._folio_writ.update_writ(str(writ.get("writ_id") or ""), {"status": "disabled"})
                     count += 1
-            return {"ok": True, "content": f"已停止该长期关注线的自动推进，关闭了 {count} 条活动 Writ。"}
-        trigger = self._detect_recurring_trigger(raw)
+            return {"ok": True, "content": f"已停止这卷里的自动推进，关闭了 {count} 条成文。"}
+        trigger = self._detect_recurring_writ(raw)
         if target and trigger and any(token in lowered for token in ["改成", "调整为", "switch to", "change to"]):
             updated = 0
-            for writ in self._dominion_writ.list_writs(dominion_id=str(target.get("dominion_id") or "")):
-                self._dominion_writ.update_writ(str(writ.get("writ_id") or ""), {"trigger": {**(writ.get("trigger") or {}), **trigger}})
+            for writ in self._folio_writ.list_writs(folio_id=str(target.get("folio_id") or "")):
+                match = writ.get("match") if isinstance(writ.get("match"), dict) else {}
+                self._folio_writ.update_writ(str(writ.get("writ_id") or ""), {"match": {**match, **trigger["match"]}})
                 updated += 1
-            return {"ok": True, "content": f"已调整该长期关注线的节律，更新了 {updated} 条 Writ。"}
+            return {"ok": True, "content": f"已调整这卷的节律，更新了 {updated} 条成文。"}
         return None

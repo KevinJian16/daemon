@@ -17,7 +17,6 @@ if str(ROOT) not in sys.path:
 
 from daemon_env import load_daemon_env
 from temporal.workflows import GraphWillWorkflow
-from temporal.endeavor_workflow import EndeavorWorkflow
 from temporal.activities import DaemonActivities
 
 logger = logging.getLogger(__name__)
@@ -36,15 +35,12 @@ async def start_worker(
     worker = Worker(
         client,
         task_queue=queue,
-        workflows=[GraphWillWorkflow, EndeavorWorkflow],
+        workflows=[GraphWillWorkflow],
         activities=[
             activities.activity_openclaw_move,
             activities.activity_spine_routine,
             activities.activity_finalize_herald,
             activities.activity_update_deed_status,
-            activities.activity_endeavor_bootstrap,
-            activities.activity_endeavor_record_passage,
-            activities.activity_endeavor_set_status,
             activities.activity_allocate_retinue,
             activities.activity_release_retinue,
         ],

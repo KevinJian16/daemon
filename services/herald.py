@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
+from services.storage_paths import resolve_offering_root
 
 if TYPE_CHECKING:
     from psyche.instinct import InstinctPsyche
@@ -203,39 +204,40 @@ class HeraldService:
         except Exception:
             rel_path = str(offering_dir)
         brief = plan.get("brief") or {}
-        complexity = str(plan.get("complexity") or brief.get("complexity") or "charge")
+        metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
         entry = {
             "path": rel_path,
-            "title": plan.get("deed_title", plan.get("title", "")),
-            "complexity": complexity,
+            "title": plan.get("slip_title") or plan.get("deed_title", plan.get("title", "")),
             "deed_id": plan.get("deed_id", ""),
+            "slip_id": metadata.get("slip_id") or plan.get("slip_id") or "",
+            "folio_id": metadata.get("folio_id") or plan.get("folio_id") or "",
             "delivered_utc": _utc(),
         }
         self._ledger.append_herald_log(entry)
 
     def _resolve_offering_root(self) -> Path:
-        root = self._home / "offerings"
-        root.mkdir(parents=True, exist_ok=True)
-        return root
+        return resolve_offering_root(self._ledger.state_dir)
 
     def _route_telegram(self, content: str, plan: dict, prefs: dict[str, str]) -> None:
         if prefs.get("telegram_enabled") != "true":
             return
         adapter_url = os.environ.get("TELEGRAM_ADAPTER_URL", "http://127.0.0.1:8001")
         brief = plan.get("brief") or {}
-        complexity = str(plan.get("complexity") or brief.get("complexity") or "charge")
+        metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
         notify_payload = {
             "event": "deed_completed",
             "payload": {
                 "deed_id": str(plan.get("deed_id") or ""),
+                "slip_id": str(metadata.get("slip_id") or plan.get("slip_id") or ""),
+                "folio_id": str(metadata.get("folio_id") or plan.get("folio_id") or ""),
                 "deed_title": str(
-                    plan.get("deed_title")
+                    plan.get("slip_title")
+                    or plan.get("deed_title")
                     or plan.get("title")
                     or brief.get("objective", "")
-                    or "运行"
+                    or "签札"
                 ),
                 "summary": content[:1200].strip(),
-                "complexity": complexity,
             },
         }
         try:
