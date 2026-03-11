@@ -199,7 +199,7 @@ def run_distill(self) -> dict:
 
 def run_learn(self, deed_id: str | None = None) -> dict:
     """Extract knowledge from retinue instance workspace to Memory after deed completion."""
-    with self.trail.span("spine.learn", trigger="nerve:deed_completed") as ctx:
+    with self.trail.span("spine.learn", trigger="nerve:deed_closed") as ctx:
         if not deed_id:
             result = {"skipped": True, "reason": "no_deed_id"}
             ctx.set_result(result)

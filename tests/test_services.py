@@ -247,3 +247,37 @@ class TestStandingSlipWrit:
     def test_ensure_standing_writ_returns_none_for_missing_slip(self, state_dir, nerve):
         mgr = self._make_manager(state_dir, nerve)
         assert mgr.ensure_standing_writ("nonexistent", schedule="0 9 * * *") is None
+
+    def test_duplicate_slip_copies_structure_without_history(self, state_dir, nerve):
+        mgr = self._make_manager(state_dir, nerve)
+        folio = mgr.create_folio("Test folio")
+        source = mgr.create_slip(
+            title="Weekly report",
+            objective="weekly summary",
+            brief={"objective": "weekly summary", "standing": True},
+            design={"moves": [{"id": "m1", "task": "summarize"}]},
+            folio_id=folio["folio_id"],
+            standing=True,
+        )
+
+        duplicate = mgr.duplicate_slip(source["slip_id"])
+        assert duplicate is not None
+        assert duplicate["slip_id"] != source["slip_id"]
+        assert duplicate["folio_id"] == source["folio_id"]
+        assert duplicate["title"].endswith("副本")
+        assert duplicate["objective"] == source["objective"]
+        assert duplicate["design"] == source["design"]
+        assert duplicate["deed_ids"] == []
+        assert duplicate["standing"] is False
+        assert duplicate["brief"]["standing"] is False
+
+    def test_reorder_folio_slips_persists_requested_order(self, state_dir, nerve):
+        mgr = self._make_manager(state_dir, nerve)
+        folio = mgr.create_folio("Test folio")
+        a = mgr.create_slip(title="A", objective="A", brief={}, design={}, folio_id=folio["folio_id"])
+        b = mgr.create_slip(title="B", objective="B", brief={}, design={}, folio_id=folio["folio_id"])
+        c = mgr.create_slip(title="C", objective="C", brief={}, design={}, folio_id=folio["folio_id"])
+
+        updated = mgr.reorder_folio_slips(folio["folio_id"], [c["slip_id"], a["slip_id"]])
+        assert updated is not None
+        assert updated["slip_ids"] == [c["slip_id"], a["slip_id"], b["slip_id"]]

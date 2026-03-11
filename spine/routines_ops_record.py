@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 def run_record(self, deed_id: str, plan: dict, move_results: list[dict], offering: dict) -> dict:
     """Record completed deed as a LoreRecord in Lore."""
-    with self.trail.span("spine.record", trigger="nerve:deed_completed") as ctx:
+    with self.trail.span("spine.record", trigger="nerve:deed_closed") as ctx:
         success = bool(offering.get("ok"))
         quality_score = float(offering.get("score", 1.0 if success else 0.0))
 

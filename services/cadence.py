@@ -158,7 +158,7 @@ class Cadence:
         if routine_method_name == "record":
             payload = payload or {}
             if payload.get("_bridge_event") == "herald_completed":
-                return {"skipped": True, "reason": "record_on_deed_completed_only"}
+                return {"skipped": True, "reason": "record_on_deed_closed_only"}
             deed_id = str(payload.get("deed_id") or "")
             plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
             move_results = payload.get("move_results") if isinstance(payload.get("move_results"), list) else []
@@ -665,7 +665,7 @@ class Cadence:
         def _mutate(deeds: list[dict]) -> None:
             for row in deeds:
                 status = str(row.get("deed_status") or "").strip().lower()
-                if status != "awaiting_eval":
+                if status != "settling":
                     continue
                 deadline = self._parse_utc_iso(str(row.get("eval_deadline_utc") or ""))
                 if deadline is None:
@@ -676,7 +676,8 @@ class Cadence:
                     expiring.append(dict(row))
                 if deadline > now:
                     continue
-                row["deed_status"] = "completed"
+                row["deed_status"] = "closed"
+                row["deed_sub_status"] = "timed_out"
                 row["phase"] = "history"
                 row["updated_utc"] = self._utc_now_iso()
                 row["eval_expired_utc"] = row["updated_utc"]

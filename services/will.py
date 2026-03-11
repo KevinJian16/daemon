@@ -90,7 +90,6 @@ class Will:
         plan.setdefault("default_depth", brief.depth)
         plan.setdefault("quality_profile", self._quality_profile_for(plan, brief, prefs))
 
-        plan = self._consolidate_same_agent_moves(plan)
         self._apply_model_routing(plan)
         plan = self._ration_preflight(plan)
         plan = self._submission_preflight(plan)
@@ -118,8 +117,14 @@ class Will:
             return {"ok": False, "error": str(exc)[:400], "error_code": "enrich_failed"}
 
         brief = Brief.from_dict(plan.get("brief") if isinstance(plan.get("brief"), dict) else {})
+        # dag_budget is a Ward-level cost guardrail — reject oversized DAGs.
         if len(plan.get("moves") or []) > int(brief.dag_budget):
-            return await self._submit_promoted_folio(plan, brief)
+            return {
+                "ok": False,
+                "error": f"DAG exceeds budget ({len(plan.get('moves') or [])} > {brief.dag_budget}). "
+                         "Reduce moves or create a Folio with multiple Slips via Voice.",
+                "error_code": "ward_dag_budget_exceeded",
+            }
 
         ok, err = self.validate(plan)
         if not ok:
@@ -144,12 +149,13 @@ class Will:
                 "slip_id": str(plan.get("slip_id") or ""),
                 "folio_id": str(plan.get("folio_id") or ""),
                 "writ_id": str(plan.get("writ_id") or ""),
-                "deed_status": "queued",
+                "deed_status": "running",
+                "deed_sub_status": "queued",
                 "reason": plan.get("queue_reason"),
             }
 
         if not self._temporal:
-            self._record_deed(plan, "failed_submission", "")
+            self._record_deed(plan, "closed", "", sub_status="failed")
             return {
                 "ok": False,
                 "deed_id": deed_id,
@@ -158,7 +164,7 @@ class Will:
             }
 
         deed_root = self._make_deed_root(deed_id)
-        self._record_deed(plan, "running", deed_root)
+        self._record_deed(plan, "running", deed_root, sub_status="executing")
         self._record_registry_links(plan)
 
         try:
@@ -166,7 +172,7 @@ class Will:
             await self._temporal.submit(workflow_id, plan, deed_root)
         except Exception as exc:
             logger.error("Temporal submit failed for deed %s: %s", deed_id, exc)
-            self._record_deed({**plan, "last_error": str(exc)[:300]}, "failed_submission", deed_root)
+            self._record_deed({**plan, "last_error": str(exc)[:300]}, "closed", deed_root, sub_status="failed")
             return {
                 "ok": False,
                 "deed_id": deed_id,
@@ -193,73 +199,6 @@ class Will:
             "deed_status": "running",
             "deed_root": deed_root,
         }
-
-    async def _submit_promoted_folio(self, plan: dict, brief: Brief) -> dict:
-        if not self._folio_writ:
-            return {"ok": False, "error": "folio_manager_unavailable", "error_code": "folio_manager_unavailable"}
-
-        title = self._resolve_slip_title(plan, brief)
-        folio = self._folio_writ.create_folio(title=title, summary=str(brief.objective or title))
-        chunks = self._chunk_moves(plan.get("moves") or [], int(brief.dag_budget))
-        previous_slip_id = ""
-        first_plan: dict | None = None
-        for idx, chunk in enumerate(chunks):
-            chunk_brief = brief.to_dict()
-            chunk_brief["dag_budget"] = max(len(chunk), 1)
-            draft = self._folio_writ.create_draft(
-                source=str((plan.get("metadata") or {}).get("source") or "manual"),
-                intent_snapshot=str(brief.objective or title),
-                candidate_brief=chunk_brief,
-                candidate_design={"moves": chunk},
-                folio_id=str(folio.get("folio_id") or ""),
-            )
-            slip = self._folio_writ.crystallize_draft(
-                str(draft.get("draft_id") or ""),
-                title=f"{title} · {idx + 1}",
-                objective=str(brief.objective or title),
-                brief=chunk_brief,
-                design={"moves": chunk},
-                folio_id=str(folio.get("folio_id") or ""),
-                standing=False,
-            )
-            if idx == 0:
-                first_plan = {
-                    "brief": chunk_brief,
-                    "moves": chunk,
-                    "metadata": {
-                        **(plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}),
-                        "draft_id": str(draft.get("draft_id") or ""),
-                        "slip_id": str(slip.get("slip_id") or ""),
-                        "folio_id": str(folio.get("folio_id") or ""),
-                    },
-                    "slip_id": str(slip.get("slip_id") or ""),
-                    "folio_id": str(folio.get("folio_id") or ""),
-                    "slip_title": str(slip.get("title") or ""),
-                    "title": str(slip.get("title") or ""),
-                }
-            if previous_slip_id:
-                self._folio_writ.create_writ(
-                    folio_id=str(folio.get("folio_id") or ""),
-                    title=f"{title} · 接续 {idx}",
-                    match={"event": "deed_completed", "filter": {"slip_id": previous_slip_id}},
-                    action={"type": "spawn_deed", "slip_id": str(slip.get("slip_id") or "")},
-                )
-            previous_slip_id = str(slip.get("slip_id") or "")
-
-        if not first_plan:
-            return {"ok": False, "error": "promotion_generated_no_slips", "error_code": "promotion_failed"}
-        enriched_first = self.enrich(first_plan)
-        enriched_first = self._materialize_objects(enriched_first, brief=Brief.from_dict(enriched_first["brief"]))
-        result = await self._submit_materialized_plan(enriched_first)
-        if result.get("ok"):
-            result["folio_id"] = str(folio.get("folio_id") or "")
-            result["promoted_to_folio"] = True
-            result["slip_count"] = len(chunks)
-        return result
-
-    def _chunk_moves(self, moves: list[dict], budget: int) -> list[list[dict]]:
-        size = max(1, int(budget))
-        return [moves[idx: idx + size] for idx in range(0, len(moves), size)] or [[]]
 
     def _materialize_objects(self, plan: dict, *, brief: Brief) -> dict:
         if not self._folio_writ:
@@ -420,89 +359,6 @@ class Will:
             return
         brief.dag_budget = self._folio_writ.infer_dag_budget_from_history(writ_id, default=brief.dag_budget)
 
-    def _consolidate_same_agent_moves(self, plan: dict) -> dict:
-        """Merge same-agent parallel moves into compound instructions.
-
-        With persistent sessions, same-agent moves serialize through one session.
-        Merging reduces round-trips and lets the agent decide internal parallelism
-        via OC's parallel tool calls.
-        """
-        moves = plan.get("moves")
-        if not isinstance(moves, list) or len(moves) < 2:
-            return plan
-
-        # Build dependency sets.
-        dep_map: dict[str, set[str]] = {}
-        for i, st in enumerate(moves):
-            sid = str(st.get("id") or f"move_{i}")
-            dep_map[sid] = set(st.get("depends_on") or [])
-
-        # Group same-agent moves that are parallel (neither depends on the other).
-        by_agent: dict[str, list[int]] = {}
-        for i, st in enumerate(moves):
-            agent = str(st.get("agent") or "").strip()
-            if agent and agent not in {"spine", "counsel"}:
-                by_agent.setdefault(agent, []).append(i)
-
-        merged_indices: set[int] = set()
-        new_moves = list(moves)
-
-        for agent, indices in by_agent.items():
-            if len(indices) < 2:
-                continue
-            # Find groups of parallel moves (share same deps set).
-            groups: dict[frozenset[str], list[int]] = {}
-            for idx in indices:
-                st = moves[idx]
-                sid = str(st.get("id") or f"move_{idx}")
-                deps = frozenset(dep_map.get(sid, set()))
-                groups.setdefault(deps, []).append(idx)
-
-            for deps_key, group_indices in groups.items():
-                if len(group_indices) < 2:
-                    continue
-                # Check all are truly parallel (none depends on another in group).
-                group_ids = {str(moves[i].get("id") or f"move_{i}") for i in group_indices}
-                truly_parallel = all(
-                    not (dep_map.get(str(moves[i].get("id") or f"move_{i}"), set()) & group_ids)
-                    for i in group_indices
-                )
-                if not truly_parallel:
-                    continue
-
-                # Merge: keep first, combine instructions, absorb others.
-                primary_idx = group_indices[0]
-                primary = dict(moves[primary_idx])
-                parts = []
-                total_timeout = 0
-                for idx in group_indices:
-                    st = moves[idx]
-                    ins = str(st.get("instruction") or st.get("message") or "").strip()
-                    if ins:
-                        parts.append(ins)
-                    total_timeout += int(st.get("timeout_s") or 0)
-
-                if len(parts) > 1:
-                    primary["instruction"] = (
-                        "Complete all of the following tasks:\n\n"
-                        + "\n\n".join(f"### Task {i+1}\n{p}" for i, p in enumerate(parts))
-                    )
-                if total_timeout > 0:
-                    primary["timeout_s"] = total_timeout
-                new_moves[primary_idx] = primary
-                for idx in group_indices[1:]:
-                    merged_indices.add(idx)
-                logger.info(
-                    "Consolidated %d parallel %s moves into compound instruction",
-                    len(group_indices), agent,
-                )
-
-        if merged_indices:
-            plan = dict(plan)
-            plan["moves"] = [st for i, st in enumerate(new_moves) if i not in merged_indices]
-
-        return plan
-
     def _resolve_slip_title(self, plan: dict, brief: Brief) -> str:
         for key in ("slip_title", "title", "run_title"):
             text = str(plan.get(key) or "").strip()
@@ -569,17 +425,20 @@ class Will:
         deeds_dir.mkdir(parents=True, exist_ok=True)
         return str(deeds_dir)
 
-    def _record_deed(self, plan: dict, deed_status: str, deed_root: str) -> None:
+    def _record_deed(self, plan: dict, deed_status: str, deed_root: str, *, sub_status: str = "") -> None:
         deed_id = str(plan.get("deed_id") or "")
         brief = Brief.from_dict(plan.get("brief") if isinstance(plan.get("brief"), dict) else {})
         objective = str(brief.objective or plan.get("title") or deed_id)[:200]
         metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
+        resolved_sub = sub_status or str(plan.get("deed_sub_status") or "")
 
         def _mutate(deeds: list[dict]) -> None:
             for row in deeds:
                 if str(row.get("deed_id") or "") != deed_id:
                     continue
                 row["deed_status"] = deed_status
+                if resolved_sub:
+                    row["deed_sub_status"] = resolved_sub
                 row["updated_utc"] = _utc()
                 row["deed_root"] = deed_root or row.get("deed_root") or ""
                 row["draft_id"] = metadata.get("draft_id")
@@ -603,6 +462,7 @@ class Will:
                     "writ_id": metadata.get("writ_id"),
                     "objective": objective,
                     "deed_status": deed_status,
+                    "deed_sub_status": resolved_sub,
                     "deed_root": deed_root,
                     "created_utc": _utc(),
                     "started_utc": "",
@@ -624,9 +484,10 @@ class Will:
 
     def _queue_deed(self, plan: dict) -> None:
         plan_copy = dict(plan)
-        plan_copy["deed_status"] = "queued"
+        plan_copy["deed_status"] = "running"
+        plan_copy["deed_sub_status"] = "queued"
         plan_copy["queued_utc"] = _utc()
-        self._record_deed(plan_copy, "queued", "")
+        self._record_deed(plan_copy, "running", "", sub_status="queued")
 
     def _notify_deed_started(self, plan: dict) -> None:
         prefs = {}

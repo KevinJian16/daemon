@@ -16,4 +16,5 @@ logs/
 htmlcov/
 .DS_Store
 node_modules
+interfaces/portal/compiled/
 openclaw/

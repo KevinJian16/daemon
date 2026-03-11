@@ -170,7 +170,7 @@ def _vault_completed_deeds(self) -> int:
                 pass
 
         deed_status = str(status.get("deed_status") or status.get("status") or "")
-        if deed_status not in {"completed", "failed", "cancelled"}:
+        if deed_status not in {"closed"}:
             continue
 
         completed_utc = str(
@@ -278,14 +278,14 @@ def _clean_old_deed_roots(self) -> int:
                 pass
 
         deed_status = str(status.get("deed_status") or status.get("status") or "")
-        if deed_status not in {"completed", "failed", "cancelled"}:
+        if deed_status not in {"closed"}:
             continue
 
         if deed_dir.stat().st_mtime > cutoff:
             continue
 
         in_vault = any(drive_vault.glob(f"*/{deed_id}")) if drive_vault.exists() else False
-        if not in_vault and deed_status == "completed":
+        if not in_vault and deed_status == "closed":
             continue
 
         try:
@@ -419,8 +419,8 @@ def _write_daily_stats(self) -> dict:
     row = {
         "date": today,
         "deeds_total": len(deeds),
-        "deeds_running": sum(1 for d in deeds if str(d.get("deed_status") or "") in {"running", "queued", "paused", "cancelling"}),
-        "deeds_awaiting_eval": sum(1 for d in deeds if str(d.get("deed_status") or "") == "awaiting_eval"),
+        "deeds_running": sum(1 for d in deeds if str(d.get("deed_status") or "") in {"running", "settling"}),
+        "deeds_awaiting_eval": sum(1 for d in deeds if str(d.get("deed_status") or "") == "settling"),
         "offerings_total": len(herald),
         "avg_quality": float((health or {}).get("avg_quality") or 0.0),
         "success_rate": float((health or {}).get("success_rate") or 0.0),

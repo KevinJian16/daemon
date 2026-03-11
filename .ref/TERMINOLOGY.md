@@ -218,7 +218,8 @@ Portal 的可公开路由使用 `slug`，不使用内部 ID。
 | 状态字段 | `_status` | `slip_status` |
 | 输入对象 | `Input` | `DeedInput` |
 | 输出对象 | `Output` | `DeedOutput` |
-| 完成事件 | `_completed` | `deed_completed` |
+| 关闭事件 | `_closed` | `deed_closed` |
+| 待定事件 | `_settling` | `deed_settling` |
 | 失败事件 | `_failed` | `deed_failed` |
 | 根目录 | `_root` | `deed_root` |
 | 配置对象 | `Config` | `WritConfig` |

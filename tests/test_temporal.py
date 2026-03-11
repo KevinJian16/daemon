@@ -25,16 +25,24 @@ class TestGraphWillWorkflow:
         assert self.wf._agent({"agent": "scout"}) == "scout"
         assert self.wf._agent({}) == ""
 
-    def test_agent_limits_defaults(self):
-        limits = self.wf._agent_limits({})
-        assert limits["scout"] == 8
-        assert limits["envoy"] == 1
-        assert limits["artificer"] == 2
+    def test_agent_limits_dynamic(self):
+        # Dynamic limits: 2 parallel scout moves (same deps) → scout limit = 2.
+        plan = {"moves": [
+            {"id": "s1", "agent": "scout", "depends_on": []},
+            {"id": "s2", "agent": "scout", "depends_on": []},
+            {"id": "g1", "agent": "sage", "depends_on": ["s1", "s2"]},
+        ]}
+        limits = self.wf._agent_limits(plan)
+        assert limits["scout"] == 2
+        assert limits["sage"] == 1
+        assert limits["spine"] >= 2  # spine always at least 2
 
     def test_agent_limits_plan_override(self):
-        limits = self.wf._agent_limits({"agent_concurrency": {"scout": 3}})
+        plan = {"moves": [
+            {"id": "s1", "agent": "scout"},
+        ], "agent_concurrency": {"scout": 3}}
+        limits = self.wf._agent_limits(plan)
         assert limits["scout"] == 3
-        assert limits["sage"] == 4  # default preserved
 
     def test_timeouts_default(self):
         st, sc = self.wf._timeouts({}, {})
@@ -71,10 +79,11 @@ class TestGraphWillWorkflow:
         agents = [self.wf._agent(m) for m in moves]
         assert "scout" in agents
 
-    def test_rework_move_ids_get_suffix(self):
+    def test_rework_keeps_original_ids(self):
         move_list = [{"id": "scribe_1", "agent": "scribe"}]
         moves = self.wf._rework_moves(move_list, "arbiter_rejected", 2)
-        assert moves[0]["id"] == "scribe_1_rework_2"
+        assert moves[0]["id"] == "scribe_1"
+        assert moves[0]["rework_attempt"] == 2
 
     def test_rework_instruction_appended(self):
         move_list = [{"id": "scribe_1", "agent": "scribe", "instruction": "Original"}]

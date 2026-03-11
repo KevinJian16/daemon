@@ -1,6 +1,7 @@
 """Folio-Writ-Slip registry and event rule engine."""
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -111,11 +112,22 @@ def _cron_matches(schedule: str, now_utc: datetime) -> bool:
     )
 
 
-VALID_FOLIO_STATUSES = {"active", "parked", "archived", "dissolved"}
-VALID_SLIP_STATUSES = {"active", "parked", "settled", "archived", "absorbed"}
-VALID_DRAFT_STATUSES = {"open", "refining", "crystallized", "superseded", "abandoned"}
+VALID_FOLIO_STATUSES = {"active", "archived", "deleted"}
+VALID_SLIP_STATUSES = {"active", "archived", "deleted"}
+VALID_DRAFT_STATUSES = {"drafting", "gone"}
 VALID_WRIT_STATUSES = {"active", "paused", "disabled"}
-ACTIVE_DEED_STATUSES = {"running", "queued", "paused", "cancelling", "awaiting_eval"}
+VALID_DEED_STATUSES = {"running", "settling", "closed"}
+ACTIVE_DEED_STATUSES = {"running", "settling"}
+
+# Two-tier state model: primary status (user-facing) + sub_status (metadata).
+VALID_DRAFT_SUB_STATUSES = {"open", "refining", "crystallized", "superseded", "abandoned"}
+VALID_SLIP_SUB_STATUSES = {"normal", "parked"}
+VALID_FOLIO_SUB_STATUSES = {"normal", "parked"}
+VALID_DEED_SUB_STATUSES = {
+    "queued", "executing", "paused", "cancelling", "retrying",
+    "reviewing", "comparing", "evaluating",
+    "succeeded", "failed", "cancelled", "timed_out",
+}
 
 
 class FolioWritManager:
@@ -223,7 +235,8 @@ class FolioWritManager:
             "intent_snapshot": str(intent_snapshot or "").strip(),
             "candidate_brief": candidate_brief if isinstance(candidate_brief, dict) else {},
             "candidate_design": candidate_design if isinstance(candidate_design, dict) else {},
-            "status": "open",
+            "status": "drafting",
+            "sub_status": "open",
             "created_utc": _utc(),
             "updated_utc": _utc(),
         }
@@ -243,11 +256,13 @@ class FolioWritManager:
             break
         if not target:
             return None
-        for key in ("folio_id", "seed_event", "intent_snapshot", "candidate_brief", "candidate_design", "status"):
+        for key in ("folio_id", "seed_event", "intent_snapshot", "candidate_brief", "candidate_design", "status", "sub_status"):
             if key not in updates:
                 continue
             value = updates[key]
             if key == "status" and str(value or "") not in VALID_DRAFT_STATUSES:
+                continue
+            if key == "sub_status" and str(value or "") not in VALID_DRAFT_SUB_STATUSES:
                 continue
             target[key] = value
         target["updated_utc"] = _utc()
@@ -278,6 +293,7 @@ class FolioWritManager:
             "slug_history": [],
             "summary": str(summary or "").strip(),
             "status": "active",
+            "sub_status": "normal",
             "slip_ids": [],
             "writ_ids": [],
             "created_utc": _utc(),
@@ -286,6 +302,8 @@ class FolioWritManager:
         if isinstance(metadata, dict):
             if str(metadata.get("status") or "") in VALID_FOLIO_STATUSES:
                 folio["status"] = str(metadata.get("status"))
+            if str(metadata.get("sub_status") or "") in VALID_FOLIO_SUB_STATUSES:
+                folio["sub_status"] = str(metadata.get("sub_status"))
             if metadata.get("summary"):
                 folio["summary"] = str(metadata.get("summary") or "")
         rows = self.list_folios()
@@ -306,11 +324,13 @@ class FolioWritManager:
         if not target:
             return None
         title_changed = False
-        for key in ("title", "summary", "status", "slip_ids", "writ_ids"):
+        for key in ("title", "summary", "status", "sub_status", "slip_ids", "writ_ids"):
             if key not in updates:
                 continue
             value = updates[key]
             if key == "status" and str(value or "") not in VALID_FOLIO_STATUSES:
+                continue
+            if key == "sub_status" and str(value or "") not in VALID_FOLIO_SUB_STATUSES:
                 continue
             target[key] = value
             if key == "title":
@@ -374,6 +394,7 @@ class FolioWritManager:
             "brief": brief if isinstance(brief, dict) else {},
             "design": design if isinstance(design, dict) else {},
             "status": "active",
+            "sub_status": "normal",
             "standing": bool(standing),
             "latest_deed_id": "",
             "deed_ids": [],
@@ -383,6 +404,8 @@ class FolioWritManager:
         if isinstance(metadata, dict):
             if str(metadata.get("status") or "") in VALID_SLIP_STATUSES:
                 slip["status"] = str(metadata.get("status"))
+            if str(metadata.get("sub_status") or "") in VALID_SLIP_SUB_STATUSES:
+                slip["sub_status"] = str(metadata.get("sub_status"))
         rows = self.list_slips()
         rows.append(slip)
         self._sync_slug(rows, slip, id_key="slip_id", title=slip["title"], fallback="slip")
@@ -405,11 +428,13 @@ class FolioWritManager:
         if not target:
             return None
         title_changed = False
-        for key in ("folio_id", "title", "objective", "brief", "design", "status", "standing", "latest_deed_id", "deed_ids"):
+        for key in ("folio_id", "title", "objective", "brief", "design", "status", "sub_status", "standing", "latest_deed_id", "deed_ids"):
             if key not in updates:
                 continue
             value = updates[key]
             if key == "status" and str(value or "") not in VALID_SLIP_STATUSES:
+                continue
+            if key == "sub_status" and str(value or "") not in VALID_SLIP_SUB_STATUSES:
                 continue
             target[key] = value
             if key == "title":
@@ -426,6 +451,58 @@ class FolioWritManager:
                 self._attach_slip_to_folio(slip_id, current_folio_id)
         self._nerve.emit("slip_updated", {"slip_id": slip_id, "status": target.get("status")})
         return target
+
+    def duplicate_slip(
+        self,
+        slip_id: str,
+        *,
+        title: str | None = None,
+        folio_id: str | None = None,
+    ) -> dict | None:
+        source = self.get_slip(slip_id)
+        if not source:
+            return None
+        brief = copy.deepcopy(source.get("brief") if isinstance(source.get("brief"), dict) else {})
+        design = copy.deepcopy(source.get("design") if isinstance(source.get("design"), dict) else {})
+        # Copy should preserve structure, but not silently activate schedule-backed standing behavior.
+        if isinstance(brief, dict):
+            brief["standing"] = False
+        duplicate = self.create_slip(
+            title=str(title or f"{source.get('title') or '签札'} 副本").strip(),
+            objective=str(source.get("objective") or ""),
+            brief=brief,
+            design=design,
+            folio_id=folio_id if folio_id is not None else str(source.get("folio_id") or "") or None,
+            standing=False,
+        )
+        self._nerve.emit(
+            "slip_duplicated",
+            {"source_slip_id": slip_id, "slip_id": duplicate.get("slip_id"), "folio_id": duplicate.get("folio_id")},
+        )
+        return duplicate
+
+    def reorder_folio_slips(self, folio_id: str, ordered_slip_ids: list[str]) -> dict | None:
+        folio = self.get_folio(folio_id)
+        if not folio:
+            return None
+        requested = [str(row or "").strip() for row in ordered_slip_ids if str(row or "").strip()]
+        valid = {
+            str(row.get("slip_id") or "")
+            for row in self.list_slips(folio_id=folio_id)
+            if isinstance(row, dict) and str(row.get("slip_id") or "").strip()
+        }
+        if not valid:
+            return folio
+        existing = [str(row or "").strip() for row in (folio.get("slip_ids") or []) if str(row or "").strip() in valid]
+        remaining = [row for row in existing if row not in requested]
+        extras = [row for row in requested if row in valid and row not in existing]
+        next_order = []
+        for candidate in requested + remaining + extras:
+            if candidate in valid and candidate not in next_order:
+                next_order.append(candidate)
+        if not next_order:
+            next_order = existing or sorted(valid)
+        return self.update_folio(folio_id, {"slip_ids": next_order})
 
     def crystallize_draft(
         self,
@@ -449,7 +526,7 @@ class FolioWritManager:
             folio_id=folio_id or str(draft.get("folio_id") or "") or None,
             standing=standing,
         )
-        self.update_draft(draft_id, {"status": "crystallized"})
+        self.update_draft(draft_id, {"status": "gone", "sub_status": "crystallized"})
         self._nerve.emit("draft_crystallized", {"draft_id": draft_id, "slip_id": slip["slip_id"]})
         return slip
 

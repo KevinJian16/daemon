@@ -80,13 +80,13 @@ def register_basic_routes(
 
     def _phase_of(row: dict) -> str:
         explicit = str(row.get("phase") or "").strip().lower()
-        if explicit in {"running", "awaiting_eval", "history"}:
+        if explicit in {"running", "settling", "history"}:
             return explicit
         deed_st = _deed_status(row).lower()
-        if deed_st in {"running", "queued", "paused", "cancel_requested", "cancelling"}:
+        if deed_st == "running":
             return "running"
-        if deed_st == "awaiting_eval":
-            return "awaiting_eval"
+        if deed_st == "settling":
+            return "settling"
         return "history"
 
     def _filter_rows(rows: list[dict], deed_status: str | None, phase: str | None) -> list[dict]:
@@ -96,7 +96,7 @@ def register_basic_routes(
             out = [row for row in out if _deed_status(row).lower() == target]
         if phase:
             target_phase = str(phase).strip().lower()
-            if target_phase in {"running", "awaiting_eval", "history"}:
+            if target_phase in {"running", "settling", "history"}:
                 out = [row for row in out if _phase_of(row) == target_phase]
         return out
 
@@ -105,7 +105,7 @@ def register_basic_routes(
         changed = False
         for row in rows:
             status = _deed_status(row).lower()
-            if status != "awaiting_eval":
+            if status != "settling":
                 continue
             raw = str(row.get("eval_deadline_utc") or "").strip()
             if not raw:
@@ -119,7 +119,8 @@ def register_basic_routes(
                 continue
             if deadline > now:
                 continue
-            row["deed_status"] = "completed"
+            row["deed_status"] = "closed"
+            row["deed_sub_status"] = "timed_out"
             row["phase"] = "history"
             row["updated_utc"] = _utc()
             row["eval_expired_utc"] = row["updated_utc"]
@@ -223,7 +224,8 @@ def register_basic_routes(
         plan = row.get("plan") if isinstance(row.get("plan"), dict) else {}
         if not plan:
             raise HTTPException(status_code=409, detail="deed_plan_missing")
-        if _deed_status(row).lower() not in {"failed", "failed_submission", "expired", "replay_exhausted"}:
+        sub_status = str(row.get("deed_sub_status") or "").lower()
+        if _deed_status(row).lower() != "closed" or sub_status not in {"failed", "failed_submission", "expired", "replay_exhausted"}:
             raise HTTPException(status_code=409, detail="retry_not_allowed_for_current_deed_status")
         result = await will.submit(plan)
         log_portal_event("deed_retry", {"deed_id": deed_id, "result_ok": bool(result.get("ok"))}, request)
@@ -235,7 +237,7 @@ def register_basic_routes(
         if not isinstance(row, dict):
             raise HTTPException(status_code=404, detail="deed not found")
         cur_status = _deed_status(row).lower()
-        if cur_status in {"completed", "awaiting_eval", "cancelled", "failed"}:
+        if cur_status in {"closed", "settling"}:
             raise HTTPException(status_code=409, detail=f"cancel_not_allowed_for_deed_status:{cur_status}")
 
         await ensure_temporal_client(retries=2, delay_s=0.3)
@@ -252,14 +254,21 @@ def register_basic_routes(
                     cancel_error = str(exc)[:240]
 
         now = _utc()
-        new_status = "cancelling" if cancel_requested else "cancelled"
-        new_phase = "running" if cancel_requested else "history"
+        if cancel_requested:
+            new_status = "running"
+            new_sub_status = "cancelling"
+            new_phase = "running"
+        else:
+            new_status = "closed"
+            new_sub_status = "cancelled"
+            new_phase = "history"
 
         def _mutate(deeds: list[dict]) -> None:
             for item in deeds:
                 if str(item.get("deed_id") or "") != deed_id:
                     continue
                 item["deed_status"] = new_status
+                item["deed_sub_status"] = new_sub_status
                 item["phase"] = new_phase
                 item["updated_utc"] = now
                 if cancel_error:
@@ -268,7 +277,7 @@ def register_basic_routes(
 
         ledger.mutate_deeds(_mutate)
         log_portal_event("deed_cancel", {"deed_id": deed_id, "cancel_error": cancel_error}, request)
-        return {"ok": True, "deed_id": deed_id, "deed_status": new_status, "cancel_error": cancel_error}
+        return {"ok": True, "deed_id": deed_id, "deed_status": new_status, "deed_sub_status": new_sub_status, "cancel_error": cancel_error}
 
     async def _append_requirement(deed_id: str, requirement: str, source: str = "portal") -> dict:
         row = ledger.get_deed(deed_id)
@@ -319,7 +328,7 @@ def register_basic_routes(
         deed_status = _deed_status(row).lower()
         workflow_id = ""
         paused = False
-        if deed_status in {"running", "queued"}:
+        if deed_status == "running":
             workflow_id = await _signal_workflow(deed_id, row, signal_name="pause_execution", payload={"source": "portal_message"})
             paused = True
             await _append_requirement(deed_id, text, source=str(body.get("source") or "portal_message"))
@@ -335,7 +344,7 @@ def register_basic_routes(
         if not isinstance(row, dict):
             raise HTTPException(status_code=404, detail="deed not found")
         status = _deed_status(row).lower()
-        if status in {"completed", "cancelled", "failed", "awaiting_eval"}:
+        if status in {"closed", "settling"}:
             raise HTTPException(status_code=409, detail=f"pause_not_allowed_for_deed_status:{status}")
         workflow_id = await _signal_workflow(deed_id, row, signal_name="pause_execution", payload={"source": "api"})
         now = _utc()
@@ -344,14 +353,15 @@ def register_basic_routes(
             for item in deeds:
                 if str(item.get("deed_id") or "") != deed_id:
                     continue
-                item["deed_status"] = "paused"
+                item["deed_status"] = "running"
+                item["deed_sub_status"] = "paused"
                 item["phase"] = "running"
                 item["updated_utc"] = now
                 break
 
         ledger.mutate_deeds(_mutate)
         log_portal_event("deed_pause", {"deed_id": deed_id, "workflow_id": workflow_id}, request)
-        return {"ok": True, "deed_id": deed_id, "deed_status": "paused", "workflow_id": workflow_id}
+        return {"ok": True, "deed_id": deed_id, "deed_status": "running", "deed_sub_status": "paused", "workflow_id": workflow_id}
 
     @app.post("/deeds/{deed_id}/resume")
     async def resume_deed(deed_id: str, request: Request):
@@ -366,13 +376,14 @@ def register_basic_routes(
                 if str(item.get("deed_id") or "") != deed_id:
                     continue
                 item["deed_status"] = "running"
+                item["deed_sub_status"] = "executing"
                 item["phase"] = "running"
                 item["updated_utc"] = now
                 break
 
         ledger.mutate_deeds(_mutate)
         log_portal_event("deed_resume", {"deed_id": deed_id, "workflow_id": workflow_id}, request)
-        return {"ok": True, "deed_id": deed_id, "deed_status": "running", "workflow_id": workflow_id}
+        return {"ok": True, "deed_id": deed_id, "deed_status": "running", "deed_sub_status": "executing", "workflow_id": workflow_id}
 
     @app.get("/offerings")
     def list_offerings(request: Request, limit: int = 50):

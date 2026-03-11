@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 
 
-ACTIVE_DEED_STATUSES = {"running", "queued", "paused", "cancelling", "awaiting_eval"}
+ACTIVE_DEED_STATUSES = {"running", "settling"}
 
 
 def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
@@ -98,6 +98,55 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
             return None, None
         return deed_id, root
 
+    def _cadence_writ_for_slip(slip: dict) -> dict | None:
+        slip_id = str(slip.get("slip_id") or "")
+        folio_id = str(slip.get("folio_id") or "")
+        if not slip_id or not folio_id:
+            return None
+        candidates: list[dict] = []
+        for writ in ctx.folio_writ.list_writs(folio_id=folio_id):
+            if not isinstance(writ, dict):
+                continue
+            match = writ.get("match") if isinstance(writ.get("match"), dict) else {}
+            action = writ.get("action") if isinstance(writ.get("action"), dict) else {}
+            if str(action.get("type") or "") != "spawn_deed":
+                continue
+            if str(action.get("slip_id") or "") != slip_id:
+                continue
+            schedule = str(match.get("schedule") or "").strip()
+            if not schedule:
+                continue
+            candidates.append(writ)
+        if not candidates:
+            return None
+        candidates.sort(key=lambda row: _parse_ts(str(row.get("updated_utc") or row.get("created_utc") or "")), reverse=True)
+        active = [row for row in candidates if str(row.get("status") or "") == "active"]
+        return active[0] if active else candidates[0]
+
+    def _cadence_state_for_slip(slip: dict) -> dict:
+        writ = _cadence_writ_for_slip(slip)
+        return {
+            "writ_id": str((writ or {}).get("writ_id") or ""),
+            "schedule": str(((writ or {}).get("match") or {}).get("schedule") or ""),
+            "status": str((writ or {}).get("status") or ""),
+            "standing": bool(slip.get("standing")),
+            "active": bool(writ) and str((writ or {}).get("status") or "") == "active",
+        }
+
+    def _ordered_slips_for_folio(folio: dict) -> list[dict]:
+        folio_id = str(folio.get("folio_id") or "")
+        slips = [row for row in _slip_rows() if str(row.get("folio_id") or "") == folio_id]
+        preferred = [str(row or "").strip() for row in (folio.get("slip_ids") or []) if str(row or "").strip()]
+        position = {slip_id: index for index, slip_id in enumerate(preferred)}
+        slips.sort(
+            key=lambda row: (
+                0 if str(row.get("slip_id") or "") in position else 1,
+                position.get(str(row.get("slip_id") or ""), 10_000),
+                -_parse_ts(str(row.get("updated_utc") or row.get("created_utc") or "")),
+            )
+        )
+        return slips
+
     def _timeline_for_slip(slip: dict, deed: dict | None) -> list[dict]:
         rows: list[dict] = []
         if isinstance(deed, dict):
@@ -158,6 +207,7 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
             "updated_utc": str((deed or {}).get("updated_utc") or slip.get("updated_utc") or ""),
             "created_utc": str(slip.get("created_utc") or ""),
             "result_ready": result_ready,
+            "cadence": _cadence_state_for_slip(slip),
             "message_count": len(ctx.load_deed_messages(str((deed or {}).get("deed_id") or ""), 500)) if deed else 0,
             "plan": {
                 "timeline": _timeline_for_slip(slip, deed),
@@ -166,14 +216,14 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
 
     def _bucket_for_slip(summary: dict) -> str:
         deed_status = str(((summary.get("deed") or {}).get("status") or "")).lower()
-        if deed_status in {"awaiting_eval"}:
+        if deed_status == "settling":
             return "review"
-        if deed_status in {"running", "queued", "paused", "cancelling"}:
+        if deed_status == "running":
             return "live"
         return "recent"
 
     def _folio_summary(folio: dict) -> dict:
-        slips = [row for row in _slip_rows() if str(row.get("folio_id") or "") == str(folio.get("folio_id") or "")]
+        slips = _ordered_slips_for_folio(folio)
         slip_summaries = [_slip_summary(row) for row in slips]
         writs = ctx.folio_writ.list_writs(folio_id=str(folio.get("folio_id") or ""))
         updated_utc = str(folio.get("updated_utc") or "")
@@ -383,7 +433,7 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
             deed_id = str(deed.get("deed_id") or "")
             ctx.append_deed_message(deed_id, role="user", content=text, event="user_message", meta={"source": "portal"})
             workflow_id = ""
-            if _deed_status(deed) in {"running", "queued", "cancelling"}:
+            if _deed_status(deed) == "running":
                 workflow_id = await _signal_deed(deed_id, deed, signal_name="pause_execution", payload={"source": "portal_message"})
             ctx.log_portal_event("portal_slip_message", {"slip_id": slip.get("slip_id"), "deed_id": deed_id, "workflow_id": workflow_id}, request)
             return {"ok": True, "slip_id": slip.get("slip_id"), "deed_id": deed_id, "workflow_id": workflow_id}
@@ -405,7 +455,7 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
         deed = _active_deed_for_slip(slip)
         if target == "continue":
             ctx.folio_writ.update_slip(str(slip.get("slip_id") or ""), {"status": "active"})
-            if isinstance(deed, dict) and _deed_status(deed) == "paused":
+            if isinstance(deed, dict) and str((deed or {}).get("deed_sub_status") or "").lower() == "paused":
                 workflow_id = await _signal_deed(str(deed.get("deed_id") or ""), deed, signal_name="resume_execution", payload={"source": "portal"})
                 return {"ok": True, "slip_id": slip.get("slip_id"), "deed_id": deed.get("deed_id"), "workflow_id": workflow_id}
             result = await ctx.will.submit(_spawn_plan_for_slip(slip))
@@ -413,14 +463,14 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
                 raise HTTPException(status_code=409, detail=result.get("error_code") or result.get("error") or "slip_resume_failed")
             return result
         if target == "park":
-            ctx.folio_writ.update_slip(str(slip.get("slip_id") or ""), {"status": "parked"})
-            if isinstance(deed, dict) and _deed_status(deed) in {"running", "queued", "cancelling"}:
+            ctx.folio_writ.update_slip(str(slip.get("slip_id") or ""), {"status": "active", "sub_status": "parked"})
+            if isinstance(deed, dict) and _deed_status(deed) == "running":
                 workflow_id = await _signal_deed(str(deed.get("deed_id") or ""), deed, signal_name="pause_execution", payload={"source": "portal"})
                 return {"ok": True, "slip_id": slip.get("slip_id"), "deed_id": deed.get("deed_id"), "workflow_id": workflow_id}
-            return {"ok": True, "slip_id": slip.get("slip_id"), "status": "parked"}
+            return {"ok": True, "slip_id": slip.get("slip_id"), "status": "active", "sub_status": "parked"}
 
         ctx.folio_writ.update_slip(str(slip.get("slip_id") or ""), {"status": "archived"})
-        if isinstance(deed, dict) and _deed_status(deed) in {"running", "queued", "paused", "cancelling"}:
+        if isinstance(deed, dict) and _deed_status(deed) == "running":
             cancelled, detail = await _cancel_deed(str(deed.get("deed_id") or ""), deed)
             return {"ok": cancelled, "slip_id": slip.get("slip_id"), "deed_id": deed.get("deed_id"), "detail": detail}
         return {"ok": True, "slip_id": slip.get("slip_id"), "status": "archived"}
@@ -496,8 +546,7 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
     @app.get("/portal-api/folios/{folio_slug}")
     def portal_get_folio(folio_slug: str, request: Request):
         folio = _resolve_folio(folio_slug)
-        slips = [_slip_summary(row) for row in _slip_rows() if str(row.get("folio_id") or "") == str(folio.get("folio_id") or "")]
-        slips.sort(key=lambda row: _parse_ts(str(row.get("updated_utc") or "")), reverse=True)
+        slips = [_slip_summary(row) for row in _ordered_slips_for_folio(folio)]
         writs = []
         for writ in ctx.folio_writ.list_writs(folio_id=str(folio.get("folio_id") or "")):
             if not isinstance(writ, dict):
@@ -518,6 +567,86 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
         ctx.log_portal_event("portal_get_folio", {"folio_id": payload["id"]}, request)
         return payload
 
+    @app.post("/portal-api/slips/{slip_slug}/copy")
+    def portal_slip_copy(slip_slug: str, request: Request):
+        slip = _resolve_slip(slip_slug)
+        duplicate = ctx.folio_writ.duplicate_slip(str(slip.get("slip_id") or ""))
+        if not isinstance(duplicate, dict):
+            raise HTTPException(status_code=404, detail="slip_not_found")
+        ctx.log_portal_event(
+            "portal_slip_copy",
+            {"slip_id": slip.get("slip_id"), "duplicate_slip_id": duplicate.get("slip_id")},
+            request,
+        )
+        return {"ok": True, "slip": _slip_summary(duplicate)}
+
+    @app.post("/portal-api/slips/{slip_slug}/take-out")
+    def portal_slip_take_out(slip_slug: str, request: Request):
+        slip = _resolve_slip(slip_slug)
+        updated = ctx.folio_writ.update_slip(str(slip.get("slip_id") or ""), {"folio_id": None})
+        if not isinstance(updated, dict):
+            raise HTTPException(status_code=404, detail="slip_not_found")
+        ctx.log_portal_event("portal_slip_take_out", {"slip_id": updated.get("slip_id")}, request)
+        return {"ok": True, "slip": _slip_summary(updated)}
+
+    @app.get("/portal-api/slips/{slip_slug}/cadence")
+    def portal_slip_cadence(slip_slug: str, request: Request):
+        slip = _resolve_slip(slip_slug)
+        payload = _cadence_state_for_slip(slip)
+        payload["slip_id"] = str(slip.get("slip_id") or "")
+        ctx.log_portal_event("portal_slip_cadence", {"slip_id": payload["slip_id"]}, request)
+        return payload
+
+    @app.put("/portal-api/slips/{slip_slug}/cadence")
+    async def portal_slip_cadence_update(slip_slug: str, request: Request):
+        slip = _resolve_slip(slip_slug)
+        body = await request.json()
+        schedule = str(body.get("schedule") or "").strip()
+        enabled = bool(body.get("enabled", True))
+        if enabled and not schedule:
+            raise HTTPException(status_code=400, detail="cadence_schedule_required")
+        writ = _cadence_writ_for_slip(slip)
+        if not enabled:
+            if isinstance(writ, dict):
+                ctx.folio_writ.update_writ(str(writ.get("writ_id") or ""), {"status": "disabled"})
+            updated = ctx.folio_writ.update_slip(str(slip.get("slip_id") or ""), {"standing": False})
+            payload = _cadence_state_for_slip(updated or slip)
+            payload["slip_id"] = str((updated or slip).get("slip_id") or "")
+            return payload
+        if isinstance(writ, dict):
+            ctx.folio_writ.update_writ(
+                str(writ.get("writ_id") or ""),
+                {
+                    "status": "active",
+                    "match": {"schedule": schedule},
+                    "action": {"type": "spawn_deed", "slip_id": str(slip.get("slip_id") or "")},
+                },
+            )
+        else:
+            writ = ctx.folio_writ.ensure_standing_writ(
+                str(slip.get("slip_id") or ""),
+                schedule=schedule,
+                title=str(slip.get("title") or "定时成文"),
+            )
+        updated = ctx.folio_writ.update_slip(str(slip.get("slip_id") or ""), {"standing": True})
+        payload = _cadence_state_for_slip(updated or slip)
+        payload["slip_id"] = str((updated or slip).get("slip_id") or "")
+        payload["writ_id"] = str((writ or {}).get("writ_id") or payload.get("writ_id") or "")
+        ctx.log_portal_event("portal_slip_cadence_update", {"slip_id": payload["slip_id"], "schedule": schedule}, request)
+        return payload
+
+    @app.delete("/portal-api/slips/{slip_slug}/cadence")
+    def portal_slip_cadence_delete(slip_slug: str, request: Request):
+        slip = _resolve_slip(slip_slug)
+        writ = _cadence_writ_for_slip(slip)
+        if isinstance(writ, dict):
+            ctx.folio_writ.update_writ(str(writ.get("writ_id") or ""), {"status": "disabled"})
+        updated = ctx.folio_writ.update_slip(str(slip.get("slip_id") or ""), {"standing": False})
+        payload = _cadence_state_for_slip(updated or slip)
+        payload["slip_id"] = str((updated or slip).get("slip_id") or "")
+        ctx.log_portal_event("portal_slip_cadence_delete", {"slip_id": payload["slip_id"]}, request)
+        return payload
+
     @app.post("/portal-api/folios/{folio_slug}/adopt")
     async def portal_folio_adopt(folio_slug: str, request: Request):
         folio = _resolve_folio(folio_slug)
@@ -532,6 +661,35 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
             "folio": _folio_summary(ctx.folio_writ.get_folio(str(folio.get("folio_id") or "")) or folio),
             "slip": _slip_summary(ctx.folio_writ.get_slip(str(slip.get("slip_id") or "")) or slip),
         }
+
+    @app.post("/portal-api/folios/{folio_slug}/reorder")
+    async def portal_folio_reorder(folio_slug: str, request: Request):
+        folio = _resolve_folio(folio_slug)
+        body = await request.json()
+        ordered_slugs = body.get("ordered_slugs") if isinstance(body.get("ordered_slugs"), list) else []
+        if not ordered_slugs:
+            source_slug = str(body.get("source_slug") or "").strip()
+            target_slug = str(body.get("target_slug") or "").strip()
+            ordered_slugs = [
+                str(row.get("slug") or "")
+                for row in _ordered_slips_for_folio(folio)
+                if isinstance(row, dict)
+            ]
+            if source_slug and target_slug and source_slug in ordered_slugs and target_slug in ordered_slugs:
+                ordered_slugs = [row for row in ordered_slugs if row != source_slug]
+                target_index = ordered_slugs.index(target_slug)
+                ordered_slugs.insert(target_index, source_slug)
+        ordered_ids = []
+        for slug in ordered_slugs:
+            slip = _resolve_slip(str(slug))
+            if str(slip.get("folio_id") or "") != str(folio.get("folio_id") or ""):
+                continue
+            ordered_ids.append(str(slip.get("slip_id") or ""))
+        updated = ctx.folio_writ.reorder_folio_slips(str(folio.get("folio_id") or ""), ordered_ids)
+        if not isinstance(updated, dict):
+            raise HTTPException(status_code=404, detail="folio_not_found")
+        ctx.log_portal_event("portal_folio_reorder", {"folio_id": updated.get("folio_id"), "count": len(ordered_ids)}, request)
+        return {"ok": True, "folio": _folio_summary(updated)}
 
     @app.post("/portal-api/folios/from-slips")
     async def portal_folio_from_slips(request: Request):

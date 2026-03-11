@@ -22,8 +22,9 @@ class DeedInput:
 class GraphWillWorkflow:
     """Executes a DAG of Agent moves with Kahn topological ordering.
 
-    Each agent role uses a single persistent session; same-agent moves
-    serialize naturally (OC serializes runs per session key).
+    Single-instance multi-session model: each agent role = 1 OC instance.
+    Serial moves share a session; parallel moves get separate sessions.
+    Direct moves (execution_type="direct") bypass OC entirely.
     """
 
     def __init__(self) -> None:
@@ -61,7 +62,7 @@ class GraphWillWorkflow:
         plan = inp.plan or {}
 
         async def _mark_failure(message: str) -> None:
-            await self._mark_deed_status(inp.deed_root, plan, "failed", message[:200])
+            await self._mark_deed_status(inp.deed_root, plan, "closed", message[:200], sub_status="failed")
 
         moves = plan.get("moves") or plan.get("graph", {}).get("moves") or []
         if not isinstance(moves, list) or not moves:
@@ -156,11 +157,11 @@ class GraphWillWorkflow:
             while pending or running:
                 if self._pause_requested and not running:
                     if not pause_state_marked:
-                        await self._mark_deed_status(inp.deed_root, plan, "paused", "paused_by_request")
+                        await self._mark_deed_status(inp.deed_root, plan, "running", "paused_by_request", sub_status="paused")
                         pause_state_marked = True
                     await workflow.wait_condition(lambda: not self._pause_requested)
                     if pause_state_marked:
-                        await self._mark_deed_status(inp.deed_root, plan, "running", "")
+                        await self._mark_deed_status(inp.deed_root, plan, "running", "", sub_status="executing")
                     pause_state_marked = False
                     continue
 
@@ -213,7 +214,7 @@ class GraphWillWorkflow:
                     completed.add(sid)
 
         except asyncio.CancelledError:
-            await self._mark_deed_status(inp.deed_root, plan, "cancelled", "cancelled_by_request")
+            await self._mark_deed_status(inp.deed_root, plan, "closed", "cancelled_by_request", sub_status="cancelled")
             await self._release_retinue_safe(deed_id, retinue_allocations)
             raise
         except ApplicationError as e:
@@ -295,15 +296,41 @@ class GraphWillWorkflow:
         return str(st.get("agent") or "").strip()
 
     def _agent_limits(self, plan: dict) -> dict[str, int]:
-        # Each agent role maps to one persistent session; OC serializes runs
-        # per session key, so same-agent concurrency is naturally 1.
-        # spine keeps 2 because spine routines run in-process, not via OC.
-        system_defaults: dict[str, int] = {
-            "scout": 1, "sage": 1, "arbiter": 1,
-            "scribe": 1, "envoy": 1, "spine": 2, "counsel": 1, "artificer": 1,
-        }
+        """Dynamic per-agent concurrency based on DAG structure.
+
+        Each parallel move gets its own session (§2.2), so the limit equals
+        the max number of parallel moves for that agent in the DAG.
+        spine keeps higher limit because routines run in-process, not via OC.
+        """
+        moves = plan.get("moves") or []
+        # Count max parallel moves per agent by grouping moves that share deps.
+        from collections import Counter
+        dep_map: dict[str, frozenset[str]] = {}
+        agent_map: dict[str, str] = {}
+        for i, st in enumerate(moves):
+            sid = str(st.get("id") or f"move_{i}")
+            dep_map[sid] = frozenset(st.get("depends_on") or [])
+            agent_map[sid] = str(st.get("agent") or "").strip()
+        # Group moves by (agent, deps) — same agent + same deps = parallel.
+        parallel_counts: Counter[str] = Counter()
+        groups: dict[tuple[str, frozenset[str]], int] = {}
+        for sid, deps in dep_map.items():
+            ag = agent_map.get(sid, "")
+            if not ag:
+                continue
+            key = (ag, deps)
+            groups[key] = groups.get(key, 0) + 1
+        for (ag, _), count in groups.items():
+            parallel_counts[ag] = max(parallel_counts[ag], count)
+        # Ensure at least 1 for every agent mentioned, spine gets min 2.
+        limits: dict[str, int] = {}
+        for ag in set(agent_map.values()):
+            if not ag:
+                continue
+            limits[ag] = max(1, parallel_counts.get(ag, 1))
+        limits["spine"] = max(limits.get("spine", 2), 2)
         overrides: dict = plan.get("agent_concurrency") or {}
-        return {**system_defaults, **overrides}
+        return {**limits, **overrides}
 
     def _inject_requirements(self, move: dict) -> dict:
         if not self._active_requirements:
@@ -328,6 +355,7 @@ class GraphWillWorkflow:
 
     def _start(self, sid: str, st: dict, deed_root: str, plan: dict) -> workflow.ActivityHandle:
         ag = self._agent(st)
+        execution_type = str(st.get("execution_type") or "agent").strip()
         st_to, sc_to = self._timeouts(plan, st)
         max_attempts = int(plan.get("retry_max_attempts") or 3)
         retry = RetryPolicy(maximum_attempts=max_attempts)
@@ -337,6 +365,15 @@ class GraphWillWorkflow:
             return workflow.start_activity(
                 "activity_spine_routine",
                 args=[deed_root, plan, routine],
+                start_to_close_timeout=st_to,
+                schedule_to_close_timeout=sc_to,
+                retry_policy=retry,
+            )
+        # Direct moves: MCP/Python activity, zero LLM tokens (§3).
+        if execution_type == "direct":
+            return workflow.start_activity(
+                "activity_direct_move",
+                args=[deed_root, plan, st],
                 start_to_close_timeout=st_to,
                 schedule_to_close_timeout=sc_to,
                 retry_policy=retry,
@@ -410,7 +447,8 @@ class GraphWillWorkflow:
         return False
 
     def _rework_moves(self, move_list: list[dict], error_code: str, attempt: int) -> list[dict]:
-        """Select moves to rework based on structured error code (not string matching)."""
+        """Select moves to rework. Reuses original move IDs — rework appends
+        to existing session, leveraging accumulated context (§7.1)."""
         COLLECTION_CODES = {
             "glance_items_too_few", "glance_domain_coverage_too_low",
             "contract_references_too_few", "coverage_below_threshold",
@@ -435,9 +473,10 @@ class GraphWillWorkflow:
                 if st:
                     selected.append(st)
 
-        for i, st in enumerate(selected):
-            base_id = str(st.get("id") or f"rework_{i}").strip()
-            st["id"] = f"{base_id}_rework_{attempt}"
+        # Keep original move IDs — session already has context.
+        # Only append rework instruction as continuation.
+        for st in selected:
+            st["rework_attempt"] = attempt
             base_ins = str(st.get("instruction") or "").strip()
             if is_collection_issue:
                 st["instruction"] = (
@@ -452,11 +491,11 @@ class GraphWillWorkflow:
                 )
         return selected
 
-    async def _mark_deed_status(self, deed_root: str, plan: dict, deed_status: str, error: str) -> None:
+    async def _mark_deed_status(self, deed_root: str, plan: dict, deed_status: str, error: str, *, sub_status: str = "") -> None:
         try:
             await workflow.execute_activity(
                 "activity_update_deed_status",
-                args=[deed_root, {**plan, "last_error": error}, deed_status],
+                args=[deed_root, {**plan, "last_error": error, "deed_sub_status": sub_status}, deed_status],
                 start_to_close_timeout=timedelta(seconds=20),
                 schedule_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(maximum_attempts=1),

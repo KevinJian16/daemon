@@ -388,7 +388,8 @@ p{
                                 except Exception as exc:
                                     logger.warning("Feedback survey telegram notify error: %s", exc)
                         if event_name in {
-                            "deed_completed",
+                            "deed_settling",
+                            "deed_closed",
                             "deed_failed",
                             "deed_rework_exhausted",
                             "eval_expiring",
@@ -469,11 +470,11 @@ p{
                 return f"开始处理：{move_label or '当前 Move'}"
             if phase == "waiting":
                 return f"正在等待结果：{move_label or '当前 Move'}"
-            if phase == "completed":
+            if phase == "move_completed":
                 return f"已完成：{move_label or '当前 Move'}"
             if phase == "degraded":
                 return f"遇到异常，已降级处理：{move_label or '当前 Move'}"
-        if event == "deed_completed":
+        if event in {"deed_settling", "deed_closed"}:
             return str(payload.get("summary") or "任务已完成。")
         if event == "deed_failed":
             return f"任务失败：{str(payload.get('error') or payload.get('last_error') or '未知错误')[:180]}"
@@ -546,12 +547,12 @@ p{
             or deed_id
         )
         phase = str(out.get("phase") or "").strip().lower()
-        if phase not in {"running", "awaiting_eval", "history"}:
+        if phase not in {"running", "settling", "history"}:
             status_lower = deed_status.lower()
-            if status_lower in {"running", "queued", "paused", "cancel_requested", "cancelling"}:
+            if status_lower == "running":
                 phase = "running"
-            elif status_lower == "awaiting_eval":
-                phase = "awaiting_eval"
+            elif status_lower == "settling":
+                phase = "settling"
             else:
                 phase = "history"
         out.setdefault("deed_id", deed_id)
@@ -764,9 +765,9 @@ p{
             elif action_type == "advance_slip":
                 _writ_action_advance_slip(action, writ_id)
             elif action_type == "park_slip":
-                _writ_action_update_slip_status(action, "parked", writ_id)
+                _writ_action_update_slip_status(action, {"status": "active", "sub_status": "parked"}, writ_id)
             elif action_type == "archive_slip":
-                _writ_action_update_slip_status(action, "archived", writ_id)
+                _writ_action_update_slip_status(action, {"status": "archived"}, writ_id)
             elif action_type == "attach_slip_to_folio":
                 _writ_action_attach_slip(action, writ_id)
             elif action_type == "create_folio":
@@ -858,12 +859,12 @@ p{
         folio_writ.update_slip(slip_id, {"status": new_status})
         folio_writ.record_writ_triggered(writ_id, slip_id)
 
-    def _writ_action_update_slip_status(action: dict, status: str, writ_id: str) -> None:
+    def _writ_action_update_slip_status(action: dict, updates: dict, writ_id: str) -> None:
         slip_id = str(action.get("slip_id") or "")
         if not slip_id:
-            logger.warning("Writ %s %s: missing slip_id", writ_id, status)
+            logger.warning("Writ %s update_slip: missing slip_id", writ_id)
             return
-        folio_writ.update_slip(slip_id, {"status": status})
+        folio_writ.update_slip(slip_id, updates)
         folio_writ.record_writ_triggered(writ_id, slip_id)
 
     def _writ_action_attach_slip(action: dict, writ_id: str) -> None:
@@ -883,7 +884,8 @@ p{
 
     def _register_runtime_handlers() -> None:
         ws_events = {
-            "deed_completed",
+            "deed_settling",
+            "deed_closed",
             "deed_failed",
             "deed_progress",
             "deed_message",
@@ -1549,8 +1551,9 @@ p{
                     if str(row.get("deed_id") or "") != deed_id:
                         continue
                     status = str(row.get("deed_status") or "").strip().lower()
-                    if status == "awaiting_eval":
-                        row["deed_status"] = "completed"
+                    if status == "settling":
+                        row["deed_status"] = "closed"
+                        row["deed_sub_status"] = "succeeded"
                         row["phase"] = "history"
                         row["updated_utc"] = now
                         row["eval_submitted_utc"] = now
@@ -1634,11 +1637,13 @@ p{
         return RedirectResponse("/portal/", status_code=302)
 
     portal_dir = home / "interfaces" / "portal"
+    portal_build_dir = portal_dir / "compiled"
     console_dir = home / "interfaces" / "console"
     if portal_dir.exists():
         from starlette.responses import FileResponse as _FileResponse
 
-        _portal_index = portal_dir / "index.html"
+        _portal_static_dir = portal_build_dir if portal_build_dir.exists() else portal_dir
+        _portal_index = _portal_static_dir / "index.html"
 
         @app.get("/portal", include_in_schema=False)
         @app.get("/portal/", include_in_schema=False)
@@ -1653,7 +1658,7 @@ p{
         async def _serve_portal_slip(slip_slug: str):
             return _FileResponse(_portal_index, media_type="text/html")
 
-        app.mount("/_portal", StaticFiles(directory=portal_dir), name="portal_static")
+        app.mount("/_portal", StaticFiles(directory=_portal_static_dir), name="portal_static")
     if console_dir.exists():
         from starlette.responses import FileResponse as _FileResponse
 

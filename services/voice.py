@@ -260,7 +260,8 @@ class VoiceService:
                         "intent_snapshot": str(brief.objective or latest_message),
                         "candidate_brief": brief.to_dict(),
                         "candidate_design": {"moves": out.get("moves") or []},
-                        "status": "refining",
+                        "status": "drafting",
+                        "sub_status": "refining",
                     },
                 )
                 metadata["draft_id"] = existing_draft_id

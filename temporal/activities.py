@@ -21,8 +21,10 @@ from temporal.activities_herald import (
 )
 from temporal.activities_exec import (
     run_openclaw_move as _run_openclaw_move_impl,
+    run_direct_move as _run_direct_move_impl,
     run_spine_routine as _run_spine_routine_impl,
 )
+from runtime.mcp_dispatch import MCPDispatcher
 from runtime.retinue import Retinue
 from services.ledger import Ledger
 from services.storage_paths import resolve_offering_root
@@ -51,6 +53,7 @@ class DaemonActivities:
         self._ether = Ether(self._home / "state", source="worker")
         self._ledger = Ledger(self._home / "state")
         self._retinue = Retinue(self._home, self._oc_home)
+        self._mcp = MCPDispatcher(self._home / "config" / "mcp_servers.json")
         self._instinct = None
         self._cortex = None
         self._lore = None
@@ -78,6 +81,13 @@ class DaemonActivities:
     async def activity_openclaw_move(self, deed_root: str, plan: dict, move: dict) -> dict:
         """Execute one DAG move via persistent full session (sessions_send)."""
         return await _run_openclaw_move_impl(self, deed_root, plan, move)
+
+    # ── Direct move (MCP / Python, zero LLM) ─────────────────────────────────
+
+    @activity.defn(name="activity_direct_move")
+    async def activity_direct_move(self, deed_root: str, plan: dict, move: dict) -> dict:
+        """Execute a direct move via MCP tool — zero LLM tokens."""
+        return await _run_direct_move_impl(self, deed_root, plan, move)
 
     # ── Spine routine ─────────────────────────────────────────────────────────
 
@@ -768,15 +778,15 @@ class DaemonActivities:
         last_error = str(plan.get("last_error") or "")
         now_utc = _utc()
         requested_status = str(deed_status or "").strip()
+        sub_status = str(plan.get("deed_sub_status") or "").strip()
         final_status = requested_status
         phase = "history"
-        if requested_status in {"running", "queued", "paused", "cancel_requested", "cancelling"}:
+        if requested_status == "running":
             phase = "running"
-        elif requested_status in {"awaiting_eval"}:
-            phase = "awaiting_eval"
-        elif requested_status == "completed":
-            final_status = "awaiting_eval"
-            phase = "awaiting_eval"
+        elif requested_status == "settling":
+            phase = "settling"
+        elif requested_status == "closed":
+            phase = "history"
 
         try:
             eval_window_hours = float(plan.get("eval_window_hours") or 48.0)
@@ -792,11 +802,13 @@ class DaemonActivities:
             for row in deeds:
                 if row.get("deed_id") == deed_id:
                     row["deed_status"] = final_status
+                    if sub_status:
+                        row["deed_sub_status"] = sub_status
                     row["phase"] = phase
                     row["updated_utc"] = now_utc
                     if final_status == "running" and not row.get("started_utc"):
                         row["started_utc"] = now_utc
-                    if final_status in {"completed", "failed", "cancelled", "awaiting_eval"} and not row.get("ended_utc"):
+                    if final_status in {"settling", "closed"} and not row.get("ended_utc"):
                         row["ended_utc"] = now_utc
                     row["deed_id"] = deed_id
                     row["deed_title"] = str(
@@ -814,11 +826,11 @@ class DaemonActivities:
                         row["offering_path"] = offering_path
                     if result_summary:
                         row["result_summary"] = result_summary
-                    if final_status == "awaiting_eval":
+                    if final_status == "settling":
                         row["exec_completed_utc"] = now_utc
                         row["eval_window_hours"] = eval_window_hours
                         row["eval_deadline_utc"] = deadline_utc
-                    elif final_status in {"completed", "failed", "cancelled"}:
+                    elif final_status == "closed":
                         row.pop("eval_deadline_utc", None)
                     break
             else:
@@ -827,6 +839,7 @@ class DaemonActivities:
                     "deed_title": str(plan.get("deed_title") or plan.get("title") or brief.get("objective", "") or deed_id),
                     "title": str(plan.get("deed_title") or plan.get("title") or brief.get("objective", "") or deed_id),
                     "deed_status": final_status,
+                    "deed_sub_status": sub_status,
                     "phase": phase,
                     "updated_utc": now_utc,
                     "deed_root": deed_root,
@@ -838,7 +851,7 @@ class DaemonActivities:
                     new_row["last_error"] = last_error
                 if offering_path:
                     new_row["offering_path"] = offering_path
-                if final_status == "awaiting_eval":
+                if final_status == "settling":
                     new_row["exec_completed_utc"] = now_utc
                     new_row["eval_window_hours"] = eval_window_hours
                     new_row["eval_deadline_utc"] = deadline_utc

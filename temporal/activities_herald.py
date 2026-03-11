@@ -24,8 +24,8 @@ async def run_finalize_herald(self, deed_root: str, plan: dict, move_results: li
 
     self._update_deed_status(
         deed_root,
-        plan,
-        "completed",
+        {**plan, "deed_sub_status": "reviewing"},
+        "settling",
         offering_path=str(offering_path),
         result_summary=str(quality_check.get("summary") or ""),
     )
@@ -57,7 +57,7 @@ async def run_finalize_herald(self, deed_root: str, plan: dict, move_results: li
     if feedback_survey:
         herald_payload["feedback_survey"] = feedback_survey
     self._ether.emit("herald_completed", herald_payload)
-    self._ether.emit("deed_completed", herald_payload)
+    self._ether.emit("deed_settling", herald_payload)
     from temporalio import activity
 
     # ── Lore recording ────────────────────────────────────────────────────
@@ -112,7 +112,8 @@ async def run_update_deed_status(self, deed_root: str, plan: dict, deed_status: 
     metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
     deed_status = str(deed_status or "")
     self._update_deed_status(deed_root, plan, deed_status)
-    if deed_status in {"failed", "cancelled"}:
+    deed_sub_status = str(plan.get("deed_sub_status") or "").strip()
+    if deed_status == "closed" and deed_sub_status in {"failed", "cancelled"}:
         deed_id = str(plan.get("deed_id") or "")
         payload = {
             "deed_id": deed_id,
@@ -122,15 +123,16 @@ async def run_update_deed_status(self, deed_root: str, plan: dict, deed_status: 
             "offering": {
                 "ok": False,
                 "deed_status": deed_status,
+                "deed_sub_status": deed_sub_status,
                 "error": plan.get("last_error", ""),
             },
             "error": str(plan.get("last_error") or ""),
         }
-        if deed_status == "failed":
+        if deed_sub_status == "failed":
             self._ether.emit("deed_failed", payload)
             if "rework_exhausted" in str(plan.get("last_error") or ""):
                 self._ether.emit("deed_rework_exhausted", payload)
-        self._ether.emit("deed_completed", payload)
+        self._ether.emit("deed_closed", payload)
 
         # Record failure in Lore so future planning can learn from it.
         if self._lore:

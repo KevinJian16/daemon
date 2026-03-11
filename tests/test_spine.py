@@ -139,7 +139,7 @@ class TestSpineCanon:
     def test_by_trigger(self):
         reg_path = Path(__file__).parent.parent / "config" / "spine_registry.json"
         canon = SpineCanon(reg_path)
-        triggered = canon.by_trigger("deed_completed")
+        triggered = canon.by_trigger("deed_closed")
         assert any(r.name == "spine.record" for r in triggered)
 
 

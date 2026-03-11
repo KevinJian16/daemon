@@ -36,8 +36,8 @@ def _put(path: str, body: dict) -> Any:
 
 def _fmt_status(s: str) -> str:
     colors = {
-        "ok": "\033[32m", "running": "\033[34m", "queued": "\033[33m",
-        "completed": "\033[32m", "failed": "\033[31m", "degraded": "\033[33m",
+        "ok": "\033[32m", "running": "\033[34m", "settling": "\033[33m",
+        "closed": "\033[32m", "failed": "\033[31m", "degraded": "\033[33m",
         "GREEN": "\033[32m", "YELLOW": "\033[33m", "RED": "\033[31m",
     }
     reset = "\033[0m"
@@ -117,7 +117,7 @@ def cmd_submit(args: list[str]) -> None:
     result = _post("/submit", plan)
     if result.get("ok"):
         print(f"✓ Submitted: {result.get('deed_id')}")
-        if result.get("deed_status") == "queued":
+        if result.get("deed_sub_status") == "queued":
             print("  (queued — Ward is not GREEN)")
     else:
         _die(result.get("error") or "submission failed")

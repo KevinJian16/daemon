@@ -225,7 +225,7 @@ class HeraldService:
         brief = plan.get("brief") or {}
         metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
         notify_payload = {
-            "event": "deed_completed",
+            "event": "deed_settling",
             "payload": {
                 "deed_id": str(plan.get("deed_id") or ""),
                 "slip_id": str(metadata.get("slip_id") or plan.get("slip_id") or ""),

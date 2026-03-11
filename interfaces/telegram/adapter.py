@@ -160,7 +160,7 @@ def _active_deeds() -> list[dict[str, Any]]:
         return []
     return [
         row for row in data
-        if str(row.get("deed_status") or "").lower() in {"running", "queued", "paused", "cancelling"}
+        if str(row.get("deed_status") or "").lower() in {"running"}
     ]
 
 
@@ -304,13 +304,17 @@ def _notify_text(event: str, payload: dict[str, Any]) -> str:
     if event == "deed_started":
         return f'已开始 · "{_title()}"'
 
-    if event == "deed_completed":
+    if event == "deed_settling":
         summary = str(payload.get("summary") or "").strip()
         portal_link = str(payload.get("portal_link") or "").strip()
         parts = [f'做好了。\n\n{summary}' if summary else f'做好了 · "{_title()}"']
         if portal_link:
             parts.append(f'\n\n完整结果：{portal_link}')
         return "".join(parts)
+
+    if event == "deed_closed":
+        sub = str(payload.get("sub_status") or "").strip()
+        return f'已关闭 · "{_title()}" · {sub}' if sub else f'已关闭 · "{_title()}"'
 
     if event == "deed_failed":
         error = str(payload.get("error") or payload.get("last_error") or "未知错误")

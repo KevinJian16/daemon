@@ -13,9 +13,9 @@ from temporalio.exceptions import CancelledError as TemporalCancelledError
 async def run_openclaw_move(self, deed_root: str, plan: dict, move: dict) -> dict:
     """Execute a single move via persistent full session (sessions_send).
 
-    Uses the retinue instance's main session — MEMORY.md is loaded at session
-    start and context accumulates across moves to the same agent.  The call
-    blocks until the agent finishes (synchronous wait via timeoutSeconds).
+    Session key format: {agent_id}:{deed_id}:{session_seq}
+    Serial moves share session_seq 0; parallel moves get incrementing seqs.
+    Rework appends to existing session (same key, context accumulates).
     """
     if not self._openclaw:
         raise RuntimeError("OpenClawAdapter unavailable (OPENCLAW_HOME missing or openclaw.json invalid)")
@@ -27,7 +27,9 @@ async def run_openclaw_move(self, deed_root: str, plan: dict, move: dict) -> dic
     # Resolve agent role -> retinue instance
     retinue_allocations = plan.get("retinue_allocations") or {}
     agent_id = str(retinue_allocations.get(agent_role, agent_role))
-    session_key = self._openclaw.main_session_key(agent_id)
+    # Session key: {agent_id}:{deed_id}:{session_seq} (§2.3)
+    session_seq = int(move.get("session_seq") or 0)
+    session_key = f"{agent_id}:{deed_id}:{session_seq}"
 
     instruction = str(move.get("instruction") or move.get("message") or "").strip()
     timeout_s = int(move.get("timeout_s") or plan.get("default_move_timeout_s") or 480)
@@ -148,8 +150,73 @@ async def run_openclaw_move(self, deed_root: str, plan: dict, move: dict) -> dic
         "output_path": output_path,
     }
     self._write_move_checkpoint(deed_root, move_id, result)
-    _emit_progress("completed", output_path=output_path)
+    _emit_progress("move_completed", output_path=output_path)
     return result
+
+
+async def run_direct_move(self, deed_root: str, plan: dict, move: dict) -> dict:
+    """Execute a direct move via MCP tool or Python callable — zero LLM tokens (§3).
+
+    Direct moves bypass OC agent sessions entirely. They execute mechanical
+    operations (Telegram, PDF, git, etc.) through registered MCP servers or
+    Python functions.
+    """
+    move_id = str(move.get("id") or "move").strip()
+    deed_id = str(plan.get("deed_id") or deed_root.split("/")[-1] or uuid.uuid4().hex[:8])
+    tool_name = str(move.get("tool") or move.get("mcp_tool") or "").strip()
+    tool_args = move.get("tool_args") if isinstance(move.get("tool_args"), dict) else {}
+
+    if not tool_name:
+        return {
+            "status": "degraded",
+            "move_id": move_id,
+            "error": "direct move requires 'tool' or 'mcp_tool' field",
+        }
+
+    self._ether.emit("deed_progress", {
+        "deed_id": deed_id, "move_id": move_id,
+        "phase": "started", "execution_type": "direct",
+    })
+
+    if not self._mcp or not self._mcp.available:
+        return {
+            "status": "degraded",
+            "move_id": move_id,
+            "tool": tool_name,
+            "error": "No MCP servers configured (config/mcp_servers.json)",
+        }
+
+    timeout_s = int(move.get("timeout_s") or plan.get("default_move_timeout_s") or 120)
+
+    try:
+        result = await self._mcp.call_tool(tool_name, tool_args, timeout_s=timeout_s)
+        output_path = ""
+        if isinstance(result, dict) and result.get("output"):
+            output_path = self._write_move_output(deed_root, move_id, str(result["output"]))
+        checkpoint = {
+            "status": "ok",
+            "move_id": move_id,
+            "tool": tool_name,
+            "output_path": output_path,
+            "result": result if isinstance(result, dict) else {"output": str(result)},
+        }
+        self._write_move_checkpoint(deed_root, move_id, checkpoint)
+        self._ether.emit("deed_progress", {
+            "deed_id": deed_id, "move_id": move_id,
+            "phase": "move_completed", "execution_type": "direct",
+        })
+        return checkpoint
+    except Exception as exc:
+        error_msg = str(exc)[:200]
+        activity.logger.warning("Direct move %s failed: %s", move_id, error_msg)
+        checkpoint = {
+            "status": "degraded",
+            "move_id": move_id,
+            "tool": tool_name,
+            "error": error_msg,
+        }
+        self._write_move_checkpoint(deed_root, move_id, checkpoint)
+        return checkpoint
 
 
 async def run_spine_routine(self, deed_root: str, plan: dict, routine_name: str) -> dict:

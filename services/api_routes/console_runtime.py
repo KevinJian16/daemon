@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 
 
-ACTIVE_DEED_STATUSES = {"running", "queued", "paused", "cancelling", "awaiting_eval"}
+ACTIVE_DEED_STATUSES = {"running", "settling"}
 
 
 def register_console_runtime_routes(app: FastAPI, *, ctx: Any) -> None:
@@ -29,17 +29,18 @@ def register_console_runtime_routes(app: FastAPI, *, ctx: Any) -> None:
                 if isinstance(move, dict)
             ]
         status = str(row.get("deed_status") or "").lower()
-        active_index = 0 if status in {"running", "queued", "paused", "cancelling"} else len(timeline)
+        sub_status = str(row.get("deed_sub_status") or "").lower()
+        active_index = 0 if status == "running" else len(timeline)
         out = []
         for index, item in enumerate(timeline):
             state = "pending"
             if index < active_index:
                 state = "done"
-            elif index == active_index and status in {"running", "paused", "cancelling"}:
+            elif index == active_index and status == "running":
                 state = "active"
-            elif status in {"completed", "awaiting_eval", "cancelled"}:
+            elif status in {"settling", "closed"}:
                 state = "done"
-            elif status == "failed" and index == active_index:
+            elif sub_status == "failed" and index == active_index:
                 state = "failed"
             out.append(
                 {
@@ -166,7 +167,7 @@ def register_console_runtime_routes(app: FastAPI, *, ctx: Any) -> None:
         if action == "activate":
             row = ctx.folio_writ.update_slip(slip_id, {"status": "active"})
         elif action == "park":
-            row = ctx.folio_writ.update_slip(slip_id, {"status": "parked"})
+            row = ctx.folio_writ.update_slip(slip_id, {"status": "active", "sub_status": "parked"})
         elif action == "archive":
             row = ctx.folio_writ.update_slip(slip_id, {"status": "archived"})
         else:
@@ -211,11 +212,11 @@ def register_console_runtime_routes(app: FastAPI, *, ctx: Any) -> None:
         if action == "activate":
             row = ctx.folio_writ.update_folio(folio_id, {"status": "active"})
         elif action == "park":
-            row = ctx.folio_writ.update_folio(folio_id, {"status": "parked"})
+            row = ctx.folio_writ.update_folio(folio_id, {"status": "active", "sub_status": "parked"})
         elif action == "archive":
             row = ctx.folio_writ.update_folio(folio_id, {"status": "archived"})
         elif action == "dissolve":
-            row = ctx.folio_writ.update_folio(folio_id, {"status": "dissolved"})
+            row = ctx.folio_writ.update_folio(folio_id, {"status": "deleted"})
         elif action == "delete":
             ok = ctx.folio_writ.delete_folio(folio_id)
             if not ok:
