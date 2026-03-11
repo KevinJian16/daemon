@@ -1,92 +1,12 @@
-<!DOCTYPE html>
-<html lang="zh">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Daemon</title>
-  <link rel="stylesheet" href="/_portal/portal.css">
-</head>
-<body>
-  <div id="app">
-    <aside id="sidebar">
-      <div id="sidebar-head">
-        <div class="brand-stack">
-          <span id="brand" data-i18n="brand">Daemon</span>
-          <span id="ward-dot" title="Ward"></span>
-        </div>
-        <div class="head-actions">
-          <button class="head-btn" id="lang-btn" onclick="toggleLang()">EN</button>
-          <a class="head-btn" href="/console/" id="console-link">Console</a>
-          <button class="head-btn" id="new-draft-btn" onclick="openFreshDraft()" data-i18n="newDraft">新草稿</button>
-        </div>
-      </div>
-      <nav id="sidebar-nav">
-        <section class="nav-section">
-          <div class="nav-label" data-i18n="pending">待你阅看</div>
-          <div id="pending-list" class="nav-list"></div>
-        </section>
-        <section class="nav-section">
-          <div class="nav-label" data-i18n="live">正在行事</div>
-          <div id="live-list" class="nav-list"></div>
-        </section>
-        <section class="nav-section">
-          <div class="nav-label" data-i18n="folios">卷</div>
-          <div id="folio-list" class="nav-list"></div>
-        </section>
-        <section class="nav-section">
-          <div class="nav-label" data-i18n="recentSlips">近来离散签札</div>
-          <div id="recent-slip-list" class="nav-list"></div>
-        </section>
-      </nav>
-    </aside>
-
-    <main id="main">
-      <section id="hero-empty" class="screen">
-        <div class="empty-stack">
-          <div class="empty-title" data-i18n="composeTitle">你要让我办什么事？</div>
-          <div class="empty-copy" data-i18n="composeHint">先说出目标。我会把它收敛成一张草稿，确认后落札行事。</div>
-          <div id="draft-card" class="hidden"></div>
-          <div id="draft-chat" class="message-stream"></div>
-        </div>
-      </section>
-
-      <section id="folio-screen" class="screen hidden">
-        <div id="folio-shell"></div>
-      </section>
-
-      <section id="slip-screen" class="screen hidden">
-        <div id="slip-shell"></div>
-        <div id="slip-messages" class="message-stream"></div>
-        <div id="slip-review" class="hidden"></div>
-        <div id="slip-result" class="hidden"></div>
-      </section>
-
-      <div id="composer-wrap">
-        <div id="composer-box">
-          <textarea id="composer-input" rows="1" oninput="autoResize(this)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();portalSend()}"></textarea>
-          <button id="composer-send" onclick="portalSend()" data-i18n="send">送出</button>
-        </div>
-      </div>
-    </main>
-  </div>
-
-  <div id="drag-dock" class="hidden">
-    <div class="dock-hint" data-i18n="dockHint">拖动签札，到下方改变它的去向与姿态。</div>
-    <div class="dock-zones">
-      <div class="dock-zone" data-target="continue">
-        <span data-i18n="dockContinue">续办</span>
-      </div>
-      <div class="dock-zone" data-target="park">
-        <span data-i18n="dockPark">搁置</span>
-      </div>
-      <div class="dock-zone" data-target="archive">
-        <span data-i18n="dockArchive">收起</span>
-      </div>
-    </div>
-  </div>
-
-  <script src="/_portal/js/i18n.js"></script>
-  <script src="/_portal/js/api.js"></script>
-  <script src="/_portal/js/app.js"></script>
-</body>
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Daemon Portal</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
 </html>
