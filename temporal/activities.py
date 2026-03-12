@@ -54,23 +54,26 @@ class DaemonActivities:
         self._ledger = Ledger(self._home / "state")
         self._retinue = Retinue(self._home, self._oc_home)
         self._mcp = MCPDispatcher(self._home / "config" / "mcp_servers.json")
-        self._instinct = None
+        self._psyche_config = None
         self._cortex = None
-        self._lore = None
+        self._ledger_stats = None
+        self._instinct_engine = None
         try:
             self._openclaw = OpenClawAdapter(self._oc_home)
         except Exception as exc:
             activity.logger.warning("Failed to initialize OpenClawAdapter from %s: %s", self._oc_home, exc)
         try:
-            from psyche.instinct import InstinctPsyche
-            from psyche.lore import LorePsyche
+            from psyche.config import PsycheConfig
+            from psyche.instinct_engine import InstinctEngine
+            from psyche.ledger_stats import LedgerStats
             from runtime.cortex import Cortex
 
-            self._instinct = InstinctPsyche(self._home / "state" / "psyche" / "instinct.db")
-            self._lore = LorePsyche(self._home / "state" / "psyche" / "lore.db")
-            self._cortex = Cortex(self._instinct)
+            self._psyche_config = PsycheConfig(self._home / "psyche")
+            self._cortex = Cortex(self._psyche_config)
+            self._ledger_stats = LedgerStats(self._home / "state" / "ledger.db")
+            self._instinct_engine = InstinctEngine(self._home / "psyche" / "instinct.md")
         except Exception as exc:
-            activity.logger.warning("Failed to initialize worker Cortex/Lore: %s", exc)
+            activity.logger.warning("Failed to initialize worker Psyche/Cortex: %s", exc)
 
     def _utc(self) -> str:
         return _utc()
@@ -148,31 +151,56 @@ class DaemonActivities:
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _build_move_context(self, deed_root: str, plan: dict, move: dict) -> dict:
-        """Attach instinct/model snapshots as execution context for Agent moves."""
-        snapshots_dir = self._home / "state" / "snapshots"
+        """Build execution context with selective Psyche injection per agent role (§13.2)."""
+        agent_role = str(move.get("agent") or "").strip().lower()
+        brief = plan.get("brief") or {}
+        metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
+        folio_id = str(plan.get("folio_id") or metadata.get("folio_id") or "").strip()
+        writ_id = str(plan.get("writ_id") or metadata.get("writ_id") or "").strip()
+
         context: dict = {}
-        for snap_name in (
-            "instinct_snapshot.json",
-            "model_policy_snapshot.json",
-            "model_registry_snapshot.json",
-        ):
+
+        # ── Psyche injection: all agents get instinct + identity (~300 tokens) ──
+        psyche_parts: list[str] = []
+        if self._instinct_engine:
+            fragment = self._instinct_engine.prompt_fragment()
+            if fragment:
+                psyche_parts.append(fragment)
+        identity = self._read_voice_identity()
+        if identity:
+            psyche_parts.append(identity)
+
+        # scribe/envoy: +style +overlay (~250 tokens)
+        if agent_role in ("scribe", "envoy"):
+            lang = str(brief.get("language") or brief.get("output_language") or "zh").strip()
+            style = self._read_voice_style(lang)
+            if style:
+                psyche_parts.append(style)
+            task_type = str(brief.get("task_type") or "").strip()
+            overlay = self._read_overlay(task_type)
+            if overlay:
+                psyche_parts.append(overlay)
+
+        # counsel: +planning hints (~100 tokens)
+        if agent_role == "counsel" and self._ledger_stats:
+            hints = self._ledger_planning_hints(plan)
+            if hints:
+                psyche_parts.append(hints)
+
+        if psyche_parts:
+            context["psyche_context"] = "\n\n".join(psyche_parts)
+
+        # ── Model snapshots (for agent model resolution) ──
+        snapshots_dir = self._home / "state" / "snapshots"
+        for snap_name in ("model_policy_snapshot.json", "model_registry_snapshot.json"):
             snap_path = snapshots_dir / snap_name
             if snap_path.exists():
                 try:
                     context[snap_name.replace(".json", "")] = json.loads(snap_path.read_text())
                 except Exception as exc:
                     activity.logger.warning("Failed to load snapshot %s: %s", snap_name, exc)
-        # Counsel runtime hints are text by design.
-        hints_path = self._oc_home / "workspace" / "counsel" / "memory" / "runtime_hints.txt"
-        if hints_path.exists():
-            try:
-                context["runtime_hints"] = hints_path.read_text(encoding="utf-8", errors="ignore")[:4000]
-            except Exception as exc:
-                activity.logger.warning("Failed to read runtime hints %s: %s", hints_path, exc)
-        brief = plan.get("brief") or {}
-        metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
-        folio_id = str(plan.get("folio_id") or metadata.get("folio_id") or "").strip()
-        writ_id = str(plan.get("writ_id") or metadata.get("writ_id") or "").strip()
+
+        # ── Execution contract ──
         context["execution_contract"] = {
             "deed_id": str(plan.get("deed_id") or ""),
             "slip_title": str(plan.get("slip_title") or plan.get("title") or ""),
@@ -193,9 +221,6 @@ class DaemonActivities:
         )
         if recent_deeds:
             context["recent_deeds"] = recent_deeds
-        memory_context = self._memory_context(folio_id=folio_id, writ_id=writ_id)
-        if memory_context:
-            context["memory_context"] = memory_context
         return context
 
     def _apply_context_window_precheck(
@@ -392,40 +417,62 @@ class DaemonActivities:
             for row in scoped[: max(1, min(limit, 8))]
         ]
 
-    def _memory_context(self, *, folio_id: str, writ_id: str, limit: int = 3) -> list[dict]:
+    def _read_voice_identity(self) -> str:
+        """Read psyche/voice/identity.md for agent context injection."""
+        path = self._home / "psyche" / "voice" / "identity.md"
+        if not path.exists():
+            return ""
         try:
-            from psyche.memory import MemoryPsyche
-
-            memory = MemoryPsyche(self._home / "state" / "psyche" / "memory.db")
+            return path.read_text(encoding="utf-8").strip()
         except Exception:
-            return []
+            return ""
 
-        hits: list[dict] = []
-        seen: set[str] = set()
+    def _read_voice_style(self, language: str = "zh") -> str:
+        """Read voice style files (common + language-specific) for scribe/envoy."""
+        voice_dir = self._home / "psyche" / "voice"
+        parts: list[str] = []
+        for name in ("common.md", f"{language}.md"):
+            path = voice_dir / name
+            if path.exists():
+                try:
+                    text = path.read_text(encoding="utf-8").strip()
+                    if text:
+                        parts.append(text)
+                except Exception:
+                    pass
+        return "\n\n".join(parts)
 
-        def _merge(rows: list[dict]) -> None:
-            for row in rows:
-                entry_id = str(row.get("entry_id") or "")
-                if not entry_id or entry_id in seen:
-                    continue
-                seen.add(entry_id)
-                hits.append(row)
-                if len(hits) >= limit:
-                    return
+    def _read_overlay(self, task_type: str) -> str:
+        """Read psyche/overlays/{task_type}.md for task-specific context."""
+        if not task_type:
+            return ""
+        path = self._home / "psyche" / "overlays" / f"{task_type}.md"
+        if not path.exists():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except Exception:
+            return ""
 
-        if writ_id:
-            _merge(memory.search_by_tags([f"writ_id:{writ_id}"], limit=limit, folio_id=folio_id or None))
-        if len(hits) < limit and folio_id:
-            _merge(memory.search_by_tags([f"folio_id:{folio_id}"], limit=limit, folio_id=folio_id))
-
-        return [
-            {
-                "entry_id": str(row.get("entry_id") or ""),
-                "content": str(row.get("content") or "")[:320],
-                "tags": row.get("tags") if isinstance(row.get("tags"), list) else [],
-            }
-            for row in hits[: max(1, min(limit, 8))]
-        ]
+    def _ledger_planning_hints(self, plan: dict) -> str:
+        """Generate planning hints text for counsel from Ledger stats."""
+        if not self._ledger_stats:
+            return ""
+        try:
+            hints = self._ledger_stats.global_planning_hints()
+            top_dags = hints.get("top_dag_templates") or []
+            if not top_dags:
+                return ""
+            lines = ["Similar successful DAG templates:"]
+            for tpl in top_dags[:3]:
+                lines.append(
+                    f"  - {tpl.get('objective_text', '')[:80]} "
+                    f"(validated {tpl.get('times_validated', 0)}x, "
+                    f"avg {int(tpl.get('avg_tokens') or 0)} tokens)"
+                )
+            return "\n".join(lines)
+        except Exception:
+            return ""
 
     def _write_move_output(self, deed_root: str, move_id: str, content: str) -> str:
         out_dir = Path(deed_root) / "moves" / move_id / "output"
@@ -606,59 +653,6 @@ class DaemonActivities:
         }
         self._write_quality_check(deed_root, result)
         return result
-
-    def _feedback_survey_path(self, deed_id: str) -> Path:
-        return self._home / "state" / "feedback_surveys" / f"{deed_id}.json"
-
-    def _generate_feedback_survey(self, *, plan: dict, offering_path: Path) -> dict:
-        deed_id = str(plan.get("deed_id") or "")
-        brief = plan.get("brief") or {}
-        title = str(plan.get("deed_title") or plan.get("title") or brief.get("objective", "") or deed_id)[:200]
-        channels = ["portal", "telegram"]
-        required = True
-        survey_type = "herald_final"
-        prompt = "你对本次签札交付是否满意？"
-        return {
-            "survey_id": f"svy_{deed_id}",
-            "deed_id": deed_id,
-            "title": title,
-            "survey_type": survey_type,
-            "prompt": prompt,
-            "required": required,
-            "channels": channels,
-            "status": "pending",
-            "created_utc": _utc(),
-            "offering_path": str(offering_path),
-            "questions": [
-                {
-                    "key": "overall",
-                    "type": "choice",
-                    "label": "整体评价",
-                    "options": ["satisfactory", "acceptable", "unsatisfactory", "wrong"],
-                },
-                {
-                    "key": "issues",
-                    "type": "multi_choice",
-                    "label": "问题标记（可多选）",
-                    "options": [
-                        "depth_insufficient",
-                        "missing_info",
-                        "format_wrong",
-                        "language_issue",
-                        "factual_error",
-                        "off_topic",
-                    ],
-                },
-            ],
-        }
-
-    def _write_feedback_survey(self, payload: dict) -> None:
-        deed_id = str(payload.get("deed_id") or "")
-        if not deed_id:
-            return
-        path = self._feedback_survey_path(deed_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _find_scribe_output(self, deed_root: str, move_results: list[dict]) -> Path | None:
         rp = Path(deed_root)

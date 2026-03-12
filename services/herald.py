@@ -15,7 +15,7 @@ import httpx
 from services.storage_paths import resolve_offering_root
 
 if TYPE_CHECKING:
-    from psyche.instinct import InstinctPsyche
+    from psyche.config import PsycheConfig
     from spine.nerve import Nerve
 
 
@@ -29,14 +29,14 @@ logger = logging.getLogger(__name__)
 class HeraldService:
     def __init__(
         self,
-        instinct: "InstinctPsyche",
+        config: "PsycheConfig",
         nerve: "Nerve",
         daemon_home: Path,
         ledger: "Ledger | None" = None,
     ) -> None:
         from services.ledger import Ledger
 
-        self._instinct = instinct
+        self._instinct = config
         self._nerve = nerve
         self._home = daemon_home
         self._ledger = ledger or Ledger(daemon_home / "state")

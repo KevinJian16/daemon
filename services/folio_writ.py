@@ -122,6 +122,7 @@ ACTIVE_DEED_STATUSES = {"running", "settling"}
 # Two-tier state model: primary status (user-facing) + sub_status (metadata).
 VALID_DRAFT_SUB_STATUSES = {"open", "refining", "crystallized", "superseded", "abandoned"}
 VALID_SLIP_SUB_STATUSES = {"normal", "parked"}
+VALID_SLIP_TRIGGER_TYPES = {"manual", "timer", "writ_chain"}
 VALID_FOLIO_SUB_STATUSES = {"normal", "parked"}
 VALID_DEED_SUB_STATUSES = {
     "queued", "executing", "paused", "cancelling", "retrying",
@@ -382,8 +383,12 @@ class FolioWritManager:
         design: dict,
         folio_id: str | None = None,
         standing: bool = False,
+        trigger_type: str = "manual",
         metadata: dict | None = None,
     ) -> dict:
+        effective_trigger = str(trigger_type or "manual").strip()
+        if effective_trigger not in VALID_SLIP_TRIGGER_TYPES:
+            effective_trigger = "manual"
         slip = {
             "slip_id": _uuid("slip"),
             "folio_id": str(folio_id or "") or None,
@@ -396,6 +401,7 @@ class FolioWritManager:
             "status": "active",
             "sub_status": "normal",
             "standing": bool(standing),
+            "trigger_type": effective_trigger,
             "latest_deed_id": "",
             "deed_ids": [],
             "created_utc": _utc(),
@@ -406,6 +412,8 @@ class FolioWritManager:
                 slip["status"] = str(metadata.get("status"))
             if str(metadata.get("sub_status") or "") in VALID_SLIP_SUB_STATUSES:
                 slip["sub_status"] = str(metadata.get("sub_status"))
+            if str(metadata.get("trigger_type") or "") in VALID_SLIP_TRIGGER_TYPES:
+                slip["trigger_type"] = str(metadata.get("trigger_type"))
         rows = self.list_slips()
         rows.append(slip)
         self._sync_slug(rows, slip, id_key="slip_id", title=slip["title"], fallback="slip")
@@ -428,13 +436,15 @@ class FolioWritManager:
         if not target:
             return None
         title_changed = False
-        for key in ("folio_id", "title", "objective", "brief", "design", "status", "sub_status", "standing", "latest_deed_id", "deed_ids"):
+        for key in ("folio_id", "title", "objective", "brief", "design", "status", "sub_status", "standing", "trigger_type", "latest_deed_id", "deed_ids"):
             if key not in updates:
                 continue
             value = updates[key]
             if key == "status" and str(value or "") not in VALID_SLIP_STATUSES:
                 continue
             if key == "sub_status" and str(value or "") not in VALID_SLIP_SUB_STATUSES:
+                continue
+            if key == "trigger_type" and str(value or "") not in VALID_SLIP_TRIGGER_TYPES:
                 continue
             target[key] = value
             if key == "title":
@@ -589,6 +599,7 @@ class FolioWritManager:
         self._save_rows(self._writs_file, rows)
         self._attach_writ_to_folio(writ["writ_id"], folio_id)
         self._register_trigger(writ)
+        self._sync_slip_trigger_type(writ)
         self._nerve.emit("writ_created", {"writ_id": writ["writ_id"], "folio_id": folio_id})
         return writ
 
@@ -620,6 +631,8 @@ class FolioWritManager:
         target["updated_utc"] = _utc()
         self._save_rows(self._writs_file, rows)
         self._register_trigger(target)
+        if canonical_changed:
+            self._sync_slip_trigger_type(target)
         self._nerve.emit("writ_updated", {"writ_id": writ_id, "status": target.get("status"), "version": target.get("version")})
         return target
 
@@ -652,6 +665,19 @@ class FolioWritManager:
                 "last_triggered_utc": _utc(),
             },
         )
+
+    def _sync_slip_trigger_type(self, writ: dict) -> None:
+        """When a Writ targets a Slip via spawn_deed, set the Slip's trigger_type accordingly."""
+        action = writ.get("action") if isinstance(writ.get("action"), dict) else {}
+        if str(action.get("type") or "") != "spawn_deed":
+            return
+        slip_id = str(action.get("slip_id") or "").strip()
+        if not slip_id:
+            return
+        match = writ.get("match") if isinstance(writ.get("match"), dict) else {}
+        schedule = str(match.get("schedule") or "").strip()
+        trigger_type = "timer" if schedule else "writ_chain"
+        self.update_slip(slip_id, {"trigger_type": trigger_type})
 
     # Trigger management
     def register_all_triggers(self) -> int:
@@ -853,6 +879,84 @@ class FolioWritManager:
             match={"schedule": schedule},
             action={"type": "spawn_deed", "slip_id": slip_id},
         )
+
+    def writ_neighbors(self, slip_id: str) -> dict:
+        """Return Writ DAG predecessors and successors for a Slip.
+
+        A Slip S has predecessors = Slips whose deed_closed event triggers a Writ
+        that targets S. Successors = Slips targeted by Writs whose match event is
+        deed_closed filtered on slip_id == S.
+        """
+        slip = self.get_slip(slip_id)
+        if not slip:
+            return {"prev": [], "next": []}
+        folio_id = str(slip.get("folio_id") or "")
+        if not folio_id:
+            return {"prev": [], "next": []}
+
+        writs = self.list_writs(folio_id=folio_id)
+        prev: list[dict] = []
+        next_: list[dict] = []
+
+        for writ in writs:
+            if str(writ.get("status") or "") != "active":
+                continue
+            match = writ.get("match") if isinstance(writ.get("match"), dict) else {}
+            action = writ.get("action") if isinstance(writ.get("action"), dict) else {}
+            if str(action.get("type") or "") != "spawn_deed":
+                continue
+            target_slip_id = str(action.get("slip_id") or "")
+            event = str(match.get("event") or "")
+            filters = match.get("filter") if isinstance(match.get("filter"), dict) else {}
+            source_slip_id = str(filters.get("slip_id") or "")
+
+            # This Writ targets our Slip — the source Slip is a predecessor
+            if target_slip_id == slip_id and event == "deed_closed" and source_slip_id:
+                source = self.get_slip(source_slip_id)
+                if source:
+                    prev.append({
+                        "slip_id": source_slip_id,
+                        "slug": str(source.get("slug") or ""),
+                        "title": str(source.get("title") or ""),
+                    })
+
+            # This Writ is triggered by our Slip's deed_closed — the target is a successor
+            if source_slip_id == slip_id and event == "deed_closed" and target_slip_id:
+                target = self.get_slip(target_slip_id)
+                if target:
+                    next_.append({
+                        "slip_id": target_slip_id,
+                        "slug": str(target.get("slug") or ""),
+                        "title": str(target.get("title") or ""),
+                    })
+
+        return {"prev": prev, "next": next_}
+
+    def predecessors_all_closed(self, slip_id: str) -> tuple[bool, list[str]]:
+        """Check if all predecessor Slips have their latest Deed closed.
+
+        Returns (all_closed, list_of_blocking_slip_ids).
+        """
+        neighbors = self.writ_neighbors(slip_id)
+        blocking: list[str] = []
+        for pred in neighbors.get("prev", []):
+            pred_slip_id = str(pred.get("slip_id") or "")
+            if not pred_slip_id:
+                continue
+            pred_slip = self.get_slip(pred_slip_id)
+            if not pred_slip:
+                continue
+            latest_deed_id = str(pred_slip.get("latest_deed_id") or "")
+            if not latest_deed_id:
+                blocking.append(pred_slip_id)
+                continue
+            deed = self._ledger.get_deed(latest_deed_id)
+            if not isinstance(deed, dict):
+                blocking.append(pred_slip_id)
+                continue
+            if str(deed.get("deed_status") or "") != "closed":
+                blocking.append(pred_slip_id)
+        return (len(blocking) == 0, blocking)
 
     def active_folio_matches(self, text: str, *, limit: int = 3) -> list[dict]:
         hay = {token for token in str(text or "").lower().split() if token}

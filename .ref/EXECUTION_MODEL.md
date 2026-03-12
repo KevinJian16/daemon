@@ -265,23 +265,19 @@ Writ chain 的下游触发基于 `deed_closed`（用户确认关闭），不是 
 
 ## 6. Token 优化
 
-### §6.1 MEMORY.md 精简
+### §6.1 Session Bootstrap 最小化
 
-压缩至 5-10 条核心记忆，减少 session bootstrap 消耗。
+Session 启动只加载 objective + 选择性 Psyche 注入（见 `DESIGN_QA.md` Q1.8），不加载全量上下文。
 
 ### §6.2 上下文摘要
 
 Move 间传递上下文使用摘要而非原文。
 
-### §6.3 Bootstrap 最小化
+### §6.3 Ledger 统计注入
 
-Session 启动只加载 objective + 直接相关记忆，不加载全量 Lore/Memory。
+Counsel 通过 `planning_hints`（Ledger 统计摘要）获得规划参考，不直接注入原始数据。
 
-### §6.4 Lore 不进 Session
-
-Lore 历史通过 Spine routine 提炼后注入 plan metadata，不直接放入 OC session。
-
-### §6.5 Direct Move 零 Token
+### §6.4 Direct Move 零 Token
 
 机械操作使用 Direct Move。
 

@@ -73,9 +73,10 @@ Commands:
   chat                        Start interactive Voice session
   spine status                Show Spine routine status
   spine trigger <routine>     Manually trigger a Spine routine
-  psyche memory               Show Memory Psyche stats
-  psyche lore                 Show active Lore methods
-  psyche instinct             Show Instinct priorities + rations
+  psyche config               Show preferences + rations
+  psyche voice                Show voice profile
+  ledger stats                Show deed/skill/agent statistics
+  ledger templates            Show DAG/Folio templates
   ration get <name>           Show a ration
   ration set <name>           Set a ration limit
   trails [--routine R]        Show recent trails
@@ -249,42 +250,85 @@ def cmd_spine(args: list[str]) -> None:
 
 def cmd_psyche(args: list[str]) -> None:
     if not args:
-        _die("Usage: daemon psyche <memory|lore|instinct>")
+        _die("Usage: daemon psyche <config|voice>")
     sub = args[0]
-    if sub == "memory":
-        units = _get("/console/psyche/memory?limit=20")
+    if sub == "config":
+        snap = _get("/console/psyche/config")
+        prefs = snap.get("preferences", {})
+        rations_data = snap.get("rations", {})
+        print("=== Preferences ===")
+        for section, values in prefs.items():
+            if isinstance(values, dict):
+                for k, v in values.items():
+                    print(f"  {section}.{k} = {v}")
+            else:
+                print(f"  {section} = {values}")
+        print("\n=== Rations ===")
+        limits = rations_data.get("daily_limits", {})
+        usage = rations_data.get("current_usage", {})
         rows = [
-            [u.get("unit_id", "")[:12], u.get("title", "")[:40],
-             u.get("domain", ""), u.get("tier", ""),
-             f"{(u.get('confidence',0)*100):.0f}%"]
-            for u in units
+            [k, f"{v:,}", f"{usage.get(k, 0):,}"]
+            for k, v in limits.items()
         ]
-        _table(rows, ["ID", "Title", "Domain", "Tier", "Conf"])
-    elif sub == "lore":
-        methods = _get("/console/psyche/lore")
-        rows = [
-            [m.get("name", ""), m.get("category", ""),
-             f"{(m.get('success_rate') or 0)*100:.1f}%" if m.get('success_rate') is not None else "—",
-             str(m.get("total_deeds", 0)), f"v{m.get('version', 1)}"]
-            for m in methods
-        ]
-        _table(rows, ["Name", "Category", "Success", "Deeds", "Ver"])
-    elif sub == "instinct":
-        prios = _get("/console/psyche/instinct/priorities")
-        print("=== Priorities ===")
-        rows = [[p.get("domain", ""), str(p.get("weight", "")), p.get("source", "")] for p in prios]
-        _table(rows, ["Domain", "Weight", "Source"])
-        print()
-        rations = _get("/console/psyche/instinct/rations")
-        print("=== Resource Rations ===")
-        brows = [
-            [b.get("resource_type", ""),
-             f"{b.get('daily_limit', 0):,}", f"{b.get('current_usage', 0):,}"]
-            for b in rations
-        ]
-        _table(brows, ["Resource", "Daily Limit", "Used Today"])
+        if rows:
+            _table(rows, ["Resource", "Daily Limit", "Used Today"])
+    elif sub == "voice":
+        data = _get("/console/psyche/voice")
+        for name in ("identity.md", "common.md", "zh.md", "en.md"):
+            content = data.get(name, "")
+            print(f"── {name} ──")
+            print(content[:500] if content else "(empty)")
+            print()
+        overlays = data.get("overlays", {})
+        if overlays:
+            print("── Overlays ──")
+            for fname, content in overlays.items():
+                print(f"  {fname}: {len(content)} chars")
     else:
-        _die(f"Unknown psyche subcommand: {sub}")
+        _die(f"Unknown psyche subcommand: {sub}. Use: config, voice")
+
+
+def cmd_ledger(args: list[str]) -> None:
+    if not args:
+        _die("Usage: daemon ledger <stats|templates>")
+    sub = args[0]
+    if sub == "stats":
+        data = _get("/console/ledger/stats")
+        hints = data.get("global_hints", {})
+        print(f"DAG templates: {hints.get('dag_template_count', 0)}")
+        print(f"Folio templates: {hints.get('folio_template_count', 0)}")
+        agents = data.get("agent_summary", [])
+        if agents:
+            print("\n=== Agent Stats ===")
+            rows = [
+                [a.get("agent_role", ""), str(a.get("invocations", 0)),
+                 f"{a.get('success_rate', 0)*100:.1f}%",
+                 f"{a.get('avg_tokens', 0):.0f}"]
+                for a in agents
+            ]
+            _table(rows, ["Agent", "Invocations", "Success", "Avg Tokens"])
+        reviews = data.get("skills_needing_review", [])
+        if reviews:
+            print("\n=== Skills Needing Review ===")
+            for s in reviews:
+                print(f"  {s.get('skill_name', '')}: {s.get('reject_rate', 0)*100:.0f}% reject rate ({s.get('invocations', 0)} calls)")
+    elif sub == "templates":
+        data = _get("/console/ledger/templates")
+        print(f"DAG templates: {data.get('dag_template_count', 0)}")
+        print(f"Folio templates: {data.get('folio_template_count', 0)}")
+        top = data.get("top_dag_templates", [])
+        if top:
+            print("\n=== Top DAG Templates ===")
+            rows = [
+                [t.get("template_id", "")[:12],
+                 t.get("objective_text", "")[:40],
+                 str(t.get("times_validated", 0)),
+                 f"{t.get('avg_tokens', 0):.0f}"]
+                for t in top
+            ]
+            _table(rows, ["ID", "Objective", "Validated", "Avg Tokens"])
+    else:
+        _die(f"Unknown ledger subcommand: {sub}. Use: stats, templates")
 
 
 def cmd_ration(args: list[str]) -> None:
@@ -352,6 +396,7 @@ COMMANDS = {
     "chat": (cmd_chat, 0),
     "spine": (cmd_spine, 1),
     "psyche": (cmd_psyche, 1),
+    "ledger": (cmd_ledger, 1),
     "ration": (cmd_ration, 2),
     "trails": (cmd_trails, 0),
 }

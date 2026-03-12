@@ -61,6 +61,15 @@ def register_basic_routes(
                 workflow_ids.append(wid)
         return workflow_ids
 
+    def _record_operation(deed_id: str, action: str, detail: str = "") -> None:
+        """Insert a system message recording a user operation in natural language."""
+        if not deed_id:
+            return
+        text = f"[操作] {action}"
+        if detail:
+            text = f"{text}：{detail}"
+        append_deed_message(deed_id, role="system", content=text, event="operation", meta={"action": action})
+
     def _sort_deeds(rows: list[dict]) -> list[dict]:
         def _ts(row: dict) -> float:
             for key in ("updated_utc", "started_utc", "created_utc"):
@@ -228,6 +237,7 @@ def register_basic_routes(
         if _deed_status(row).lower() != "closed" or sub_status not in {"failed", "failed_submission", "expired", "replay_exhausted"}:
             raise HTTPException(status_code=409, detail="retry_not_allowed_for_current_deed_status")
         result = await will.submit(plan)
+        _record_operation(str(result.get("deed_id") or deed_id), "重试")
         log_portal_event("deed_retry", {"deed_id": deed_id, "result_ok": bool(result.get("ok"))}, request)
         return result
 
@@ -239,6 +249,7 @@ def register_basic_routes(
         cur_status = _deed_status(row).lower()
         if cur_status in {"closed", "settling"}:
             raise HTTPException(status_code=409, detail=f"cancel_not_allowed_for_deed_status:{cur_status}")
+        _record_operation(deed_id, "取消执行")
 
         await ensure_temporal_client(retries=2, delay_s=0.3)
         temporal_client = get_temporal_client()
@@ -346,6 +357,7 @@ def register_basic_routes(
         status = _deed_status(row).lower()
         if status in {"closed", "settling"}:
             raise HTTPException(status_code=409, detail=f"pause_not_allowed_for_deed_status:{status}")
+        _record_operation(deed_id, "暂停执行")
         workflow_id = await _signal_workflow(deed_id, row, signal_name="pause_execution", payload={"source": "api"})
         now = _utc()
 
@@ -368,6 +380,7 @@ def register_basic_routes(
         row = ledger.get_deed(deed_id)
         if not isinstance(row, dict):
             raise HTTPException(status_code=404, detail="deed not found")
+        _record_operation(deed_id, "恢复执行")
         workflow_id = await _signal_workflow(deed_id, row, signal_name="resume_execution", payload={"source": "api"})
         now = _utc()
 

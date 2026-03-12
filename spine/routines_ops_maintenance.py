@@ -1,4 +1,4 @@
-"""Spine relay/tend/curate implementations (V2 aligned)."""
+"""Spine relay/tend/curate implementations (V3: Ledger-based)."""
 from __future__ import annotations
 
 import json
@@ -16,22 +16,22 @@ def _utc() -> str:
 
 
 def run_relay(self) -> dict:
-    """Export Psyche snapshots to state/snapshots/ and retinue instance workspaces."""
-    with self.trail.span("spine.relay", trigger="nerve:deed_allocated") as ctx:
+    """Export config + ledger summary to state/snapshots/."""
+    with self.trail.span("spine.relay", trigger="nerve:config_updated") as ctx:
         snapshots_dir = self.state_dir / "snapshots"
         snapshots_dir.mkdir(parents=True, exist_ok=True)
 
-        mem_snap = self.memory.snapshot()
-        lore_snap = self.lore.snapshot()
-        inst_snap = self.instinct.snapshot()
-
-        (snapshots_dir / "memory_snapshot.json").write_text(
-            json.dumps(mem_snap, ensure_ascii=False, indent=2))
-        (snapshots_dir / "lore_snapshot.json").write_text(
-            json.dumps(lore_snap, ensure_ascii=False, indent=2))
+        config_snapshot = self.psyche_config.snapshot()
+        (snapshots_dir / "config_snapshot.json").write_text(
+            json.dumps(config_snapshot, ensure_ascii=False, indent=2))
         (snapshots_dir / "instinct_snapshot.json").write_text(
-            json.dumps(inst_snap, ensure_ascii=False, indent=2))
-        ctx.step("snapshots_written", 3)
+            json.dumps(config_snapshot, ensure_ascii=False, indent=2))
+        ctx.step("config_snapshot_written", True)
+
+        planning_hints = self.ledger_stats.global_planning_hints()
+        (snapshots_dir / "planning_hints.json").write_text(
+            json.dumps(planning_hints, ensure_ascii=False, indent=2))
+        ctx.step("planning_hints_written", True)
 
         model_policy = self._build_model_policy_snapshot()
         model_registry = self._build_model_registry_snapshot()
@@ -41,12 +41,7 @@ def run_relay(self) -> dict:
             json.dumps(model_registry, ensure_ascii=False, indent=2))
         ctx.step("model_snapshots_written", 2)
 
-        runtime_hints = _build_runtime_hints(mem_snap, lore_snap, inst_snap)
-        (snapshots_dir / "runtime_hints.json").write_text(
-            json.dumps(runtime_hints, ensure_ascii=False, indent=2))
-        ctx.step("runtime_hints_written", True)
-
-        result = {"snapshots": 5, "runtime_hints": True}
+        result = {"snapshots": 4, "generated_utc": _utc()}
         ctx.set_result(result)
     return result
 
@@ -101,42 +96,37 @@ def run_curate(self) -> dict:
         vaulted = _vault_completed_deeds(self)
         ctx.step("deeds_vaulted", vaulted)
 
-        lore_decay = self.lore.decay()
-        ctx.step("lore_decay", lore_decay)
-
         expired = _expire_old_vaults(self)
         ctx.step("vaults_expired", expired)
 
         cleaned = _clean_old_deed_roots(self)
         ctx.step("deed_roots_cleaned", cleaned)
 
+        # Source cache expiry
+        source_cache_expired = 0
+        if hasattr(self, 'source_cache') and self.source_cache:
+            try:
+                source_cache_expired = self.source_cache.expire()
+            except Exception as exc:
+                logger.warning("Source cache expiry failed: %s", exc)
+        ctx.step("source_cache_expired", source_cache_expired)
+
         result = {
             "deeds_vaulted": vaulted,
-            "lore_decay_removed": lore_decay.get("removed", 0),
             "vaults_expired": expired,
             "deed_roots_cleaned": cleaned,
+            "source_cache_expired": source_cache_expired,
         }
         ctx.set_result(result)
     return result
 
 
-def _build_runtime_hints(mem_snap: dict, lore_snap: dict, inst_snap: dict) -> dict:
-    recent_records = lore_snap.get("records", [])[:5]
-    prefs = inst_snap.get("preferences", {})
+def _build_runtime_hints(config_snap: dict, planning_hints: dict) -> dict:
+    prefs = config_snap.get("preferences", {})
     return {
         "generated_utc": _utc(),
         "preferences": prefs,
-        "recent_records": [
-            {
-                "objective": r.get("objective_text", "")[:100],
-                "dag_budget": r.get("dag_budget"),
-                "success": r.get("success"),
-            }
-            for r in recent_records
-        ],
-        "memory_summary": {
-            "total_entries": len(mem_snap.get("entries", [])),
-        },
+        "planning": planning_hints,
     }
 
 
@@ -441,7 +431,7 @@ def _backup_state(home: Path) -> dict:
 
     files_to_backup = [
         "deeds.json", "ward.json", "schedule_history.json",
-        "herald_log.jsonl", "psyche/instinct.db",
+        "herald_log.jsonl", "ledger.db",
     ]
     copied = 0
     for fname in files_to_backup:

@@ -5,9 +5,7 @@ import time
 import pytest
 from pathlib import Path
 
-from psyche.lore import LorePsyche
-from psyche.instinct import InstinctPsyche
-from psyche.memory import MemoryPsyche
+from psyche.config import PsycheConfig
 from spine.nerve import Nerve
 from spine.trail import Trail
 from runtime.cortex import Cortex
@@ -25,13 +23,24 @@ def state_dir(tmp_path):
 
 
 @pytest.fixture
-def lore(tmp_path):
-    return LorePsyche(tmp_path / "state" / "lore.db")
+def psyche_dir(tmp_path):
+    d = tmp_path / "psyche"
+    d.mkdir(exist_ok=True)
+    (d / "preferences.toml").write_text(
+        '[general]\ndefault_depth = "study"\nrequire_bilingual = true\n'
+        'telegram_enabled = true\n\n'
+        '[execution]\nretinue_size_n = 7\n'
+    )
+    (d / "rations.toml").write_text(
+        '[daily_limits]\nminimax_tokens = 20000000\nconcurrent_deeds = 10\n\n'
+        '[current_usage]\n'
+    )
+    return d
 
 
 @pytest.fixture
-def instinct(tmp_path):
-    return InstinctPsyche(tmp_path / "state" / "instinct.db")
+def config(psyche_dir):
+    return PsycheConfig(psyche_dir)
 
 
 @pytest.fixture
@@ -42,79 +51,79 @@ def nerve():
 # -- Will ----------------------------------------------------------------------
 
 class TestWill:
-    def _make_will(self, lore, instinct, nerve, state_dir):
-        return Will(lore, instinct, nerve, state_dir)
+    def _make_will(self, config, nerve, state_dir):
+        return Will(config, nerve, state_dir)
 
-    def test_validate_valid_plan(self, lore, instinct, nerve, state_dir):
-        d = self._make_will(lore, instinct, nerve, state_dir)
+    def test_validate_valid_plan(self, config, nerve, state_dir):
+        d = self._make_will(config, nerve, state_dir)
         plan = {"moves": [{"id": "scout", "agent": "scout", "depends_on": []}]}
         ok, err = d.validate(plan)
         assert ok is True
 
-    def test_validate_empty_moves(self, lore, instinct, nerve, state_dir):
-        d = self._make_will(lore, instinct, nerve, state_dir)
+    def test_validate_empty_moves(self, config, nerve, state_dir):
+        d = self._make_will(config, nerve, state_dir)
         ok, err = d.validate({"moves": []})
         assert ok is False
         assert "moves" in err
 
-    def test_validate_duplicate_move_id(self, lore, instinct, nerve, state_dir):
-        d = self._make_will(lore, instinct, nerve, state_dir)
+    def test_validate_duplicate_move_id(self, config, nerve, state_dir):
+        d = self._make_will(config, nerve, state_dir)
         plan = {"moves": [{"id": "a"}, {"id": "a"}]}
         ok, err = d.validate(plan)
         assert ok is False
         assert "duplicate" in err
 
-    def test_validate_unknown_dep(self, lore, instinct, nerve, state_dir):
-        d = self._make_will(lore, instinct, nerve, state_dir)
+    def test_validate_unknown_dep(self, config, nerve, state_dir):
+        d = self._make_will(config, nerve, state_dir)
         plan = {"moves": [{"id": "b", "depends_on": ["a"]}]}
         ok, err = d.validate(plan)
         assert ok is False
         assert "unknown" in err
 
-    def test_enrich_assigns_deed_id(self, lore, instinct, nerve, state_dir):
-        d = self._make_will(lore, instinct, nerve, state_dir)
+    def test_enrich_assigns_deed_id(self, config, nerve, state_dir):
+        d = self._make_will(config, nerve, state_dir)
         plan = {"moves": [{"id": "s1"}], "brief": {"dag_budget": 6}}
         enriched = d.enrich(plan)
         assert "deed_id" in enriched
         assert enriched["deed_id"].startswith("deed_")
 
-    def test_enrich_sets_single_slip_budget(self, lore, instinct, nerve, state_dir):
-        d = self._make_will(lore, instinct, nerve, state_dir)
+    def test_enrich_sets_single_slip_budget(self, config, nerve, state_dir):
+        d = self._make_will(config, nerve, state_dir)
         plan = {"moves": [{"id": "s1"}], "brief": {"dag_budget": 4}}
         enriched = d.enrich(plan)
         assert enriched["brief"]["dag_budget"] == 4
 
-    def test_enrich_ward_red_queues(self, lore, instinct, nerve, state_dir):
+    def test_enrich_ward_red_queues(self, config, nerve, state_dir):
         (state_dir / "ward.json").write_text(json.dumps({"status": "RED"}))
-        d = self._make_will(lore, instinct, nerve, state_dir)
+        d = self._make_will(config, nerve, state_dir)
         plan = {"moves": [{"id": "s1"}]}
         enriched = d.enrich(plan)
         assert enriched.get("queued") is True
 
-    def test_enrich_ward_yellow_queues_large_slip(self, lore, instinct, nerve, state_dir):
+    def test_enrich_ward_yellow_queues_large_slip(self, config, nerve, state_dir):
         (state_dir / "ward.json").write_text(json.dumps({"status": "YELLOW"}))
-        d = self._make_will(lore, instinct, nerve, state_dir)
+        d = self._make_will(config, nerve, state_dir)
         plan = {"moves": [{"id": "s1"}], "brief": {"dag_budget": 6}}
         enriched = d.enrich(plan)
         assert enriched.get("queued") is True
 
-    def test_enrich_ward_yellow_does_not_queue_small_slip(self, lore, instinct, nerve, state_dir):
+    def test_enrich_ward_yellow_does_not_queue_small_slip(self, config, nerve, state_dir):
         (state_dir / "ward.json").write_text(json.dumps({"status": "YELLOW"}))
-        d = self._make_will(lore, instinct, nerve, state_dir)
+        d = self._make_will(config, nerve, state_dir)
         plan = {"moves": [{"id": "s1"}], "brief": {"dag_budget": 4}}
         enriched = d.enrich(plan)
         assert not enriched.get("queued")
 
     @pytest.mark.asyncio
-    async def test_submit_invalid_plan(self, lore, instinct, nerve, state_dir):
-        d = self._make_will(lore, instinct, nerve, state_dir)
+    async def test_submit_invalid_plan(self, config, nerve, state_dir):
+        d = self._make_will(config, nerve, state_dir)
         result = await d.submit({"moves": []})
         assert result["ok"] is False
 
     @pytest.mark.asyncio
-    async def test_submit_valid_plan_no_temporal(self, lore, instinct, nerve, state_dir, tmp_path):
+    async def test_submit_valid_plan_no_temporal(self, config, nerve, state_dir, tmp_path):
         os.environ["DAEMON_HOME"] = str(tmp_path)
-        d = self._make_will(lore, instinct, nerve, state_dir)
+        d = self._make_will(config, nerve, state_dir)
         plan = {
             "moves": [{"id": "scout", "agent": "scout", "depends_on": []}],
             "brief": {"dag_budget": 6},
@@ -134,19 +143,19 @@ class TestWill:
 # -- Herald --------------------------------------------------------------------
 
 class TestHeraldService:
-    def _make_herald(self, instinct, nerve, tmp_path):
+    def _make_herald(self, config, nerve, tmp_path):
         (tmp_path / "offerings").mkdir(exist_ok=True)
         (tmp_path / "state").mkdir(exist_ok=True)
-        return HeraldService(instinct, nerve, tmp_path)
+        return HeraldService(config, nerve, tmp_path)
 
-    def test_deliver_no_scribe_output(self, instinct, nerve, tmp_path):
-        d = self._make_herald(instinct, nerve, tmp_path)
+    def test_deliver_no_scribe_output(self, config, nerve, tmp_path):
+        d = self._make_herald(config, nerve, tmp_path)
         result = d.deliver("deed_999", {"brief": {"dag_budget": 6}}, [])
         assert result["ok"] is False
         assert result["error_code"] == "scribe_output_missing"
 
-    def test_deliver_full_pipeline(self, instinct, nerve, tmp_path):
-        d = self._make_herald(instinct, nerve, tmp_path)
+    def test_deliver_full_pipeline(self, config, nerve, tmp_path):
+        d = self._make_herald(config, nerve, tmp_path)
         # Create fake scribe output.
         deed_root = tmp_path / "deeds" / "deed_001"
         scribe_dir = deed_root / "moves" / "scribe_1" / "output"
@@ -157,8 +166,8 @@ class TestHeraldService:
         assert result["ok"] is True
         assert "offering_path" in result
 
-    def test_vault_creates_files(self, instinct, nerve, tmp_path):
-        d = self._make_herald(instinct, nerve, tmp_path)
+    def test_vault_creates_files(self, config, nerve, tmp_path):
+        d = self._make_herald(config, nerve, tmp_path)
         scribe_file = tmp_path / "report.md"
         scribe_file.write_text("# Report\n\nContent here.")
         plan = {"deed_id": "t1", "title": "Test Report", "brief": {"dag_budget": 6}}
@@ -166,8 +175,8 @@ class TestHeraldService:
         # Vault copies scribe file, no manifest.json
         assert any(dest.glob("*.md"))
 
-    def test_update_index(self, instinct, nerve, tmp_path):
-        d = self._make_herald(instinct, nerve, tmp_path)
+    def test_update_index(self, config, nerve, tmp_path):
+        d = self._make_herald(config, nerve, tmp_path)
         dest = tmp_path / "offerings" / "2026-03" / "test"
         dest.mkdir(parents=True)
         plan = {"deed_id": "t1", "title": "T", "slip_id": "sl_1", "folio_id": "fo_1", "brief": {"dag_budget": 6}}

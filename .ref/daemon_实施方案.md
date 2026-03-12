@@ -8,13 +8,14 @@
 
 ## 0. 文档治理
 
-1. `README.md` 说明五份权威文档的职责与顺序。
-2. `TERMINOLOGY.md` 规定正式术语和显示规则。
-3. `INTERACTION_DESIGN.md` 规定 Portal / Console / Telegram 的交互语法。
-4. `DESIGN_QA.md` 记录已确认决策，与本文件冲突时以 QA 为准。
-5. 本文件给出完整机制与实施规范。
+六份权威文档（冲突优先级从高到低）：
 
-`MECHANISM_AUDIT.md` 不承担机制定义职责，只承担后续 gap 审查职责。
+1. `TERMINOLOGY.md` — 术语权威
+2. `INTERACTION_DESIGN.md` — 交互权威
+3. `DESIGN_QA.md` — 机制细节，与本文件冲突时以 QA 为准
+4. `EXECUTION_MODEL.md` — 执行模型权威
+5. 本文件（`daemon_实施方案.md`）— 全机制说明书与实施规范
+6. `README.md` — 文档治理入口
 
 ---
 
@@ -138,7 +139,8 @@
 | `objective` | 目标摘要 |
 | `brief` | 正式 `Brief` |
 | `design` | 正式 `Design` |
-| `status` | `active | parked | settled | archived | absorbed` |
+| `status` | `active | archived | deleted`（两层模型，见 `EXECUTION_MODEL.md` §5.3） |
+| `sub_status` | `active` → `{normal, parked}`；`archived` → `{settled, archived}`；`deleted` → `{absorbed}` |
 | `standing` | 是否常驻签札 |
 | `latest_deed_id` | 最近一次 `Deed` |
 | `created_utc` | 创建时间 |
@@ -157,7 +159,8 @@
 | `slug` | Portal 公开路由 slug |
 | `slug_history` | 历史 slug |
 | `summary` | 卷摘要 |
-| `status` | `active | parked | archived | dissolved` |
+| `status` | `active | archived | deleted`（两层模型，见 `EXECUTION_MODEL.md` §5.4） |
+| `sub_status` | `active` → `{normal, parked}`；`deleted` → `{dissolved}` |
 | `slip_ids` | 所属签札列表 |
 | `writ_ids` | 所属成文列表 |
 | `created_utc` | 创建时间 |
@@ -203,7 +206,8 @@
 | `slip_id` | 来源签札 |
 | `folio_id` | 所属卷，可空 |
 | `writ_id` | 触发它的成文，可空 |
-| `status` | `queued | running | paused | completed | failed | cancelled | awaiting_eval` |
+| `status` | `running | settling | closed`（两层模型，见 `EXECUTION_MODEL.md` §5.5） |
+| `sub_status` | `running` → `{queued, executing, paused, retrying}`；`settling` → `{reviewing}`；`closed` → `{succeeded, failed, cancelled, timed_out}` |
 | `brief_snapshot` | 本次执行时使用的简报快照 |
 | `design_snapshot` | 本次执行时使用的方案快照 |
 | `result_summary` | 本次结果摘要 |
@@ -332,7 +336,21 @@
 - `attach_slip_to_folio`
 - `create_folio`
 
-### 5.3 链式任务
+### 5.3 触发类型排他性
+
+对于给定的一张 `Slip`，触发类型是排他的（详见 `DESIGN_QA.md` Q8.5）：
+
+- **手动触发**：用户按「执行」按钮
+- **定时触发**：时间到达自动触发
+- **前序事件触发**：Writ chain 中前序 `Deed` closed 后触发
+
+三种触发类型互斥。Slip 页面和 Folio 结构视图按触发类型动态显示不同的按钮/信息。
+
+### 5.4 Writ 是强约束
+
+Writ 的排序是强制执行的，不是建议性的。前序条件未满足时，被约束的 Slip 的执行按钮禁用或隐藏。
+
+### 5.5 链式任务
 
 它由：
 
@@ -344,12 +362,12 @@
 
 例如：
 
-- 某张 `Slip` 的 `Deed` 完成
-- 触发事件 `deed.completed`
+- 某张 `Slip` 的 `Deed` closed
+- 触发事件 `deed_closed`
 - 相关 `Writ` 命中
 - 生发下一张 `Slip` 或下一次 `Deed`
 
-### 5.4 Writ 的学习
+### 5.6 Writ 的学习
 
 `Writ` 是可学习对象。
 
@@ -365,50 +383,65 @@
 
 ---
 
-## 6. Psyche 与学习锚点
+## 6. Psyche（心智层）
 
-### 6.1 Memory
+Psyche 由六个组件构成（详见 `DESIGN_QA.md` §1）：
 
-Memory 存放事实与知识，支持 embedding 检索。
+| 组件 | 实现 | 职责 |
+|------|------|------|
+| Instinct | `InstinctEngine` + `instinct.md` | 不可覆盖的硬规则（代码执行）+ 软规则（prompt ~200 tokens） |
+| Voice（画像） | `psyche/voice/` markdown 文件 | 身份画像（所有 agent）+ 写作风格（scribe/envoy） |
+| Preferences | `PsycheConfig` TOML | 用户可调整的系统偏好 |
+| Rations | `PsycheConfig` TOML | 资源额度与配额 |
+| Ledger | `LedgerStats` SQLite | 机械统计：dag_templates / folio_templates / skill_stats / agent_stats |
+| SourceCache | `SourceCache` SQLite + embedding | 外部知识 TTL 缓存 |
 
-查询时：
+> 旧 Memory 和 Lore 已废除。不再有 LLM 学习循环。
 
-- 若已知 `folio_id`，同卷内容优先
-- 其余作为全局候选
+### 6.1 Instinct（本能）
 
-### 6.2 Lore
+Instinct 是系统不可被用户覆盖的原则，代码层确定性执行。
 
-Lore 存放经验，主锚点是 `deed_id`。
+三层：硬规则（Python pre/post check）→ 软规则（instinct.md prompt injection）→ 关键审查（arbiter）。
 
-每条经验记录至少包含：
+所有信息流入系统都必须过 Instinct 代码校验。
 
-- `deed_id`
-- `slip_id`
-- `folio_id`
-- `writ_id`
-- `plan_structure`
-- `offering_quality`
-- `token_consumption`
-- `user_feedback`
+### 6.2 Voice（画像）
 
-### 6.3 Instinct
+Voice 是系统的身份与写作风格，markdown 文件，不用数据库。
 
-Instinct 只承担：
+- `identity.md`：身份画像，注入所有 agent（≤150 tokens）
+- `common.md` / `zh.md` / `en.md`：写作风格，只注入 scribe/envoy（≤250 tokens）
+- `overlays/*.md`：任务类型覆盖（≤50 tokens）
 
-- 偏好
-- 默认值
-- 配额倾向
+> Voice（画像）是 Psyche 组件，与 §7 Voice（对话服务）不同。
 
-它不承担 `Folio` 级计划习惯。
+### 6.3 Ledger（统计）
 
-### 6.4 规划学习归属
+Ledger 只做机械统计，不做 LLM 语义学习。学习原则：只学 accepted，不学失败；学模式不学实例。
 
-规划学习分层如下：
+- **dag_templates**：accepted Deed 的 DAG 模板，embedding 相似度合并（cosine > 0.85），供 counsel few-shot 参考
+- **folio_templates**：归档 Folio 的结构模板（accepted_ratio > 0.5）
+- **skill_stats** / **agent_stats**：技能和 agent 表现的元数据统计
+
+### 6.4 SourceCache（源缓存）
+
+SourceCache 存放外部知识的 TTL 缓存，支持 embedding 检索。查询时 `folio_id` 作为主题偏置（同卷优先）。
+
+### 6.5 选择性注入
+
+Move 执行时按 agent 角色选择性注入 Psyche 内容（见 `DESIGN_QA.md` Q1.8）：
+
+- 所有 agent → instinct + identity（~300 tokens）
+- scribe/envoy → + style + overlay（~550 tokens）
+- counsel → + planning_hints（~400 tokens）
+
+### 6.6 规划学习归属
 
 - `Folio`：主题背景与长期上下文
-- `Slip`：这张签札通常该怎么规划
-- `Writ`：什么事件该如何生发或接续
-- `Deed`：这次执行到底做得怎样
+- `Slip`：通过 `dag_templates` 学习类似任务该如何规划
+- `Writ`：学习触发效果（命中率、误触发率等）
+- `Deed`：执行元数据写入 Ledger 统计
 
 ---
 
@@ -495,7 +528,7 @@ Will 的标准流程为：
 
 - agent 角色
 - `Brief`
-- `Instinct`
+- `PsycheConfig`（偏好与配额）
 - 当前系统资源
 
 共同决定。
@@ -526,9 +559,9 @@ Will 的标准流程为：
 
 每个 `Deed` 分配空闲池实例，用完释放。实例生命周期：
 
-1. `allocate(role, deed_id)` — 设置 `session_key`，写入 Psyche 快照（MEMORY.md），复制 workspace 模板
+1. `allocate(role, deed_id)` — 设置 `session_key`（格式：`{agent_id}:{deed_id}:{session_seq}`），写入选择性 Psyche 上下文，复制 workspace 模板
 2. 执行期间 — 池实例持有一个 persistent full session（OC full mode），多个 Move 共享同一 session，记忆在 session 内累积
-3. `release(instance_id)` — 销毁 session 文件（下次分配时重新加载 MEMORY.md），清理 workspace
+3. `release(instance_id)` — 销毁 session 文件，清理 workspace
 
 ### 9.2 执行流
 
@@ -543,7 +576,7 @@ Will 的标准流程为：
 
 每个 Move 通过 `sessions_send` 发送到池实例的主 session。OC 按 session key 串行化 runs，同 agent 的多个 Move 自然串行。不同 agent 的 Move 可并行（受 DAG 依赖约束）。
 
-`Will` 在提交前将同 agent 的并行 Move 合并为复合指令，减少 round-trip。agent 自决内部并发（通过 OC parallel tool calls）。
+> 旧 `_consolidate_same_agent_moves()` 机制已废止（详见 `EXECUTION_MODEL.md` §1.2）。1 Move = 1 Agent + 1 交付物，不合并不拆分。
 
 ### 9.4 Review 与 rework
 
@@ -591,13 +624,25 @@ Will 的标准流程为：
 
 它与 `Offering` 分离。
 
-### 10.4 Feedback
+### 10.4 Feedback 与评价链
 
-反馈首先绑定 `Deed`，再回流影响：
+反馈绑定 `Deed`。不存在独立的评价问卷或表单。
 
-- 该 `Slip` 的规划经验
-- 相关 `Writ` 的效果判断
-- 相关 `Lore` 的权重
+**评价链机制**（详见 `DESIGN_QA.md` Q7.5）：
+
+评价以**运行周期**为单位。一段评价 = 一次运行开始到下一次运行开始之间的所有对话内容（包含 running 和 settling 两个阶段的对话）。评价链的头 = Slip 的「执行」按钮，尾 = 「收束」按钮。
+
+**洗信息**在每个运行周期边界触发（机械提取，不用 LLM）：
+
+- 压缩对话段 → 喂给下次运行的 Brief 补充（同时保留一份压缩结果）
+- 客观数字 → `Ledger` 统计（rework 次数、时长、token 消耗）
+- 关键词匹配 → Voice 候选（写入前须用户确认）
+
+收束时串联所有运行周期的压缩结果，作为完整评价，写入 `dag_templates`（accepted Deed 的 DAG 模式合并）。
+
+**操作-自然语言对应**：所有非对话操作（按钮、拖拽、姿态变更）在对话流中生成自然语言记录。Slash command 已取消。
+
+所有洗出物流入系统前必须过 Instinct 代码门控。
 
 ---
 

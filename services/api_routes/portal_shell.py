@@ -197,6 +197,7 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
             "objective": str(slip.get("objective") or ""),
             "stance": stance,
             "standing": bool(slip.get("standing")),
+            "trigger_type": str(slip.get("trigger_type") or "manual"),
             "folio": folio,
             "deed": {
                 "id": str((deed or {}).get("deed_id") or ""),
@@ -438,6 +439,7 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
             ctx.log_portal_event("portal_slip_message", {"slip_id": slip.get("slip_id"), "deed_id": deed_id, "workflow_id": workflow_id}, request)
             return {"ok": True, "slip_id": slip.get("slip_id"), "deed_id": deed_id, "workflow_id": workflow_id}
 
+        _check_writ_preconditions(slip)
         plan = _spawn_plan_for_slip(slip, extra_text=text)
         result = await ctx.will.submit(plan)
         if not result.get("ok"):
@@ -456,31 +458,60 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
         if target == "continue":
             ctx.folio_writ.update_slip(str(slip.get("slip_id") or ""), {"status": "active"})
             if isinstance(deed, dict) and str((deed or {}).get("deed_sub_status") or "").lower() == "paused":
+                _record_operation(str(deed.get("deed_id") or ""), "继续执行")
                 workflow_id = await _signal_deed(str(deed.get("deed_id") or ""), deed, signal_name="resume_execution", payload={"source": "portal"})
                 return {"ok": True, "slip_id": slip.get("slip_id"), "deed_id": deed.get("deed_id"), "workflow_id": workflow_id}
+            _check_writ_preconditions(slip)
             result = await ctx.will.submit(_spawn_plan_for_slip(slip))
             if not result.get("ok"):
                 raise HTTPException(status_code=409, detail=result.get("error_code") or result.get("error") or "slip_resume_failed")
+            _record_operation(str(result.get("deed_id") or ""), "继续执行")
             return result
         if target == "park":
+            deed_id = str((deed or {}).get("deed_id") or "")
+            _record_operation(deed_id, "暂存")
             ctx.folio_writ.update_slip(str(slip.get("slip_id") or ""), {"status": "active", "sub_status": "parked"})
             if isinstance(deed, dict) and _deed_status(deed) == "running":
                 workflow_id = await _signal_deed(str(deed.get("deed_id") or ""), deed, signal_name="pause_execution", payload={"source": "portal"})
                 return {"ok": True, "slip_id": slip.get("slip_id"), "deed_id": deed.get("deed_id"), "workflow_id": workflow_id}
             return {"ok": True, "slip_id": slip.get("slip_id"), "status": "active", "sub_status": "parked"}
 
+        deed_id = str((deed or {}).get("deed_id") or "")
+        _record_operation(deed_id, "归档")
         ctx.folio_writ.update_slip(str(slip.get("slip_id") or ""), {"status": "archived"})
         if isinstance(deed, dict) and _deed_status(deed) == "running":
             cancelled, detail = await _cancel_deed(str(deed.get("deed_id") or ""), deed)
             return {"ok": cancelled, "slip_id": slip.get("slip_id"), "deed_id": deed.get("deed_id"), "detail": detail}
         return {"ok": True, "slip_id": slip.get("slip_id"), "status": "archived"}
 
+    def _record_operation(deed_id: str, action: str, detail: str = "") -> None:
+        """Insert a system message recording a user operation in natural language."""
+        if not deed_id:
+            return
+        text = f"[操作] {action}"
+        if detail:
+            text = f"{text}：{detail}"
+        ctx.append_deed_message(deed_id, role="system", content=text, event="operation", meta={"action": action})
+
+    def _check_writ_preconditions(slip: dict) -> None:
+        """Enforce Writ strong constraint: writ_chain Slips require all predecessors closed."""
+        if str(slip.get("trigger_type") or "") != "writ_chain":
+            return
+        ok, blocking = ctx.folio_writ.predecessors_all_closed(str(slip.get("slip_id") or ""))
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail=f"writ_precondition_unmet:predecessors_not_closed:{','.join(blocking[:5])}",
+            )
+
     @app.post("/portal-api/slips/{slip_slug}/rerun")
     async def portal_slip_rerun(slip_slug: str, request: Request):
         slip = _resolve_slip(slip_slug)
+        _check_writ_preconditions(slip)
         result = await ctx.will.submit(_spawn_plan_for_slip(slip))
         if not result.get("ok"):
             raise HTTPException(status_code=409, detail=result.get("error_code") or result.get("error") or "slip_rerun_failed")
+        _record_operation(str(result.get("deed_id") or ""), "重新执行", str(slip.get("title") or ""))
         ctx.log_portal_event("portal_slip_rerun", {"slip_id": slip.get("slip_id"), "deed_id": result.get("deed_id")}, request)
         return result
 
@@ -566,6 +597,13 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
         payload["recent_results"] = _recent_results_for_folio(folio)
         ctx.log_portal_event("portal_get_folio", {"folio_id": payload["id"]}, request)
         return payload
+
+    @app.get("/portal-api/slips/{slip_slug}/writ-neighbors")
+    def portal_slip_writ_neighbors(slip_slug: str, request: Request):
+        slip = _resolve_slip(slip_slug)
+        neighbors = ctx.folio_writ.writ_neighbors(str(slip.get("slip_id") or ""))
+        ctx.log_portal_event("portal_slip_writ_neighbors", {"slip_id": slip.get("slip_id")}, request)
+        return neighbors
 
     @app.post("/portal-api/slips/{slip_slug}/copy")
     def portal_slip_copy(slip_slug: str, request: Request):

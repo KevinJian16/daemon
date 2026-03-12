@@ -1,4 +1,4 @@
-"""Spine Routines — governance routines for the daemon system (V2 aligned)."""
+"""Spine Routines — governance routines for the daemon system (V3: Ledger-based)."""
 from __future__ import annotations
 
 import json
@@ -9,14 +9,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from services.ledger import Ledger
-from spine.routines_ops_learn import run_distill, run_focus, run_learn, run_witness
-from spine.routines_ops_maintenance import run_curate, run_relay, run_tend
 from spine.routines_ops_record import run_record
+from spine.routines_ops_stats import run_focus, run_witness
+from spine.routines_ops_maintenance import run_curate, run_relay, run_tend
 
 if TYPE_CHECKING:
-    from psyche.instinct import InstinctPsyche
-    from psyche.memory import MemoryPsyche
-    from psyche.lore import LorePsyche
+    from psyche.config import PsycheConfig
+    from psyche.instinct_engine import InstinctEngine
+    from psyche.ledger_stats import LedgerStats
     from runtime.cortex import Cortex
     from spine.nerve import Nerve
     from spine.trail import Trail
@@ -34,18 +34,18 @@ class SpineRoutines:
 
     def __init__(
         self,
-        memory: "MemoryPsyche",
-        lore: "LorePsyche",
-        instinct: "InstinctPsyche",
+        psyche_config: "PsycheConfig",
+        ledger_stats: "LedgerStats",
+        instinct_engine: "InstinctEngine",
         cortex: "Cortex",
         nerve: "Nerve",
         trail: "Trail",
         daemon_home: Path,
         openclaw_home: Path | None = None,
     ) -> None:
-        self.memory = memory
-        self.lore = lore
-        self.instinct = instinct
+        self.psyche_config = psyche_config
+        self.ledger_stats = ledger_stats
+        self.instinct_engine = instinct_engine
         self.cortex = cortex
         self.nerve = nerve
         self.trail = trail
@@ -53,6 +53,9 @@ class SpineRoutines:
         self.openclaw_home = openclaw_home
         self.state_dir = daemon_home / "state"
         self._store = Ledger(self.state_dir)
+
+        # Backward compat aliases used by relay/tend/curate
+        self.instinct = psyche_config
 
     # ── 1. pulse ─────────────────────────────────────────────────────────────
 
@@ -114,7 +117,6 @@ class SpineRoutines:
             if prev_ward != ward_status:
                 self.nerve.emit("ward_changed", {"prev": prev_ward, "current": ward_status})
 
-            # Q2.11: detect routines with 3+ consecutive failures and trigger auto-diagnosis.
             failing_routines = self._detect_consecutive_failures(threshold=3)
             diagnosis_results: list[dict] = []
             for routine_name in failing_routines:
@@ -128,68 +130,43 @@ class SpineRoutines:
 
     # ── 2. record ─────────────────────────────────────────────────────────────
 
-    def record(self, deed_id: str, plan: dict, move_results: list[dict], offering: dict) -> dict:
-        """Record completed deed as LoreRecord."""
-        return run_record(self, deed_id, plan, move_results, offering)
+    def record(self, deed_id: str, plan: dict, move_results: list[dict], offering: dict,
+               eval_chain: list[str] | None = None, accepted: bool | None = None) -> dict:
+        """Merge accepted deed into dag_templates + update stats."""
+        return run_record(self, deed_id, plan, move_results, offering,
+                          eval_chain=eval_chain, accepted=accepted)
 
     # ── 3. witness ────────────────────────────────────────────────────────────
 
     def witness(self) -> dict:
-        """Analyze Lore trends; update Instinct preferences and system health."""
+        """Analyze Ledger stats; generate system health report."""
         return run_witness(self)
 
-    # ── 4. learn ──────────────────────────────────────────────────────────────
-
-    def learn(self, deed_id: str | None = None) -> dict:
-        """Extract knowledge from retinue instance workspace to Memory."""
-        return run_learn(self, deed_id=deed_id)
-
-    # ── 5. distill ────────────────────────────────────────────────────────────
-
-    def distill(self) -> dict:
-        """Memory decay + capacity enforcement."""
-        return run_distill(self)
-
-    # ── 6. focus ──────────────────────────────────────────────────────────────
+    # ── 4. focus ──────────────────────────────────────────────────────────────
 
     def focus(self) -> dict:
-        """Embedding index maintenance."""
+        """Active folios + Ledger template statistics."""
         return run_focus(self)
 
-    # ── 7. relay ──────────────────────────────────────────────────────────────
+    # ── 5. relay ──────────────────────────────────────────────────────────────
 
     def relay(self) -> dict:
-        """Export Psyche snapshots to state/snapshots/ and retinue instances."""
+        """Export config + ledger summary to state/snapshots/."""
         return run_relay(self)
 
-    # ── 8. tend ───────────────────────────────────────────────────────────────
+    # ── 6. tend ───────────────────────────────────────────────────────────────
 
     def tend(self) -> dict:
         """Housekeeping: state/ git commit, log cleanup, ration reset."""
         return run_tend(self)
 
-    # ── 9. curate ─────────────────────────────────────────────────────────────
+    # ── 7. curate ─────────────────────────────────────────────────────────────
 
     def curate(self) -> dict:
         """deed_root → vault archival; vault 90-day expiry."""
         return run_curate(self)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
-
-    def _upgrade_tier(self, entry_id: str, target_tier: str) -> None:
-        """Upgrade a memory entry's tier tag (e.g. working → deep)."""
-        entry = self.memory.get(entry_id)
-        if not entry:
-            return
-        tags = entry.get("tags") or []
-        new_tags = [t for t in tags if not str(t).startswith("tier:")]
-        new_tags.append(f"tier:{target_tier}")
-        import json
-        with self.memory._conn() as conn:
-            conn.execute(
-                "UPDATE entries SET tags=?, updated_utc=? WHERE entry_id=?",
-                (json.dumps(new_tags, ensure_ascii=False), _utc(), entry_id),
-            )
 
     def _probe_gateway(self) -> str:
         if not self.openclaw_home:
@@ -286,12 +263,12 @@ class SpineRoutines:
         return registry
 
     def _maybe_reset_rations(self) -> None:
-        rations = self.instinct.all_rations()
+        rations = self.psyche_config.all_rations()
         now = _utc()
         for b in rations:
             reset_utc = b.get("reset_utc", "")
             if reset_utc and reset_utc <= now:
-                self.instinct.reset_rations()
+                self.psyche_config.reset_rations()
                 break
 
     def _clean_old_traces(self, max_age_days: int = 7) -> int:
@@ -309,15 +286,13 @@ class SpineRoutines:
     # ── Auto-diagnosis (Q2.11) ──────────────────────────────────────────────
 
     _DIAG_COOLDOWN_FILE = "auto_diagnosis_cooldown.json"
-    _DIAG_TIMEOUT_S = 600  # 10 minutes
+    _DIAG_TIMEOUT_S = 600
     _DIAG_MAX_PER_DAY = 3
 
     def _detect_consecutive_failures(self, threshold: int = 3) -> list[str]:
-        """Scan spine_log.jsonl for routines with N consecutive failures."""
         log_path = self.state_dir / "spine_log.jsonl"
         if not log_path.exists():
             return []
-        # Build per-routine recent status sequences.
         sequences: dict[str, list[str]] = {}
         try:
             for line in log_path.read_text(encoding="utf-8").splitlines():
@@ -337,7 +312,7 @@ class SpineRoutines:
         failing: list[str] = []
         for name, statuses in sequences.items():
             if name == "pulse":
-                continue  # pulse diagnosing itself would loop
+                continue
             tail = statuses[-threshold:] if len(statuses) >= threshold else []
             if len(tail) == threshold and all(s == "error" for s in tail):
                 if not self._is_diag_on_cooldown(name):
@@ -345,7 +320,6 @@ class SpineRoutines:
         return failing
 
     def _is_diag_on_cooldown(self, routine_name: str) -> bool:
-        """Check if a routine has been diagnosed too recently (24h window, max 3/day)."""
         cooldown_path = self.state_dir / self._DIAG_COOLDOWN_FILE
         if not cooldown_path.exists():
             return False
@@ -361,7 +335,6 @@ class SpineRoutines:
         return len(recent) >= self._DIAG_MAX_PER_DAY
 
     def _record_diag_attempt(self, routine_name: str) -> None:
-        """Record a diagnosis attempt for cooldown tracking."""
         cooldown_path = self.state_dir / self._DIAG_COOLDOWN_FILE
         try:
             data = json.loads(cooldown_path.read_text(encoding="utf-8")) if cooldown_path.exists() else {}
@@ -373,7 +346,6 @@ class SpineRoutines:
         if not isinstance(entries, list):
             entries = []
         entries.append(time.time())
-        # Keep only last 24h entries.
         cutoff = time.time() - 86400
         entries = [ts for ts in entries if isinstance(ts, (int, float)) and ts > cutoff]
         data[routine_name] = entries
@@ -383,14 +355,6 @@ class SpineRoutines:
             logger.warning("Failed to write diagnosis cooldown: %s", exc)
 
     def _run_auto_diagnosis(self, routine_name: str) -> dict:
-        """Q2.11: Auto-diagnosis for a routine with consecutive failures.
-
-        1. Mark routine as repairing
-        2. Notify via Nerve
-        3. Invoke Claude Code CLI for diagnosis
-        4. Re-run routine to verify
-        5. Report outcome via Nerve
-        """
         self._record_diag_attempt(routine_name)
         try:
             status_path = self.state_dir / "schedules.json"
@@ -405,10 +369,7 @@ class SpineRoutines:
             logger.warning("Failed to pause routine %s before auto-diagnosis: %s", routine_name, exc)
         self.nerve.emit("auto_diagnosis_started", {"routine": routine_name, "timestamp_utc": _utc()})
 
-        # Gather failure context from spine_log.
         failure_context = self._gather_failure_context(routine_name, count=3)
-
-        # Invoke Claude Code CLI for diagnosis.
         prompt = (
             f"The daemon spine routine '{routine_name}' has failed 3 consecutive times. "
             f"Recent errors:\n{json.dumps(failure_context, ensure_ascii=False, indent=2)}\n\n"
@@ -420,10 +381,8 @@ class SpineRoutines:
         try:
             diag_result = subprocess.run(
                 ["claude", "--print", "-p", prompt],
-                capture_output=True,
-                text=True,
-                timeout=self._DIAG_TIMEOUT_S,
-                cwd=str(self.daemon_home),
+                capture_output=True, text=True,
+                timeout=self._DIAG_TIMEOUT_S, cwd=str(self.daemon_home),
             )
             diagnosis_output = (diag_result.stdout or "")[:2000]
             diag_ok = diag_result.returncode == 0
@@ -437,7 +396,6 @@ class SpineRoutines:
             diagnosis_output = f"diagnosis_error: {str(exc)[:200]}"
             diag_ok = False
 
-        # Verify fix by re-running the routine.
         verified = False
         if diag_ok:
             routine_method = getattr(self, routine_name, None)
@@ -472,7 +430,6 @@ class SpineRoutines:
         return result
 
     def _gather_failure_context(self, routine_name: str, count: int = 3) -> list[dict]:
-        """Extract recent failure entries for a routine from spine_log.jsonl."""
         log_path = self.state_dir / "spine_log.jsonl"
         if not log_path.exists():
             return []
@@ -495,7 +452,6 @@ class SpineRoutines:
     # ── Spine execution logging ──────────────────────────────────────────────
 
     def log_execution(self, routine_name: str, status: str, result: Any, duration_s: float) -> None:
-        """Append routine execution record to spine_log.jsonl and update spine_status.json."""
         log_path = self.state_dir / "spine_log.jsonl"
         entry = {
             "routine": routine_name,
@@ -513,7 +469,6 @@ class SpineRoutines:
         self._update_spine_status(routine_name, status)
 
     def _update_spine_status(self, routine_name: str, status: str) -> None:
-        """Update spine_status.json with latest routine results and overall health."""
         status_path = self.state_dir / "spine_status.json"
         try:
             current = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else {}
@@ -525,7 +480,6 @@ class SpineRoutines:
         if not isinstance(routines_map, dict):
             routines_map = {}
         routines_map[routine_name] = {"status": status, "updated_utc": _utc()}
-        # Determine overall health from individual routine statuses.
         statuses = [v.get("status", "ok") for v in routines_map.values()]
         error_count = sum(1 for s in statuses if s == "error")
         if error_count == 0:

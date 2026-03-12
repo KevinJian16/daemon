@@ -5,9 +5,8 @@ import json
 import os
 from pathlib import Path
 
-from psyche.memory import MemoryPsyche
-from psyche.lore import LorePsyche
-from psyche.instinct import InstinctPsyche
+from psyche.config import PsycheConfig
+from psyche.ledger_stats import LedgerStats
 from runtime.retinue import Retinue, register_retinue_instances, DEFAULT_POOL_SIZE
 
 
@@ -161,30 +160,15 @@ def bootstrap(daemon_home: Path | None = None, openclaw_home: Path | None | obje
     db_dir = home / "state" / "psyche"
     db_dir.mkdir(parents=True, exist_ok=True)
 
-    # Migrate DBs from state/ root to state/psyche/ if they exist at the old location.
-    for _db_name in ("memory.db", "lore.db", "instinct.db"):
-        _old = home / "state" / _db_name
-        _new = db_dir / _db_name
-        if _old.exists() and not _new.exists():
-            _old.rename(_new)
+    # ── PsycheConfig (TOML-based preferences + rations) ─────────────────────
+    psyche_config = PsycheConfig(home / "psyche")
+    report["psyche"]["config"] = {"path": str(home / "psyche")}
 
-    # ── Memory Psyche ─────────────────────────────────────────────────────────
-    mem_db = db_dir / "memory.db"
-    mem_is_new = not mem_db.exists() or force
-    memory = MemoryPsyche(mem_db)
-    report["psyche"]["memory"] = {"new": mem_is_new, "path": str(mem_db)}
-
-    # ── Lore Psyche ───────────────────────────────────────────────────────
-    lore_db = db_dir / "lore.db"
-    lore_is_new = not lore_db.exists() or force
-    lore = LorePsyche(lore_db)
-    report["psyche"]["lore"] = {"new": lore_is_new, "path": str(lore_db)}
-
-    # ── Instinct Psyche (self-seeds preferences + rations on init) ────────────
-    instinct_db = db_dir / "instinct.db"
-    instinct_is_new = not instinct_db.exists() or force
-    instinct = InstinctPsyche(instinct_db)
-    report["psyche"]["instinct"] = {"new": instinct_is_new, "path": str(instinct_db)}
+    # ── LedgerStats (SQLite: dag_templates, folio_templates, skill_stats, agent_stats) ──
+    ledger_db = db_dir / "ledger.db"
+    ledger_is_new = not ledger_db.exists() or force
+    ledger_stats = LedgerStats(ledger_db)
+    report["psyche"]["ledger"] = {"new": ledger_is_new, "path": str(ledger_db)}
 
     # ── Ensure ward.json exists ───────────────────────────────────────────────
     ward_path = home / "state" / "ward.json"
@@ -225,7 +209,7 @@ def bootstrap(daemon_home: Path | None = None, openclaw_home: Path | None | obje
         # ── Retinue registration ──────────────────────────────────────
         retinue_status_file = home / "state" / "pool_status.json"
         if not retinue_status_file.exists() or force:
-            retinue_size = int(instinct.get_pref("retinue_size_n", str(DEFAULT_POOL_SIZE)))
+            retinue_size = int(psyche_config.get_pref("retinue_size_n", str(DEFAULT_POOL_SIZE)))
             retinue_report = register_retinue_instances(oc_home, home, pool_size=retinue_size)
             report["retinue"] = retinue_report
             if not retinue_report.get("ok"):

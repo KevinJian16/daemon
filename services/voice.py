@@ -16,7 +16,7 @@ from runtime.brief import Brief, SINGLE_SLIP_DEFAULTS
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from psyche.instinct import InstinctPsyche
+    from psyche.config import PsycheConfig
 
 
 def _utc() -> str:
@@ -30,17 +30,15 @@ class VoiceService:
 
     def __init__(
         self,
-        instinct: "InstinctPsyche",
+        config: "PsycheConfig",
         openclaw_home: Path | None = None,
         folio_writ_manager: Any | None = None,
         cortex: Any | None = None,
-        lore: Any | None = None,
     ) -> None:
-        self._instinct = instinct
+        self._instinct = config
         self._oc_home = openclaw_home
         self._folio_writ = folio_writ_manager
         self._cortex = cortex
-        self._lore = lore
         self._oc_cfg: dict | None = None
         self._sessions: dict[str, dict] = {}
         if openclaw_home:
@@ -228,19 +226,6 @@ class VoiceService:
             slip_title = self._generate_title(brief.objective or latest_message)
         out["slip_title"] = slip_title
         out["title"] = slip_title
-
-        # Consult Slip-level planning habits for repeat executions (P3: Slip learning).
-        slip_id = str(metadata.get("slip_id") or "").strip()
-        if slip_id and self._lore:
-            try:
-                habits = self._lore.slip_planning_habits(slip_id)
-                if habits and habits.get("sample_size", 0) >= 2:
-                    metadata["slip_planning_habits"] = habits
-                    if habits.get("avg_dag_budget") and not out.get("brief", {}).get("dag_budget"):
-                        brief.dag_budget = max(brief.dag_budget, int(habits["avg_dag_budget"]))
-                        out["brief"] = brief.to_dict()
-            except Exception as exc:
-                logger.debug("Slip planning habits lookup failed for %s: %s", slip_id, exc)
 
         affinity = self._folios_for_text(brief.objective or latest_message)
         if affinity and not str(metadata.get("folio_id") or "").strip():

@@ -15,10 +15,6 @@ def register_feedback_routes(app: FastAPI, *, ctx: Any) -> None:
     def get_feedback_state(deed_id: str):
         return ctx.feedback_state(deed_id)
 
-    @app.get("/feedback/{deed_id}/questions")
-    async def get_feedback_questions(deed_id: str):
-        return await ctx.get_feedback_questions(deed_id)
-
     @app.post("/feedback/submit")
     async def submit_feedback_from_body(request: Request):
         body = await request.json()

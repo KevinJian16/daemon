@@ -1,281 +1,149 @@
-"""Tests for all three Psyche components using in-memory SQLite."""
+"""Tests for new Psyche components: PsycheConfig, LedgerStats, InstinctEngine, SourceCache."""
 import json
 import pytest
 from pathlib import Path
-from psyche.memory import MemoryPsyche
-from psyche.lore import LorePsyche
-from psyche.instinct import InstinctPsyche
+from psyche.config import PsycheConfig
+from psyche.ledger_stats import LedgerStats
+from psyche.instinct_engine import InstinctEngine
+from psyche.source_cache import SourceCache
 
 
 @pytest.fixture
-def memory(tmp_path):
-    return MemoryPsyche(tmp_path / "memory.db")
+def psyche_dir(tmp_path):
+    d = tmp_path / "psyche"
+    d.mkdir()
+    # Create minimal TOML files
+    (d / "preferences.toml").write_text(
+        '[general]\ndefault_depth = "study"\nrequire_bilingual = true\n\n'
+        '[execution]\nretinue_size_n = 7\n'
+    )
+    (d / "rations.toml").write_text(
+        '[daily_limits]\nminimax_tokens = 20000000\nqwen_tokens = 10000000\nconcurrent_deeds = 10\n\n'
+        '[current_usage]\n'
+    )
+    return d
 
 
 @pytest.fixture
-def lore(tmp_path):
-    return LorePsyche(tmp_path / "lore.db")
+def config(psyche_dir):
+    return PsycheConfig(psyche_dir)
 
 
 @pytest.fixture
-def instinct(tmp_path):
-    return InstinctPsyche(tmp_path / "instinct.db")
+def ledger(tmp_path):
+    return LedgerStats(tmp_path / "ledger.db")
 
 
-# -- Memory Psyche -------------------------------------------------------------
-
-class TestMemoryPsyche:
-    def test_add_basic(self, memory):
-        entry_id = memory.add("Test knowledge entry", tags=["ai", "research"], source="test")
-        assert entry_id  # Returns a valid ID
-
-    def test_add_and_get(self, memory):
-        entry_id = memory.add("Deep learning advances in 2026", tags=["ai"], source="test")
-        entry = memory.get(entry_id)
-        assert entry is not None
-        assert entry["entry_id"] == entry_id
-        assert entry["content"] == "Deep learning advances in 2026"
-        assert "ai" in entry["tags"]
-
-    def test_upsert_inserts_new(self, memory):
-        result = memory.upsert(content="New knowledge", tags=["test"], source="test")
-        assert result["action"] == "inserted"
-        assert "entry_id" in result
-
-    def test_delete(self, memory):
-        entry_id = memory.add("To be deleted", source="test")
-        assert memory.delete(entry_id) is True
-        assert memory.get(entry_id) is None
-
-    def test_search_by_tags(self, memory):
-        memory.add("AI knowledge", tags=["ai", "ml"], source="test")
-        memory.add("Finance knowledge", tags=["finance"], source="test")
-        results = memory.search_by_tags(["ai"])
-        assert len(results) == 1
-        assert "ai" in results[0]["tags"]
-
-    def test_touch_updates_relevance(self, memory):
-        entry_id = memory.add("Touchable entry", source="test")
-        memory.touch(entry_id)
-        entry = memory.get(entry_id)
-        assert entry is not None
-
-    def test_decay_all(self, memory):
-        memory.add("Entry 1", source="test")
-        memory.add("Entry 2", source="test")
-        decayed = memory.decay_all()
-        assert decayed >= 0
-
-    def test_distill(self, memory):
-        memory.add("Entry for distill", source="test")
-        result = memory.distill()
-        assert "decayed" in result
-        assert "evicted" in result
-
-    def test_snapshot_structure(self, memory):
-        memory.add("Snapshot entry", source="test")
-        snap = memory.snapshot()
-        assert "entries" in snap
-        assert "exported_utc" in snap
-
-    def test_stats(self, memory):
-        memory.add("Stats entry", tags=["test"], source="test")
-        stats = memory.stats()
-        assert stats["total_entries"] >= 1
-        assert "with_embedding" in stats
-        assert "capacity_limit" in stats
+@pytest.fixture
+def instinct_engine(psyche_dir):
+    (psyche_dir / "instinct.md").write_text("# Test instinct rules\n")
+    return InstinctEngine(psyche_dir)
 
 
-# -- Lore Psyche ---------------------------------------------------------------
-
-class TestLorePsyche:
-    def test_record_basic(self, lore):
-        record_id = lore.record(
-            deed_id="deed_001",
-            objective_text="Test research report",
-            dag_budget=6,
-            move_count=4,
-            plan_structure={"moves": ["scout", "sage", "arbiter", "scribe"]},
-            offering_quality={"quality_score": 0.85},
-            token_consumption={"minimax": 5000},
-            success=True,
-            duration_s=300.0,
-        )
-        assert record_id.startswith("pb_") or record_id
-
-    def test_record_and_get(self, lore):
-        lore.record(
-            deed_id="deed_002",
-            objective_text="Deep analysis task",
-            dag_budget=8,
-            move_count=3,
-            plan_structure={"moves": ["sage", "arbiter", "scribe"]},
-            offering_quality={"quality_score": 0.90},
-            token_consumption={},
-            success=True,
-            duration_s=200.0,
-        )
-        rec = lore.get("deed_002")
-        assert rec is not None
-        assert rec["objective_text"] == "Deep analysis task"
-        assert rec["dag_budget"] == 8
-        assert rec["success"] == 1 or rec["success"] is True
-
-    def test_consult_returns_relevant(self, lore):
-        for i in range(3):
-            lore.record(
-                deed_id=f"deed_c{i}",
-                objective_text=f"Research topic {i}",
-                dag_budget=6,
-                move_count=4,
-                plan_structure={"moves": ["scout", "sage"]},
-                offering_quality={"quality_score": 0.80 + i * 0.05},
-                token_consumption={},
-                success=True,
-                duration_s=300.0,
-            )
-        results = lore.consult(dag_budget=6, top_k=5)
-        assert len(results) >= 1
-
-    def test_consult_filters_by_dag_budget(self, lore):
-        lore.record(
-            deed_id="deed_small",
-            objective_text="Quick task",
-            dag_budget=3,
-            move_count=1,
-            plan_structure={"moves": ["scribe"]},
-            offering_quality={"quality_score": 0.9},
-            token_consumption={},
-            success=True,
-            duration_s=60.0,
-        )
-        lore.record(
-            deed_id="deed_large",
-            objective_text="Standard task",
-            dag_budget=7,
-            move_count=4,
-            plan_structure={"moves": ["scout", "sage", "arbiter", "scribe"]},
-            offering_quality={"quality_score": 0.85},
-            token_consumption={},
-            success=True,
-            duration_s=300.0,
-        )
-        small_results = lore.consult(dag_budget=3, top_k=10)
-        assert all(r.get("dag_budget") == 3 for r in small_results)
-
-    def test_update_feedback(self, lore):
-        lore.record(
-            deed_id="deed_fb",
-            objective_text="Feedback test",
-            dag_budget=6,
-            move_count=2,
-            plan_structure={},
-            offering_quality={},
-            token_consumption={},
-            success=True,
-            duration_s=100.0,
-        )
-        updated = lore.update_feedback("deed_fb", {"rating": 5, "comment": "Great"})
-        assert updated is True
-        rec = lore.get("deed_fb")
-        fb = json.loads(rec["user_feedback"]) if isinstance(rec["user_feedback"], str) else rec["user_feedback"]
-        assert fb["rating"] == 5
-
-    def test_snapshot(self, lore):
-        lore.record(
-            deed_id="deed_snap",
-            objective_text="Snapshot test",
-            dag_budget=2,
-            move_count=1,
-            plan_structure={},
-            offering_quality={},
-            token_consumption={},
-            success=True,
-            duration_s=50.0,
-        )
-        snap = lore.snapshot()
-        assert "records" in snap
-        assert "exported_utc" in snap
-
-    def test_stats(self, lore):
-        lore.record(
-            deed_id="deed_st",
-            objective_text="Stats test",
-            dag_budget=6,
-            move_count=3,
-            plan_structure={},
-            offering_quality={},
-            token_consumption={},
-            success=True,
-            duration_s=200.0,
-        )
-        stats = lore.stats()
-        assert stats["total_records"] >= 1
-        assert stats["by_dag_budget"]["6"] >= 1
+@pytest.fixture
+def source_cache(tmp_path):
+    return SourceCache(tmp_path / "source_cache.db")
 
 
-# -- Instinct Psyche -----------------------------------------------------------
+# -- PsycheConfig --------------------------------------------------------------
 
-class TestInstinctPsyche:
-    def test_self_seeds_defaults(self, instinct):
-        prefs = instinct.all_prefs()
-        assert len(prefs) > 0
-        assert "require_bilingual" in prefs
+class TestPsycheConfig:
+    def test_get_pref(self, config):
+        assert config.get_pref("general.default_depth") == "study"
 
-    def test_set_get_pref(self, instinct):
-        instinct.set_pref("output_language", "zh", source="test", changed_by="test")
-        assert instinct.get_pref("output_language") == "zh"
-        assert instinct.get_pref("missing_key", "default") == "default"
+    def test_get_pref_flat_key(self, config):
+        # Flat key lookup should search all sections
+        assert config.get_pref("default_depth") == "study"
 
-    def test_pref_upsert(self, instinct):
-        instinct.set_pref("test_key", "v1", changed_by="test")
-        instinct.set_pref("test_key", "v2", changed_by="test")
-        assert instinct.get_pref("test_key") == "v2"
+    def test_get_pref_default(self, config):
+        assert config.get_pref("nonexistent", "fallback") == "fallback"
 
-    def test_all_prefs(self, instinct):
-        instinct.set_pref("custom_pref", "value", changed_by="test")
-        prefs = instinct.all_prefs()
-        assert "custom_pref" in prefs
-        assert prefs["custom_pref"] == "value"
+    def test_set_pref(self, config):
+        config.set_pref("general.test_key", "test_val", source="test", changed_by="test")
+        assert config.get_pref("general.test_key") == "test_val"
 
-    def test_all_prefs_detailed(self, instinct):
-        instinct.set_pref("detail_key", "detail_val", changed_by="test")
-        detailed = instinct.all_prefs_detailed()
-        assert isinstance(detailed, list)
-        assert any(p["pref_key"] == "detail_key" for p in detailed)
+    def test_all_prefs(self, config):
+        prefs = config.all_prefs()
+        assert isinstance(prefs, dict)
+        assert "require_bilingual" in prefs or "general.require_bilingual" in str(prefs)
 
-    def test_ration_consume(self, instinct):
-        instinct.set_ration("openai_tokens", 1000, changed_by="test")
-        assert instinct.consume_ration("openai_tokens", 500) is True
-        assert instinct.consume_ration("openai_tokens", 600) is False  # Would exceed
+    def test_get_ration(self, config):
+        ration = config.get_ration("minimax_tokens")
+        assert ration is not None
 
-    def test_ration_unknown_resource(self, instinct):
-        assert instinct.consume_ration("nonexistent", 999) is True
+    def test_consume_ration(self, config):
+        ok = config.consume_ration("minimax_tokens", 1000)
+        assert ok is True
 
-    def test_all_rations(self, instinct):
-        rations = instinct.all_rations()
+    def test_all_rations(self, config):
+        rations = config.all_rations()
         assert isinstance(rations, list)
 
-    def test_set_ration(self, instinct):
-        instinct.set_ration("test_tokens", 5000, changed_by="test")
-        ration = instinct.get_ration("test_tokens")
-        assert ration is not None
-        assert ration["daily_limit"] == 5000
+    def test_snapshot(self, config):
+        snap = config.snapshot()
+        assert "preferences" in snap or "prefs" in snap
 
-    def test_config_versioning(self, instinct):
-        instinct.set_pref("versioned_key", "v1", changed_by="test")
-        instinct.set_pref("versioned_key", "v2", changed_by="test")
-        versions = instinct.versions("pref.versioned_key")
-        assert len(versions) >= 2
 
-    def test_rollback(self, instinct):
-        instinct.set_pref("rollback_key", "initial", changed_by="test")
-        instinct.set_pref("rollback_key", "updated", changed_by="test")
-        instinct.rollback("pref.rollback_key", 1, changed_by="test")
-        assert instinct.get_pref("rollback_key") == "initial"
+# -- LedgerStats ---------------------------------------------------------------
 
-    def test_snapshot(self, instinct):
-        snap = instinct.snapshot()
-        assert "preferences" in snap
-        assert "rations" in snap
-        assert "exported_utc" in snap
+class TestLedgerStats:
+    def test_merge_dag_template(self, ledger):
+        ledger.merge_dag_template(
+            objective_text="Test research report",
+            objective_emb=None,
+            dag_structure={"agents": ["scout", "sage"], "dag_budget": 6},
+            eval_summary="",
+            total_tokens=1000,
+            total_duration_s=10.0,
+            rework_count=0,
+        )
+        hints = ledger.global_planning_hints()
+        assert hints.get("dag_template_count", 0) >= 1
+
+    def test_update_skill_stats(self, ledger):
+        ledger.update_skill_stats("brave_search", success=True, tokens_used=500, elapsed_s=2.0)
+        hints = ledger.global_planning_hints()
+        assert hints is not None
+
+    def test_update_agent_stats(self, ledger):
+        ledger.update_agent_stats("scout", success=True, tokens_used=3000, elapsed_s=30.0)
+        summary = ledger.agent_summary("scout")
+        assert summary is not None
+
+    def test_recent_deeds(self, ledger):
+        deeds = ledger.recent_deeds(limit=10)
+        assert isinstance(deeds, list)
+
+
+# -- InstinctEngine ------------------------------------------------------------
+
+class TestInstinctEngine:
+    def test_prompt_fragment(self, instinct_engine):
+        fragment = instinct_engine.prompt_fragment()
+        assert isinstance(fragment, str)
+
+    def test_check_outbound_query(self, instinct_engine):
+        ok, reason = instinct_engine.check_outbound_query("normal research query")
+        assert ok is True
+
+    def test_check_output(self, instinct_engine):
+        ok, reason = instinct_engine.check_output("normal output text")
+        assert ok is True
+
+
+# -- SourceCache ---------------------------------------------------------------
+
+class TestSourceCache:
+    def test_store_and_stats(self, source_cache):
+        source_cache.store(
+            source_url="https://example.com",
+            content="Test content",
+            tier="tier_a",
+            embedding=[],
+        )
+        stats = source_cache.stats()
+        assert stats.get("total", 0) >= 1
+
+    def test_expire(self, source_cache):
+        expired = source_cache.expire(max_age_days=0)
+        assert isinstance(expired, int)

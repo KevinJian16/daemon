@@ -1,0 +1,14 @@
+[tier_a]
+# 高可信：学术数据库、官方文档
+sources = ["arxiv", "semantic_scholar", "github_official_docs"]
+verify_required = false
+
+[tier_b]
+# 中可信：主流媒体、Wikipedia、知名技术博客
+sources = ["wikipedia", "mdn", "techcrunch"]
+verify_required = "cross_check"
+
+[tier_c]
+# 低可信：论坛、社交媒体、匿名来源
+sources = ["reddit", "stackoverflow_comments", "unknown"]
+verify_required = "mandatory"

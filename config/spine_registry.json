@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "routines": {
     "spine.pulse": {
       "mode": "deterministic",
@@ -17,57 +17,37 @@
       "timeout_s": 120,
       "nerve_triggers": ["deed_closed", "herald_completed"],
       "reads": ["state:trails"],
-      "writes": ["psyche:lore:evaluations", "psyche:memory:usage", "state:trails:summary"],
+      "writes": ["psyche:ledger:dag_templates", "psyche:ledger:skill_stats", "psyche:ledger:agent_stats"],
       "depends_on": [],
       "degraded_mode": null
     },
     "spine.witness": {
-      "mode": "hybrid",
-      "schedule": "adaptive:4h:2h-12h",
-      "timeout_s": 900,
+      "mode": "deterministic",
+      "schedule": "0 */6 * * *",
+      "timeout_s": 300,
       "nerve_triggers": [],
-      "reads": ["state:deeds", "state:trails", "psyche:memory:stats", "psyche:lore:stats", "psyche:lore:evaluations:unanalyzed"],
-      "writes": ["psyche:memory:observations", "psyche:instinct:attention_signals"],
+      "reads": ["psyche:ledger:stats"],
+      "writes": ["state:system_health"],
       "depends_on": ["spine.record"],
-      "degraded_mode": "stats_only"
-    },
-    "spine.learn": {
-      "mode": "hybrid",
-      "schedule": "adaptive:4h30m:2h30m-12h30m",
-      "timeout_s": 1200,
-      "nerve_triggers": ["deed_closed"],
-      "reads": ["state:deeds", "state:trails", "psyche:lore:active", "psyche:memory:observations"],
-      "writes": ["psyche:lore:candidates", "state:skill_evolution_proposals"],
-      "depends_on": ["spine.witness"],
-      "degraded_mode": "skip"
-    },
-    "spine.distill": {
-      "mode": "hybrid",
-      "schedule": "30 4 * * *",
-      "timeout_s": 900,
-      "nerve_triggers": ["psyche_updated"],
-      "reads": ["psyche:memory:units"],
-      "writes": ["psyche:memory:units", "psyche:memory:links"],
-      "depends_on": ["spine.learn"],
-      "degraded_mode": "string_match_only"
+      "degraded_mode": null
     },
     "spine.focus": {
-      "mode": "hybrid",
+      "mode": "deterministic",
       "schedule": "0 6 * * 1",
-      "timeout_s": 900,
-      "nerve_triggers": ["attention_critical"],
-      "reads": ["psyche:instinct:attention_signals", "psyche:memory:stats", "psyche:lore:stats"],
-      "writes": ["psyche:instinct:priorities", "psyche:instinct:resource_rations"],
+      "timeout_s": 300,
+      "nerve_triggers": [],
+      "reads": ["psyche:ledger:stats", "state:deeds"],
+      "writes": [],
       "depends_on": ["spine.witness"],
-      "degraded_mode": "no_adjustment"
+      "degraded_mode": null
     },
     "spine.relay": {
       "mode": "deterministic",
       "schedule": "0 */4 * * *",
       "timeout_s": 300,
-      "nerve_triggers": ["psyche_updated"],
-      "reads": ["psyche:memory", "psyche:lore", "psyche:instinct"],
-      "writes": ["state:snapshots", "openclaw:skill_index"],
+      "nerve_triggers": ["config_updated"],
+      "reads": ["psyche:config", "psyche:ledger"],
+      "writes": ["state:snapshots"],
       "depends_on": [],
       "degraded_mode": null
     },
@@ -76,8 +56,8 @@
       "schedule": "0 3 * * *",
       "timeout_s": 1800,
       "nerve_triggers": ["ward_changed"],
-      "reads": ["state", "psyche:memory", "psyche:lore", "openclaw:sessions"],
-      "writes": ["state", "psyche:memory:gc", "psyche:lore:gc", "openclaw:sessions:gc"],
+      "reads": ["state", "psyche:config"],
+      "writes": ["state", "psyche:config:rations"],
       "depends_on": [],
       "degraded_mode": null
     },
@@ -85,10 +65,10 @@
       "mode": "deterministic",
       "schedule": "0 2 * * 0",
       "timeout_s": 1800,
-      "nerve_triggers": ["design_pressure", "memory_pressure"],
-      "reads": ["psyche:lore:methods", "openclaw:design_patterns"],
-      "writes": ["psyche:lore:methods:tiers", "openclaw:design_patterns:gc"],
-      "depends_on": ["spine.distill"],
+      "nerve_triggers": [],
+      "reads": ["state:deeds", "state:vault"],
+      "writes": ["state:vault"],
+      "depends_on": [],
       "degraded_mode": null
     }
   }

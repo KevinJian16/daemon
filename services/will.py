@@ -13,8 +13,7 @@ from runtime.brief import Brief, SINGLE_SLIP_DEFAULTS
 from services.ledger import Ledger
 
 if TYPE_CHECKING:
-    from psyche.instinct import InstinctPsyche
-    from psyche.lore import LorePsyche
+    from psyche.config import PsycheConfig
     from runtime.cortex import Cortex
     from spine.nerve import Nerve
 
@@ -34,8 +33,7 @@ logger = logging.getLogger(__name__)
 class Will:
     def __init__(
         self,
-        lore: "LorePsyche",
-        instinct: "InstinctPsyche",
+        config: "PsycheConfig",
         nerve: "Nerve",
         state_dir: Path,
         temporal_client=None,
@@ -43,8 +41,7 @@ class Will:
         cortex: "Cortex | None" = None,
         folio_writ_manager: Any | None = None,
     ) -> None:
-        self._lore = lore
-        self._instinct = instinct
+        self._instinct = config
         self._nerve = nerve
         self._state = state_dir
         self._ledger = Ledger(state_dir)

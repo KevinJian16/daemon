@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
-from psyche.memory import MemoryPsyche
-from psyche.lore import LorePsyche
-from psyche.instinct import InstinctPsyche
+from psyche.config import PsycheConfig
+from psyche.ledger_stats import LedgerStats
+from psyche.instinct_engine import InstinctEngine
 from spine.nerve import Nerve
 from spine.trail import Trail
 from spine.canon import SpineCanon
@@ -43,6 +43,7 @@ from services.api_routes.console_agents_skill import register_console_agents_ski
 from services.api_routes.console_observe import register_console_observe_routes
 from services.api_routes.console_rations import register_console_rations_routes
 from services.api_routes.console_runtime import register_console_runtime_routes
+from services.api_routes.console_psyche import register_console_psyche_routes
 from services.api_routes.console_spine import register_console_spine_routes
 from services.cadence import Cadence
 from services.ledger import Ledger
@@ -111,33 +112,33 @@ def create_app() -> FastAPI:
     state = home / "state"
     ledger = Ledger(state)
 
-    # Initialize Psyche.
+    # Initialize Psyche (new architecture: PsycheConfig + LedgerStats + InstinctEngine).
     psyche_dir = state / "psyche"
     psyche_dir.mkdir(parents=True, exist_ok=True)
-    memory = MemoryPsyche(psyche_dir / "memory.db")
-    lore = LorePsyche(psyche_dir / "lore.db")
-    instinct = InstinctPsyche(psyche_dir / "instinct.db")
+    psyche_config = PsycheConfig(home / "psyche")
+    ledger_stats = LedgerStats(psyche_dir / "ledger.db")
+    instinct_engine = InstinctEngine(home / "psyche")
 
     # Initialize infrastructure.
-    cortex = Cortex(instinct)
+    cortex = Cortex(psyche_config)
     nerve = Nerve()
     trail = Trail(state / "trails")
-    if not str(instinct.get_pref("eval_window_hours", "") or "").strip():
-        instinct.set_pref("eval_window_hours", "48", source="system", changed_by="bootstrap")
+    if not str(psyche_config.get_pref("eval_window_hours", "") or "").strip():
+        psyche_config.set_pref("eval_window_hours", "48", source="system", changed_by="bootstrap")
 
     # Initialize Spine.
     registry_path = home / "config" / "spine_registry.json"
     canon = SpineCanon(registry_path)
     routines = SpineRoutines(
-        memory=memory, lore=lore, instinct=instinct,
+        psyche_config=psyche_config, ledger_stats=ledger_stats, instinct_engine=instinct_engine,
         cortex=cortex, nerve=nerve, trail=trail,
         daemon_home=home, openclaw_home=oc_home,
     )
     # Initialize Services.
     folio_writ = FolioWritManager(state_dir=state, nerve=nerve, ledger=ledger)
-    will = Will(lore, instinct, nerve, state, cortex=cortex, folio_writ_manager=folio_writ)
-    cadence = Cadence(canon, routines, instinct, nerve, state, will=will)
-    voice = VoiceService(instinct, oc_home, folio_writ_manager=folio_writ, cortex=cortex, lore=lore)
+    will = Will(psyche_config, nerve, state, cortex=cortex, folio_writ_manager=folio_writ)
+    cadence = Cadence(canon, routines, psyche_config, nerve, state, will=will)
+    voice = VoiceService(psyche_config, oc_home, folio_writ_manager=folio_writ, cortex=cortex)
     reset_manager = SystemResetManager(home)
     ether = Ether(state, source="api")
     telemetry_dir = state / "telemetry"
@@ -363,30 +364,6 @@ p{
                     for evt in events:
                         payload = evt.get("payload") if isinstance(evt.get("payload"), dict) else {}
                         event_name = str(evt.get("event") or "")
-                        if event_name == "feedback_survey_generated":
-                            deed_id = str(payload.get("deed_id") or "")
-                            if deed_id:
-                                survey = dict(payload)
-                                survey.setdefault("status", "pending")
-                                survey.setdefault("created_utc", _utc())
-                                _save_feedback_survey(deed_id, survey)
-                                _append_jsonl(
-                                    telemetry_dir / "feedback_surveys.jsonl",
-                                    {"deed_id": deed_id, "event": "generated", "payload": survey, "created_utc": _utc()},
-                                )
-                                try:
-                                    notify_result = await _notify_feedback_survey_telegram(survey)
-                                    _append_jsonl(
-                                        telemetry_dir / "feedback_surveys.jsonl",
-                                        {
-                                            "deed_id": deed_id,
-                                            "event": "telegram_notified",
-                                            "result": notify_result,
-                                            "created_utc": _utc(),
-                                        },
-                                    )
-                                except Exception as exc:
-                                    logger.warning("Feedback survey telegram notify error: %s", exc)
                         if event_name in {
                             "deed_settling",
                             "deed_closed",
@@ -682,25 +659,6 @@ p{
         except Exception as exc:
             logger.warning("Telegram adapter notify failed event=%s: %s", event, exc)
             return {"sent": 0, "skipped": True, "reason": f"adapter_error:{str(exc)[:120]}"}
-
-    async def _notify_feedback_survey_telegram(payload: dict) -> dict:
-        if os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() == "":
-            return {"sent": 0, "skipped": True}
-        deed_id = str(payload.get("deed_id") or "")
-        if deed_id:
-            survey = _load_feedback_survey(deed_id)
-            if isinstance(survey, dict):
-                if str(survey.get("status") or "") == "submitted" and str(survey.get("handled_channel") or "") == "portal":
-                    return {"sent": 0, "skipped": True, "reason": "handled_by_portal"}
-        return await _notify_via_adapter(
-            "feedback_survey",
-            {
-                "deed_id": deed_id,
-                "slip_id": str(payload.get("slip_id") or ""),
-                "folio_id": str(payload.get("folio_id") or ""),
-                "deed_title": str(payload.get("title") or deed_id),
-            },
-        )
 
     def _render_template_value(value: Any, ctx: dict[str, Any]) -> Any:
         if isinstance(value, str):
@@ -1215,6 +1173,8 @@ p{
         nerve=nerve,
         cortex=cortex,
         instinct=instinct,
+        psyche_config=psyche_config,
+        ledger_stats=ledger_stats,
         oc_home=oc_home,
         logger=logger,
         model_policy_path=model_policy_path,
@@ -1249,6 +1209,7 @@ p{
     register_console_observe_routes(app, ctx=route_ctx)
     register_console_agents_skill_routes(app, ctx=route_ctx)
     register_console_rations_routes(app, ctx=route_ctx)
+    register_console_psyche_routes(app, ctx=route_ctx)
     register_console_spine_routes(app, ctx=route_ctx)
 
     @app.websocket("/ws")
@@ -1269,117 +1230,6 @@ p{
             ws_hub.disconnect(ws)
 
     # ── User feedback (Portal) ────────────────────────────────────────────────
-
-    async def _get_feedback_questions(deed_id: str):
-        """Generate deed-specific feedback questions via Cortex (LLM).
-        Falls back to a minimal default set if Cortex is unavailable.
-        """
-        # Load deed context.
-        deed_record: dict = {}
-        try:
-            deed_record = ledger.get_deed(deed_id) or {}
-        except Exception:
-            pass
-
-        plan = deed_record.get("plan") or {}
-        brief = plan.get("brief") or {}
-        metadata = plan.get("metadata") if isinstance(plan.get("metadata"), dict) else {}
-        title = str(plan.get("slip_title") or plan.get("title") or brief.get("objective", "") or deed_id)
-        dag_budget = int(
-            brief.get("dag_budget")
-            or metadata.get("dag_budget")
-            or plan.get("dag_budget")
-            or len(plan.get("moves") or [])
-            or 1
-        )
-
-        # Load offering content snippet.
-        content_snippet = ""
-        try:
-            offering_root = _require_offering_root()
-            index = ledger.load_herald_log()
-            entry = next((e for e in reversed(index) if e.get("deed_id") == deed_id), None)
-            if entry:
-                out_path = offering_root / str(entry["path"])
-                for fname in ("report.md", "report.html"):
-                    p = out_path / fname
-                    if p.exists():
-                        raw = p.read_text(encoding="utf-8", errors="ignore")
-                        if fname.endswith(".html"):
-                            import re as _re
-                            raw = _re.sub(r"<[^>]+>", " ", raw)
-                        content_snippet = raw[:800].strip()
-                        break
-        except Exception:
-            pass
-
-        _DEFAULT_QUESTIONS = [
-            {
-                "key": "overall", "isRating": True,
-                "q": "整体来看，这份产出如何？",
-                "opts": [
-                    {"label": "非常满意", "val": 5, "desc": "超出预期，可以直接使用"},
-                    {"label": "基本满意", "val": 4, "desc": "符合需求，稍作打磨即可"},
-                    {"label": "一般",     "val": 3, "desc": "方向正确，但内容有待改进"},
-                    {"label": "不满意",   "val": 1, "desc": "与预期差距较大，需要重做"},
-                ],
-            },
-            {
-                "key": "depth",
-                "q": "内容深度如何？",
-                "opts": [
-                    {"label": "深度恰当",   "val": 1.0, "desc": "详略得当，信息密度合适"},
-                    {"label": "太浅",       "val": 0.2, "desc": "缺少分析或细节"},
-                    {"label": "太冗长",     "val": 0.6, "desc": "内容偏多，核心不突出"},
-                ],
-            },
-            {
-                "key": "relevance",
-                "q": "内容是否切合你的实际需求？",
-                "opts": [
-                    {"label": "非常切合", "val": 1.0, "desc": "准确理解并回应了我的意图"},
-                    {"label": "部分偏差", "val": 0.5, "desc": "主干对路，但细节有偏离"},
-                    {"label": "理解有误", "val": 0.1, "desc": "没有抓住我真正想要的"},
-                ],
-            },
-        ]
-
-        if not cortex or not cortex.is_available():
-            return _DEFAULT_QUESTIONS
-
-        prompt = (
-            "你是一个AI产出评估专家。根据以下运行信息，生成3-4个针对性反馈问题。\n\n"
-            f"签札计划步数预算: {dag_budget}\n"
-            f"运行标题: {title}\n"
-        )
-        if content_snippet:
-            prompt += f"内容摘要（前800字）:\n{content_snippet}\n\n"
-        prompt += (
-            "要求：\n"
-            "1. 第一个问题必须是整体满意度（key=\"overall\", isRating=true），选项val为整数1-5\n"
-            "2. 其余2-3个问题根据这份产出的具体内容和计划规模量身定制，不要用泛泛的通用问题\n"
-            "3. 每个问题3-4个选项，其余问题val为0.0-1.0的小数\n"
-            "4. 所有问题和选项必须用中文\n"
-            "5. 仅返回JSON数组，不要解释或其他内容\n\n"
-            "格式：\n"
-            '[{"key":"overall","isRating":true,"q":"...","opts":[{"label":"...","val":5,"desc":"..."},...]},'
-            '{"key":"unique_key","q":"...","opts":[{"label":"...","val":1.0,"desc":"..."},...]}]'
-        )
-
-        try:
-            raw = (cortex.complete(prompt, max_tokens=800) or "").strip()
-            # Extract JSON array from response.
-            import re as _re
-            m = _re.search(r"\[[\s\S]*\]", raw)
-            if m:
-                questions = json.loads(m.group(0))
-                # Validate minimal structure.
-                if isinstance(questions, list) and questions:
-                    return questions
-        except Exception as exc:
-            logger.warning("Feedback question generation failed: %s", exc)
-
-        return _DEFAULT_QUESTIONS
 
     async def _submit_feedback_internal(deed_id: str, body: dict, request: Request | None = None) -> dict:
         source = str(body.get("source") or "portal")
@@ -1615,7 +1465,6 @@ p{
     feedback_ctx = type("FeedbackRouteContext", (), {})()
     feedback_ctx.pending_feedback_surveys = _pending_feedback_surveys
     feedback_ctx.feedback_state = _feedback_state
-    feedback_ctx.get_feedback_questions = _get_feedback_questions
     feedback_ctx.submit_feedback_internal = _submit_feedback_internal
     register_feedback_routes(app, ctx=feedback_ctx)
 

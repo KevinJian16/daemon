@@ -16,7 +16,7 @@ from spine.pact import PactError, check_pact
 from services.ledger import Ledger
 
 if TYPE_CHECKING:
-    from psyche.instinct import InstinctPsyche
+    from psyche.config import PsycheConfig
     from services.will import Will
     from spine.nerve import Nerve
     from spine.canon import SpineCanon
@@ -32,14 +32,14 @@ class Cadence:
         self,
         canon: "SpineCanon",
         routines: "SpineRoutines",
-        instinct: "InstinctPsyche",
+        config: "PsycheConfig",
         nerve: "Nerve",
         state_dir: Path,
         will: "Will | None" = None,
     ) -> None:
         self._canon = canon
         self._routines = routines
-        self._instinct = instinct
+        self._instinct = config
         self._nerve = nerve
         self._state = state_dir
         self._will = will
@@ -170,9 +170,6 @@ class Cadence:
                     "deed_id": deed_id,
                 }
             return routine_method(deed_id=deed_id, plan=plan, move_results=move_results, offering=offering)
-        if routine_method_name == "learn":
-            payload = payload or {}
-            return routine_method(deed_id=str(payload.get("deed_id") or "") or None)
         return routine_method()
 
     def _invoke_with_timeout(
@@ -255,9 +252,9 @@ class Cadence:
             "daemon_home": self._state.parent,
             "state_dir": self._state,
             "psyche": {
-                "memory": getattr(self._routines, "memory", None),
-                "lore": getattr(self._routines, "lore", None),
-                "instinct": getattr(self._routines, "instinct", None),
+                "config": getattr(self._routines, "psyche_config", None),
+                "ledger_stats": getattr(self._routines, "ledger_stats", None),
+                "instinct_engine": getattr(self._routines, "instinct_engine", None),
             },
         }
 

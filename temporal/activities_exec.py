@@ -220,9 +220,9 @@ async def run_direct_move(self, deed_root: str, plan: dict, move: dict) -> dict:
 
 
 async def run_spine_routine(self, deed_root: str, plan: dict, routine_name: str) -> dict:
-    from psyche.memory import MemoryPsyche
-    from psyche.lore import LorePsyche
-    from psyche.instinct import InstinctPsyche
+    from psyche.config import PsycheConfig
+    from psyche.ledger_stats import LedgerStats
+    from psyche.instinct_engine import InstinctEngine
     from runtime.cortex import Cortex
     from spine.nerve import Nerve
     from spine.trail import Trail
@@ -231,15 +231,15 @@ async def run_spine_routine(self, deed_root: str, plan: dict, routine_name: str)
     home = self._home
     state = home / "state"
     psyche_dir = state / "psyche"
-    memory = MemoryPsyche(psyche_dir / "memory.db")
-    lore = LorePsyche(psyche_dir / "lore.db")
-    instinct = InstinctPsyche(psyche_dir / "instinct.db")
-    cortex = Cortex(instinct)
+    psyche_config = PsycheConfig(home / "psyche")
+    ledger_stats = LedgerStats(psyche_dir / "ledger.db")
+    instinct_engine = InstinctEngine(home / "psyche")
+    cortex = Cortex(psyche_config)
     nerve = Nerve()
     trail = Trail(state / "trails")
 
     routines = SpineRoutines(
-        memory=memory, lore=lore, instinct=instinct,
+        psyche_config=psyche_config, ledger_stats=ledger_stats, instinct_engine=instinct_engine,
         cortex=cortex, nerve=nerve, trail=trail,
         daemon_home=home, openclaw_home=self._oc_home,
     )

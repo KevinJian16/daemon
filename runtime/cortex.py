@@ -56,9 +56,9 @@ class CortexError(Exception):
 class Cortex:
     """Unified LLM access layer. Manages provider selection, fallback, token metering, degradation."""
 
-    def __init__(self, instinct=None, usage_path: Path | None = None) -> None:
-        # instinct: Instinct | None — if provided, reads dynamic routing strategy.
-        self._instinct = instinct
+    def __init__(self, config=None, usage_path: Path | None = None) -> None:
+        # config: PsycheConfig | None — if provided, reads dynamic routing strategy and rations.
+        self._instinct = config
         self._usage: list[dict] = []
         self._clients: dict[str, Any] = {}
         self._usage_path = usage_path or self._default_usage_path()
