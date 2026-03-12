@@ -1,235 +1,264 @@
+import { FileText, FolderOpen, GripVertical, House, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useOutletContext, useParams } from "react-router-dom";
+import ConversationDock from "./ConversationDock";
+import DraftTray from "./DraftTray";
+import { FolioBoard } from "./PortalGraphs";
 import {
-  ChevronDown,
-  ChevronUp,
-  GripVertical,
-  Layers3,
-  Link2,
-  Loader2,
-  Rows3,
-} from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import Composer from "./Composer";
-import { getFolio, reorderFolio } from "../lib/api";
-import { cx, deedStatusLabel, formatDateTime, shortText } from "../lib/format";
+  adoptSlipToFolio,
+  createVoiceSession,
+  getFolio,
+  reorderFolioByPair,
+  sendVoiceMessage,
+  takeOutSlip,
+  updateDraft,
+} from "../lib/api";
 
-function SurfaceCard({ children, className = "" }) {
-  return (
-    <div className={cx("rounded-[1.35rem] border border-[rgba(0,0,0,0.06)] bg-white shadow-claude", className)}>
-      {children}
-    </div>
-  );
+function collectDeskSlips(sidebar) {
+  const rows = [...(sidebar?.pending || []), ...(sidebar?.live || []), ...(sidebar?.recent || [])]
+    .filter((row) => row && typeof row === "object" && !row.folio)
+    .sort((left, right) => new Date(right.updated_utc || 0).getTime() - new Date(left.updated_utc || 0).getTime());
+  const seen = new Set();
+  return rows.filter((row) => {
+    const key = String(row.id || row.slug || "");
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
-function FocusSlipCard({ slip }) {
-  const navigate = useNavigate();
-  if (!slip) {
-    return (
-      <SurfaceCard className="p-6">
-        <h2 className="portal-serif text-[1.4rem] text-[#1a1a18]">当前焦点签札</h2>
-        <p className="mt-3 text-sm leading-6 text-[#6b6a68]">卷里还没有签札，所以这里暂时为空。</p>
-      </SurfaceCard>
-    );
-  }
+function prefixVoiceMessage(folioTitle, text) {
+  const clean = String(text || "").trim();
+  if (!clean) return "";
+  return `围绕卷《${folioTitle}》新增一件事：${clean}`;
+}
 
+function LooseSlipStrip({ slips, draggingSlipSlug, onDragStart, onDragEnd }) {
+  if (!slips.length) return null;
   return (
-    <SurfaceCard className="overflow-hidden">
-      <div className="border-b border-[rgba(0,0,0,0.06)] px-6 py-5">
-        <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">Focus Slip</div>
-        <h2 className="portal-serif mt-2 text-[1.55rem] leading-8 text-[#1a1a18]">{slip.title}</h2>
-        <p className="mt-3 max-w-2xl text-sm leading-6 text-[#6b6a68]">{slip.objective || "这张签札还没有目标摘要。"}</p>
+    <div className="mt-4" data-testid="folio-loose-slip-strip">
+      <div className="mb-3 flex items-center gap-2 text-sm font-medium text-[#1a1a18]">
+        <FileText width={16} height={16} />
+        <span>卷外散札</span>
       </div>
-      <div className="flex flex-wrap items-center gap-4 px-6 py-5 text-sm">
-        <div>
-          <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">状态</div>
-          <div className="mt-2 font-medium text-[#1a1a18]">{deedStatusLabel(slip.deed?.status)}</div>
-        </div>
-        <div>
-          <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">结果</div>
-          <div className="mt-2 font-medium text-[#1a1a18]">{slip.result_ready ? "已产出" : "未产出"}</div>
-        </div>
-        <div>
-          <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">更新</div>
-          <div className="mt-2 font-medium text-[#1a1a18]">{formatDateTime(slip.updated_utc)}</div>
-        </div>
-        <button
-          type="button"
-          onClick={() => navigate(`/slips/${encodeURIComponent(slip.slug)}`)}
-          className="ml-auto inline-flex items-center gap-2 rounded-xl bg-[#ae5630] px-3 py-2 text-sm text-white transition hover:bg-[#c4633a]"
-        >
-          <Link2 width={15} height={15} />
-          打开签札
-        </button>
-      </div>
-    </SurfaceCard>
-  );
-}
-
-function ReadDeck({ slips, focusedId, onFocus }) {
-  const visible = slips.slice(0, 5);
-
-  return (
-    <div className="relative h-[320px]">
-      {visible.map((slip, index) => {
-        const isFocused = slip.id === focusedId;
-        const offset = index * 24;
-        const scale = isFocused ? 1 : Math.max(0.82, 1 - index * 0.04);
-        const zIndex = isFocused ? 30 : visible.length - index;
-        return (
-          <button
-            key={slip.id}
-            type="button"
-            onClick={() => onFocus(slip.id)}
-            className={cx(
-              "absolute left-1/2 w-full max-w-[42rem] -translate-x-1/2 rounded-[1.35rem] border px-5 py-5 text-left shadow-claude transition-all duration-300",
-              isFocused
-                ? "border-[rgba(0,0,0,0.1)] bg-white"
-                : "border-[rgba(0,0,0,0.06)] bg-[#f8f7f2] hover:bg-white",
-            )}
-            style={{
-              top: `${offset}px`,
-              transform: `translateX(-50%) scale(${scale})`,
-              zIndex,
-            }}
-          >
-            <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0">
-                <div className="truncate text-base font-medium text-[#1a1a18]">{slip.title}</div>
-                <div className="mt-2 line-clamp-2 text-sm leading-6 text-[#6b6a68]">{slip.objective || "没有目标摘要"}</div>
-              </div>
-              <div className="shrink-0 rounded-full bg-[#ece9df] px-2.5 py-1 text-[11px] text-[#6b6a68]">{deedStatusLabel(slip.deed?.status)}</div>
-            </div>
-            <div className="mt-4 flex items-center gap-3 text-xs text-[#8d8b84]">
-              <span>{slip.result_ready ? "有结果" : "无结果"}</span>
-              <span>·</span>
-              <span>{formatDateTime(slip.updated_utc)}</span>
-              {slip.cadence?.active ? (
-                <>
-                  <span>·</span>
-                  <span>节律中</span>
-                </>
-              ) : null}
-            </div>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function ArrangeDeck({ slips, onCommit }) {
-  const [draftOrder, setDraftOrder] = useState(slips);
-  const [draggingId, setDraggingId] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    setDraftOrder(slips);
-  }, [slips]);
-
-  const moveBefore = (targetId) => {
-    if (!draggingId || draggingId === targetId) return;
-    const current = [...draftOrder];
-    const dragIndex = current.findIndex((item) => item.id === draggingId);
-    const targetIndex = current.findIndex((item) => item.id === targetId);
-    if (dragIndex < 0 || targetIndex < 0) return;
-    const [dragged] = current.splice(dragIndex, 1);
-    current.splice(targetIndex, 0, dragged);
-    setDraftOrder(current);
-  };
-
-  const commitOrder = async () => {
-    setSaving(true);
-    try {
-      await onCommit(draftOrder.map((item) => item.id));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div>
-      <div className="space-y-2">
-        {draftOrder.map((slip) => (
+      <div className="flex gap-3 overflow-x-auto pb-2">
+        {slips.map((slip) => (
           <div
-            key={slip.id}
+            key={slip.id || slip.slug}
+            data-testid={`folio-loose-slip-${slip.slug}`}
             draggable
-            onDragStart={() => setDraggingId(slip.id)}
-            onDragOver={(event) => {
-              event.preventDefault();
-              moveBefore(slip.id);
-            }}
-            onDragEnd={() => setDraggingId("")}
-            className={cx(
-              "flex items-center gap-3 rounded-2xl border border-[rgba(0,0,0,0.06)] bg-white px-4 py-3 text-sm shadow-sm transition",
-              draggingId === slip.id && "opacity-70",
-            )}
+            onDragStart={(event) => onDragStart?.(event, slip)}
+            onDragEnd={() => onDragEnd?.()}
+            className="w-[11.6rem] shrink-0 rounded-[1.42rem] border border-[rgba(0,0,0,0.05)] bg-[#faf8f5] px-3.5 py-3 shadow-[0_10px_24px_rgba(41,41,41,0.05),0_1px_0_rgba(255,255,255,0.76)_inset,0_-1px_0_rgba(41,41,41,0.03)_inset] transition"
+            style={{ opacity: draggingSlipSlug === slip.slug ? 0.42 : 1, cursor: "grab" }}
           >
-            <GripVertical width={16} height={16} className="text-[#9a9893]" />
-            <div className="min-w-0 flex-1">
-              <div className="truncate font-medium text-[#1a1a18]">{slip.title}</div>
-              <div className="truncate text-xs text-[#6b6a68]">{shortText(slip.objective, 60)}</div>
+            <div className="flex min-h-[4.4rem] flex-col justify-between">
+              <span className="inline-flex h-2.5 w-2.5 rounded-full bg-[#adadad]" />
+              <div className="line-clamp-2 text-[13px] font-medium leading-[1.18] text-[#1a1a18]">{slip.title}</div>
             </div>
-            <div className="shrink-0 text-[11px] text-[#8d8b84]">{deedStatusLabel(slip.deed?.status)}</div>
           </div>
         ))}
       </div>
+    </div>
+  );
+}
 
-      <div className="mt-4 flex justify-end">
-        <button
-          type="button"
-          onClick={commitOrder}
-          disabled={saving}
-          className="rounded-xl bg-[#ae5630] px-3 py-2 text-sm text-white transition hover:bg-[#c4633a] disabled:opacity-50"
-        >
-          {saving ? "保存中…" : "提交卷内顺序"}
-        </button>
+function FolioBoardOverlay({ open, folio, onClose, onOpenSlip }) {
+  useEffect(() => {
+    if (!open) return undefined;
+    const handleKeydown = (event) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
+  }, [onClose, open]);
+
+  if (!open || !folio) return null;
+  return (
+    <div
+      data-testid="folio-board-overlay"
+      className="fixed inset-0 z-40 overflow-y-auto bg-[#F5F5F0]/96 backdrop-blur-sm"
+      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
+    >
+      <div className="mx-auto w-full max-w-[88rem] px-6 pb-10 pt-6">
+        <div className="px-1">
+          <div className="mb-4 flex items-center gap-2 text-sm font-medium text-[#1a1a18]">
+            <FolderOpen width={16} height={16} />
+            <span>{folio.title}</span>
+          </div>
+          <FolioBoard slips={folio.slips || []} writs={folio.writs || []} onSelectSlip={onOpenSlip} />
+        </div>
       </div>
     </div>
   );
 }
 
-export default function FolioPage({ onSidebarRefresh, onGap }) {
+export default function FolioPage() {
   const { folioSlug } = useParams();
+  const { sidebar, drafts, refreshSidebar, refreshDrafts, lastWsEvent } = useOutletContext();
   const decodedSlug = decodeURIComponent(folioSlug || "");
+  const navigate = useNavigate();
+
   const [folio, setFolio] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-  const [arrangeMode, setArrangeMode] = useState(false);
-  const [showAll, setShowAll] = useState(false);
-  const [focusedId, setFocusedId] = useState("");
+  const [expandedBoard, setExpandedBoard] = useState(false);
+  const [organizing, setOrganizing] = useState(false);
+  const [dragPayload, setDragPayload] = useState(null);
+  const [dropTargetSlug, setDropTargetSlug] = useState("");
+  const [boardDropActive, setBoardDropActive] = useState(false);
+  const [deskDropActive, setDeskDropActive] = useState(false);
+  const [selectedDraftId, setSelectedDraftId] = useState("");
+  const [dockFocused, setDockFocused] = useState(false);
+  const [voiceSessionId, setVoiceSessionId] = useState("");
+  const [voiceMessages, setVoiceMessages] = useState([]);
+  const [voiceComposerValue, setVoiceComposerValue] = useState("");
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const [voiceError, setVoiceError] = useState("");
+  const [voiceHistory, setVoiceHistory] = useState([]);
+  const [voiceCopiedMessageId, setVoiceCopiedMessageId] = useState("");
+  const folioLoadedRef = useRef(false);
 
-  const loadFolio = useCallback(async () => {
-    setLoading(true);
+  const loadFolio = useCallback(async ({ silent = false } = {}) => {
+    const initial = !folioLoadedRef.current || !silent;
+    if (initial) {
+      setLoading(true);
+    } else {
+      setRefreshing(true);
+    }
     setError("");
     try {
       const payload = await getFolio(decodedSlug);
       setFolio(payload);
-      if (!focusedId && payload?.slips?.[0]?.id) {
-        setFocusedId(payload.slips[0].id);
-      }
-      onGap("Folio 页需要卷内对话后端，但当前没有 folio messages / folio message route。");
+      folioLoadedRef.current = true;
     } catch (loadError) {
       setError(loadError.message || "卷页装载失败。");
     } finally {
-      setLoading(false);
+      if (initial) {
+        setLoading(false);
+      } else {
+        setRefreshing(false);
+      }
     }
-  }, [decodedSlug, focusedId, onGap]);
+  }, [decodedSlug]);
 
   useEffect(() => {
     loadFolio();
   }, [loadFolio]);
 
-  const slips = useMemo(() => folio?.slips || [], [folio]);
-  const focusedSlip = useMemo(() => slips.find((item) => item.id === focusedId) || slips[0] || null, [focusedId, slips]);
-  const allVisibleSlips = showAll ? slips : slips.slice(0, 5);
+  useEffect(() => {
+    setVoiceSessionId("");
+    setVoiceMessages([]);
+    setVoiceComposerValue("");
+    setVoiceBusy(false);
+    setVoiceError("");
+    setVoiceHistory([]);
+    setVoiceCopiedMessageId("");
+    setSelectedDraftId("");
+    setDockFocused(false);
+    folioLoadedRef.current = false;
+  }, [decodedSlug]);
 
-  const commitOrder = async (orderedIds) => {
-    try {
-      await reorderFolio(decodedSlug, orderedIds);
-      await Promise.all([loadFolio(), onSidebarRefresh?.()]);
-    } catch (actionError) {
-      setError(actionError.message || "卷内顺序保存失败。");
+  useEffect(() => {
+    if (!folio || !lastWsEvent?.event) return;
+    if (["deed_closed", "deed_failed", "deed_settling", "folio_progress_update"].includes(String(lastWsEvent.event || ""))) {
+      loadFolio({ silent: true });
+      refreshSidebar?.();
     }
+  }, [folio, lastWsEvent, loadFolio, refreshSidebar]);
+
+  const folioDrafts = useMemo(
+    () =>
+      (Array.isArray(drafts) ? drafts : []).filter(
+        (row) =>
+          String(row?.status || "").toLowerCase() === "drafting" &&
+          String(row?.folio_id || "").trim() === String(folio?.id || "").trim(),
+      ),
+    [drafts, folio?.id],
+  );
+  const deskLooseSlips = useMemo(() => collectDeskSlips(sidebar), [sidebar]);
+
+  const refreshFolio = useCallback(async () => {
+    await Promise.all([loadFolio({ silent: true }), refreshDrafts?.(), refreshSidebar?.()]);
+  }, [loadFolio, refreshDrafts, refreshSidebar]);
+
+  const ensureVoiceSession = useCallback(async () => {
+    if (voiceSessionId) return voiceSessionId;
+    const payload = await createVoiceSession();
+    const nextSessionId = String(payload?.session_id || "");
+    setVoiceSessionId(nextSessionId);
+    return nextSessionId;
+  }, [voiceSessionId]);
+
+  const handleVoiceSend = useCallback(async () => {
+    const text = voiceComposerValue.trim();
+    if (!text || voiceBusy) return;
+    setVoiceBusy(true);
+    setVoiceError("");
+    try {
+      const sessionId = await ensureVoiceSession();
+      const outgoing = {
+        message_id: `voice-user-${Date.now()}`,
+        role: "user",
+        content: text,
+        created_utc: new Date().toISOString(),
+      };
+      setVoiceMessages((current) => [...current, outgoing]);
+      setVoiceHistory((current) => [...current.slice(-19), text]);
+      setVoiceComposerValue("");
+      setDockFocused(true);
+
+      const result = await sendVoiceMessage(sessionId, { message: prefixVoiceMessage(folio?.title, text) });
+      const incoming = {
+        message_id: `voice-assistant-${Date.now()}`,
+        role: "assistant",
+        content: String(result?.content || "这卷里先记下了。"),
+        created_utc: new Date().toISOString(),
+      };
+      setVoiceMessages((current) => [...current, incoming]);
+
+      const draftId = String(result?.plan?.metadata?.draft_id || "");
+      if (draftId && folio?.id) {
+        await updateDraft(draftId, { folio_id: folio.id });
+        setSelectedDraftId(draftId);
+      }
+      await refreshFolio();
+    } catch (sendError) {
+      setVoiceError(sendError.message || "这卷暂时还收不进新事。");
+    } finally {
+      setVoiceBusy(false);
+    }
+  }, [ensureVoiceSession, folio?.id, folio?.title, refreshFolio, voiceBusy, voiceComposerValue]);
+
+  const handleCopyVoiceMessage = useCallback(async (message) => {
+    try {
+      await navigator.clipboard.writeText(String(message.content || ""));
+      const id = String(message.message_id || `${message.created_utc}|${message.content}`);
+      setVoiceCopiedMessageId(id);
+      window.setTimeout(() => setVoiceCopiedMessageId(""), 1400);
+    } catch {
+      setVoiceError("复制失败。");
+    }
+  }, []);
+
+  const beginDrag = (type, slip) => (event) => {
+    const payload = { type, slug: String(slip?.slug || "") };
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/x-daemon-slip", JSON.stringify(payload));
+    setDragPayload(payload);
+    setDropTargetSlug("");
+    setBoardDropActive(false);
+    setDeskDropActive(false);
+  };
+
+  const endDrag = () => {
+    setDragPayload(null);
+    setDropTargetSlug("");
+    setBoardDropActive(false);
+    setDeskDropActive(false);
   };
 
   if (loading) {
@@ -249,171 +278,192 @@ export default function FolioPage({ onSidebarRefresh, onGap }) {
   }
 
   return (
-    <div className="flex h-full flex-col bg-[#F5F5F0]">
-      <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[58rem] flex-col px-4 pb-12 pt-10">
+    <div className="h-full bg-[#F5F5F0]" data-testid="folio-page">
+      <FolioBoardOverlay
+        open={expandedBoard}
+        folio={folio}
+        onClose={() => setExpandedBoard(false)}
+        onOpenSlip={(slip) => navigate(`/slips/${encodeURIComponent(slip.slug)}`)}
+      />
+
+      <div className="relative mx-auto flex h-full w-full max-w-[72rem] flex-col px-6 pb-6 pt-6">
+        <div className="min-h-0 flex-1 overflow-y-auto pb-44" onPointerDownCapture={() => setDockFocused(false)}>
           {error ? <div className="mb-4 rounded-2xl border border-[#ead1ca] bg-[#f8ebe7] px-4 py-3 text-sm text-[#8b3c2f]">{error}</div> : null}
 
-          <SurfaceCard className="overflow-hidden">
-            <div className="border-b border-[rgba(0,0,0,0.06)] px-6 py-5">
-              <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">Folio</div>
-              <h1 className="portal-serif mt-2 text-[2rem] leading-[2.35rem] text-[#1a1a18]">{folio.title}</h1>
-              <p className="mt-3 max-w-2xl text-sm leading-6 text-[#6b6a68]">{folio.summary || "这卷还没有摘要。"}</p>
+          <div className="px-1 py-2">
+            <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-[#8d8b84]">Folio</div>
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <h1 className="portal-serif text-[1.92rem] leading-[2.25rem] text-[#1a1a18]">{folio.title}</h1>
+                {refreshing ? <Loader2 className="h-4 w-4 animate-spin text-[#8d8b84]" /> : null}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setError("");
+                  setOrganizing((current) => !current);
+                }}
+                data-testid="folio-organize-toggle"
+                title={organizing ? "退出整理" : "整理卷内对象"}
+                className={`inline-flex h-9 w-9 items-center justify-center rounded-full transition ${
+                  organizing ? "bg-[#ae5630] text-white" : "bg-[#f8f7f2] text-[#6b6a68] hover:bg-white"
+                }`}
+              >
+                <GripVertical width={15} height={15} />
+              </button>
             </div>
-            <div className="grid gap-4 px-6 py-5 text-sm md:grid-cols-4">
-              <div>
-                <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">签札</div>
-                <div className="mt-2 font-medium text-[#1a1a18]">{folio.slip_count || 0}</div>
-              </div>
-              <div>
-                <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">进行中</div>
-                <div className="mt-2 font-medium text-[#1a1a18]">{folio.live_slip_count || 0}</div>
-              </div>
-              <div>
-                <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">待收束</div>
-                <div className="mt-2 font-medium text-[#1a1a18]">{folio.review_slip_count || 0}</div>
-              </div>
-              <div>
-                <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">最近更新</div>
-                <div className="mt-2 font-medium text-[#1a1a18]">{formatDateTime(folio.updated_utc)}</div>
-              </div>
-            </div>
-          </SurfaceCard>
-
-          <SurfaceCard className="mt-6 px-6 py-5">
-            <div className="mb-3 flex items-center gap-2 text-sm font-medium text-[#1a1a18]">
-              <Rows3 width={16} height={16} />
-              <span>卷内对话区</span>
-            </div>
-            <p className="text-sm leading-6 text-[#6b6a68]">
-              这块前端壳已经留好了 Claude 式对话区，但当前后端没有 folio message / folio messages 路由，所以这里只能停在静态壳。
-            </p>
-          </SurfaceCard>
-
-          <div className="mt-6">
-            <FocusSlipCard slip={focusedSlip} />
           </div>
 
-          <SurfaceCard className="mt-6 overflow-hidden">
-            <div className="flex items-center justify-between border-b border-[rgba(0,0,0,0.06)] px-6 py-5">
-              <div>
-                <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">Slip Deck</div>
-                <h2 className="portal-serif mt-2 text-[1.45rem] leading-8 text-[#1a1a18]">卷内签札卡阵</h2>
-              </div>
-              <div className="flex items-center gap-2 rounded-2xl bg-[#f5f5f0] p-1">
-                <button
-                  type="button"
-                  onClick={() => setArrangeMode(false)}
-                  className={cx(
-                    "inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm transition",
-                    !arrangeMode ? "bg-white text-[#1a1a18] shadow-sm" : "text-[#6b6a68]",
-                  )}
-                >
-                  <Layers3 width={15} height={15} />
-                  阅读
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setArrangeMode(true)}
-                  className={cx(
-                    "inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm transition",
-                    arrangeMode ? "bg-white text-[#1a1a18] shadow-sm" : "text-[#6b6a68]",
-                  )}
-                >
-                  <GripVertical width={15} height={15} />
-                  整理
-                </button>
-              </div>
-            </div>
-            <div className="px-6 py-6">
-              {slips.length ? (
-                arrangeMode ? (
-                  <ArrangeDeck slips={slips} onCommit={commitOrder} />
-                ) : (
-                  <ReadDeck slips={slips} focusedId={focusedSlip?.id} onFocus={setFocusedId} />
-                )
-              ) : (
-                <p className="text-sm leading-6 text-[#6b6a68]">这卷还是空卷，所以没有卡阵可以排。</p>
-              )}
-            </div>
-          </SurfaceCard>
-
-          <SurfaceCard className="mt-6 overflow-hidden">
-            <div className="border-b border-[rgba(0,0,0,0.06)] px-6 py-5">
-              <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">Recent Results</div>
-              <h2 className="portal-serif mt-2 text-[1.45rem] leading-8 text-[#1a1a18]">最近结果</h2>
-            </div>
-            <div className="px-6 py-5">
-              {folio.recent_results?.length ? (
-                <div className="space-y-2">
-                  {folio.recent_results.map((item) => (
-                    <Link
-                      key={`${item.deed_id}-${item.slip_id}`}
-                      to={`/slips/${encodeURIComponent(item.slip_slug)}`}
-                      className="flex items-center justify-between rounded-2xl bg-[#f5f5f0] px-4 py-3 text-sm transition hover:bg-[#ecebe4]"
-                    >
-                      <div className="min-w-0">
-                        <div className="truncate font-medium text-[#1a1a18]">{item.title}</div>
-                        <div className="truncate text-xs text-[#6b6a68]">{item.slip_title}</div>
-                      </div>
-                      <div className="shrink-0 text-[11px] text-[#8d8b84]">{formatDateTime(item.updated_utc)}</div>
-                    </Link>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm leading-6 text-[#6b6a68]">这卷还没有最近结果可展示。</p>
-              )}
-            </div>
-          </SurfaceCard>
-
-          <SurfaceCard className="mt-6 overflow-hidden">
-            <button
-              type="button"
-              onClick={() => setShowAll((value) => !value)}
-              className="flex w-full items-center justify-between px-6 py-5 text-left"
+          {organizing ? (
+            <div
+              data-testid="folio-return-to-desk-dropzone"
+              className="mt-5 rounded-[1.4rem] border border-[rgba(0,0,0,0.05)] bg-[#f8f7f2] px-4 py-3 transition"
+              onDragOver={(event) => {
+                if (!dragPayload || dragPayload.type !== "folio-slip") return;
+                event.preventDefault();
+                setDeskDropActive(true);
+              }}
+              onDragLeave={() => setDeskDropActive(false)}
+              onDrop={async (event) => {
+                if (!dragPayload || dragPayload.type !== "folio-slip") return;
+                event.preventDefault();
+                setDeskDropActive(false);
+                try {
+                  setError("");
+                  await takeOutSlip(dragPayload.slug);
+                  await refreshFolio();
+                } catch (actionError) {
+                  setError(actionError.message || "这张签札暂时无法放回案头。");
+                } finally {
+                  endDrag();
+                }
+              }}
+              style={{
+                boxShadow: deskDropActive ? "inset 0 0 0 1px rgba(174,86,48,0.24)" : undefined,
+                background: deskDropActive ? "#fcf7f1" : undefined,
+              }}
             >
-              <div>
-                <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">All Slips</div>
-                <h2 className="portal-serif mt-2 text-[1.45rem] leading-8 text-[#1a1a18]">全部签札入口</h2>
+              <div className="flex items-center gap-2 text-sm font-medium text-[#6b6a68]">
+                <House width={15} height={15} />
+                <span>放回案头</span>
               </div>
-              {showAll ? <ChevronUp width={18} height={18} className="text-[#6b6a68]" /> : <ChevronDown width={18} height={18} className="text-[#6b6a68]" />}
-            </button>
-            {showAll ? (
-              <div className="border-t border-[rgba(0,0,0,0.06)] px-6 py-5">
-                {allVisibleSlips.length ? (
-                  <div className="space-y-2">
-                    {allVisibleSlips.map((slip) => (
-                      <Link
-                        key={slip.id}
-                        to={`/slips/${encodeURIComponent(slip.slug)}`}
-                        className="flex items-center justify-between rounded-2xl bg-[#f5f5f0] px-4 py-3 text-sm transition hover:bg-[#ecebe4]"
-                      >
-                        <div className="min-w-0">
-                          <div className="truncate font-medium text-[#1a1a18]">{slip.title}</div>
-                          <div className="truncate text-xs text-[#6b6a68]">{shortText(slip.objective, 72)}</div>
-                        </div>
-                        <div className="shrink-0 text-[11px] text-[#8d8b84]">{deedStatusLabel(slip.deed?.status)}</div>
-                      </Link>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-sm leading-6 text-[#6b6a68]">没有卷内签札。</p>
-                )}
-              </div>
-            ) : null}
-          </SurfaceCard>
+            </div>
+          ) : null}
+
+          <div className="mt-6">
+            <FolioBoard
+              slips={folio.slips || []}
+              writs={folio.writs || []}
+              compact
+              testId="folio-board-compact"
+              organizing={organizing}
+              draggingSlipSlug={String(dragPayload?.type === "folio-slip" ? dragPayload.slug : "")}
+              dropTargetSlug={dropTargetSlug}
+              boardDropActive={boardDropActive}
+              onSelectSlip={(slip) => navigate(`/slips/${encodeURIComponent(slip.slug)}`)}
+              onDetailClick={() => setExpandedBoard(true)}
+              onCardDragStart={(event, slip) => beginDrag("folio-slip", slip)(event)}
+              onCardDragEnd={() => endDrag()}
+              onCardDragOver={(_event, targetSlip) => {
+                if (!dragPayload || dragPayload.type !== "folio-slip") return;
+                setDropTargetSlug(String(targetSlip?.slug || ""));
+              }}
+              onCardDrop={async (_event, targetSlip) => {
+                if (!dragPayload || dragPayload.type !== "folio-slip") return;
+                const sourceSlug = dragPayload.slug;
+                const targetSlug = String(targetSlip?.slug || "");
+                setDropTargetSlug(targetSlug);
+                if (!sourceSlug || !targetSlug || sourceSlug === targetSlug) {
+                  endDrag();
+                  return;
+                }
+                try {
+                  setError("");
+                  await reorderFolioByPair(decodedSlug, sourceSlug, targetSlug);
+                  await refreshFolio();
+                } catch (actionError) {
+                  setError(actionError.message || "卷内顺序暂时无法调整。");
+                } finally {
+                  endDrag();
+                }
+              }}
+              onBoardDragOver={(event) => {
+                if (!dragPayload || dragPayload.type !== "desk-slip") return;
+                event.preventDefault();
+                setBoardDropActive(true);
+              }}
+              onBoardDragLeave={() => setBoardDropActive(false)}
+              onBoardDrop={async (event) => {
+                if (!dragPayload || dragPayload.type !== "desk-slip") return;
+                event.preventDefault();
+                setBoardDropActive(false);
+                try {
+                  setError("");
+                  await adoptSlipToFolio(decodedSlug, dragPayload.slug);
+                  await refreshFolio();
+                } catch (actionError) {
+                  setError(actionError.message || "这张签札暂时无法收入卷。");
+                } finally {
+                  endDrag();
+                }
+              }}
+            />
+          </div>
+
+          {organizing ? (
+            <LooseSlipStrip
+              slips={deskLooseSlips}
+              draggingSlipSlug={String(dragPayload?.type === "desk-slip" ? dragPayload.slug : "")}
+              onDragStart={(event, slip) => beginDrag("desk-slip", slip)(event)}
+              onDragEnd={endDrag}
+            />
+          ) : null}
+
+          <div className="mt-8">
+            <DraftTray
+              title="Tray"
+              drafts={folioDrafts}
+              workspaceFolioId={folio.id}
+              testIdPrefix="folio-tray"
+              selectedDraftId={selectedDraftId}
+              onSelectDraft={setSelectedDraftId}
+              onDraftsChanged={refreshFolio}
+              onSlipCreated={(slip) => navigate(`/slips/${encodeURIComponent(slip.slug)}`)}
+            />
+          </div>
+        </div>
+
+        {voiceError ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-28 z-10 px-4">
+            <div className="mx-auto w-full max-w-3xl rounded-2xl border border-[#ead1ca] bg-[#f8ebe7] px-4 py-3 text-sm text-[#8b3c2f]">
+              {voiceError}
+            </div>
+          </div>
+        ) : null}
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10">
+          <ConversationDock
+            ownerLabel="Folio"
+            composerPlaceholder="把一件新事放进这卷里"
+            focused={dockFocused}
+            onFocusChange={setDockFocused}
+            messages={voiceMessages}
+            composerValue={voiceComposerValue}
+            onComposerChange={setVoiceComposerValue}
+            onComposerSubmit={handleVoiceSend}
+            onComposerHistoryUp={() => setVoiceComposerValue(voiceHistory[voiceHistory.length - 1] || "")}
+            composerDisabled={voiceBusy}
+            composerLoading={voiceBusy}
+            onEditMessage={(message) => {
+              setVoiceComposerValue(String(message.content || ""));
+              setDockFocused(true);
+            }}
+            onCopyMessage={handleCopyVoiceMessage}
+            copiedMessageId={voiceCopiedMessageId}
+            testIdPrefix="folio-dock"
+          />
         </div>
       </div>
-
-      <Composer
-        value=""
-        onChange={() => {}}
-        onSubmit={() => {}}
-        disabled
-        metaLabel="Folio"
-        placeholder="卷内对话后端未接入"
-        note="当前只把 Folio 壳体接到了真实数据；卷内对话要等后端补 route。"
-      />
     </div>
   );
 }

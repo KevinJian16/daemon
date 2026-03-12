@@ -49,6 +49,10 @@ export function getSlipResultFiles(slug) {
   return request(`/portal-api/slips/${encodeURIComponent(slug)}/result/files`);
 }
 
+export function getSlipWritNeighbors(slug) {
+  return request(`/portal-api/slips/${encodeURIComponent(slug)}/writ-neighbors`);
+}
+
 export function sendSlipMessage(slug, text) {
   return request(`/portal-api/slips/${encodeURIComponent(slug)}/message`, {
     method: "POST",
@@ -101,10 +105,114 @@ export function getFolio(slug) {
   return request(`/portal-api/folios/${encodeURIComponent(slug)}`);
 }
 
-export function reorderFolio(slug, slipIds) {
+export function reorderFolio(slug, orderedSlugs) {
   return request(`/portal-api/folios/${encodeURIComponent(slug)}/reorder`, {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify({ slip_ids: slipIds }),
+    body: JSON.stringify({ ordered_slugs: orderedSlugs }),
+  });
+}
+
+export function reorderFolioByPair(slug, sourceSlug, targetSlug) {
+  return request(`/portal-api/folios/${encodeURIComponent(slug)}/reorder`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ source_slug: sourceSlug, target_slug: targetSlug }),
+  });
+}
+
+export function adoptSlipToFolio(folioSlug, slipSlug) {
+  return request(`/portal-api/folios/${encodeURIComponent(folioSlug)}/adopt`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ slip_slug: slipSlug }),
+  });
+}
+
+export function createFolioFromSlips(sourceSlug, targetSlug) {
+  return request("/portal-api/folios/from-slips", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ source_slug: sourceSlug, target_slug: targetSlug }),
+  });
+}
+
+export function getDeed(deedId) {
+  return request(`/deeds/${encodeURIComponent(deedId)}`);
+}
+
+export function getDeedMessages(deedId) {
+  return request(`/deeds/${encodeURIComponent(deedId)}/messages`);
+}
+
+export function sendDeedMessage(deedId, text) {
+  return request(`/deeds/${encodeURIComponent(deedId)}/message`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ text }),
+  });
+}
+
+export function pauseDeed(deedId) {
+  return request(`/deeds/${encodeURIComponent(deedId)}/pause`, {
+    method: "POST",
+  });
+}
+
+export function resumeDeed(deedId) {
+  return request(`/deeds/${encodeURIComponent(deedId)}/resume`, {
+    method: "POST",
+  });
+}
+
+export function appendDeedRequirement(deedId, text) {
+  return request(`/deeds/${encodeURIComponent(deedId)}/append`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ text }),
+  });
+}
+
+export function getDeedOfferingFiles(deedId) {
+  return request(`/offerings/${encodeURIComponent(deedId)}/files`);
+}
+
+export function getDrafts() {
+  return request("/drafts");
+}
+
+export function getDraft(draftId) {
+  return request(`/drafts/${encodeURIComponent(draftId)}`);
+}
+
+export function updateDraft(draftId, payload) {
+  return request(`/drafts/${encodeURIComponent(draftId)}`, {
+    method: "PUT",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload),
+  });
+}
+
+export function crystallizeDraft(draftId, payload) {
+  return request(`/drafts/${encodeURIComponent(draftId)}/crystallize`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createVoiceSession(payload = {}) {
+  return request("/voice/session", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload),
+  });
+}
+
+export function sendVoiceMessage(sessionId, payload) {
+  return request(`/voice/${encodeURIComponent(sessionId)}`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload),
   });
 }

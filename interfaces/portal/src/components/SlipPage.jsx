@@ -1,347 +1,602 @@
 import {
-  Copy,
-  ExternalLink,
-  FolderOutput,
+  ChevronDown,
+  ChevronUp,
+  Check,
+  Clock3,
+  Folder,
   Loader2,
+  Pause,
   Play,
   RefreshCw,
-  TimerReset,
+  Search,
   Waypoints,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import Composer from "./Composer";
-import MessageThread from "./MessageThread";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useOutletContext, useParams } from "react-router-dom";
+import ConversationDock from "./ConversationDock";
+import { MoveGraphCanvas, graphNodeStatusMapFromDag } from "./PortalGraphs";
 import {
-  copySlip,
-  deleteSlipCadence,
+  getDeed,
+  getDeedOfferingFiles,
   getSlip,
   getSlipMessages,
-  getSlipResultFiles,
+  getSlipWritNeighbors,
+  pauseDeed,
   rerunSlip,
+  resumeDeed,
   sendSlipMessage,
-  setSlipCadence,
-  takeOutSlip,
   updateSlipStance,
 } from "../lib/api";
 import {
   cx,
   deedStatusLabel,
   deedStatusTone,
+  deedSubStatusLabel,
   formatDateTime,
+  normalizeDag,
   shortText,
-  slipStanceLabel,
+  triggerTypeLabel,
 } from "../lib/format";
 
-function SurfaceCard({ children, className = "" }) {
+function mergeMessageRows(currentRows, nextRows) {
+  const map = new Map();
+  [...currentRows, ...nextRows].forEach((row, index) => {
+    const key = String(row.message_id || `${row.deed_id || "none"}|${row.created_utc || ""}|${row.role || ""}|${row.content || ""}|${index}`);
+    if (!map.has(key)) {
+      map.set(key, row);
+    }
+  });
+  return [...map.values()].sort(
+    (left, right) => new Date(left.created_utc || 0).getTime() - new Date(right.created_utc || 0).getTime(),
+  );
+}
+
+function deedSummary(row) {
+  if (!row) return null;
+  return {
+    id: String(row.id || row.deed_id || ""),
+    status: String(row.status || row.deed_status || "").toLowerCase(),
+    subStatus: String(row.sub_status || row.deed_sub_status || "").toLowerCase(),
+    title: String(row.title || row.deed_title || ""),
+    createdUtc: String(row.created_utc || ""),
+    updatedUtc: String(row.updated_utc || ""),
+    phase: String(row.phase || ""),
+  };
+}
+
+function deedOpacityClass(updatedUtc) {
+  const ageHours = (Date.now() - new Date(updatedUtc || 0).getTime()) / 36e5;
+  if (ageHours > 48) return "opacity-50";
+  if (ageHours > 24) return "opacity-70";
+  return "opacity-100";
+}
+
+function resolvedTriggerType(slip, neighbors) {
+  const explicit = String(slip?.trigger_type || "").toLowerCase();
+  if (explicit) return explicit;
+  if (slip?.cadence?.active || slip?.standing) return "timer";
+  if ((neighbors?.prev || []).length) return "writ_chain";
+  return "manual";
+}
+
+function deedStatusDotTone(status) {
+  const key = String(status || "").toLowerCase();
+  if (key === "running") return "#AE5630";
+  if (key === "settling") return "#8A4A26";
+  if (key === "closed") return "#686868";
+  if (key === "failed") return "#8B3C2F";
+  return "#ADADAD";
+}
+
+function MoveGraphOverlay({ open, title, dag, onClose }) {
+  useEffect(() => {
+    if (!open) return undefined;
+    const handleKeydown = (event) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
+  }, [onClose, open]);
+
+  if (!open) return null;
   return (
-    <div className={cx("rounded-[1.35rem] border border-[rgba(0,0,0,0.06)] bg-white shadow-claude", className)}>
-      {children}
+    <div
+      data-testid="slip-move-overlay"
+      className="fixed inset-0 z-40 overflow-y-auto bg-[#F5F5F0]/96 backdrop-blur-sm"
+      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
+    >
+      <div className="mx-auto w-full max-w-[84rem] px-6 pb-10 pt-6">
+        <div className="px-1">
+          <div className="mb-4 flex items-center gap-2 text-sm font-medium text-[#1a1a18]">
+            <Waypoints width={16} height={16} />
+            <span>{title}</span>
+          </div>
+          <MoveGraphCanvas dag={dag} mode="structure" />
+        </div>
+      </div>
     </div>
   );
 }
 
-function ActionButton({ icon: Icon, label, onClick, disabled = false, subtle = false }) {
+function DeedHistoryStrip({ deeds, activeDeedId, onOpenDeed }) {
+  if (!deeds.length) return null;
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={cx(
-        "inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm transition",
-        subtle
-          ? "border border-[rgba(0,0,0,0.08)] bg-[#f5f5f0] text-[#1a1a18] hover:bg-[#ecebe4]"
-          : "bg-[#ae5630] text-white hover:bg-[#c4633a]",
-        disabled && "cursor-not-allowed opacity-50",
-      )}
-    >
-      <Icon width={16} height={16} />
-      <span>{label}</span>
-    </button>
-  );
-}
-
-function SlipHero({ slip, onRerun, onCopy, onTakeOut, onArchive, cadenceDraft, setCadenceDraft, onSaveCadence, onDisableCadence, cadenceSaving, actionBusy }) {
-  const timeline = slip?.plan?.timeline || [];
-
-  return (
-    <SurfaceCard className="overflow-hidden">
-      <div className="border-b border-[rgba(0,0,0,0.06)] px-6 py-5">
-        <div className="mb-3 flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-[#8d8b84]">Slip</div>
-            <h1 className="portal-serif text-[2rem] leading-[2.35rem] text-[#1a1a18]">{slip.title}</h1>
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-[#6b6a68]">{slip.objective || "这张签札还没有写下目标。"}</p>
-          </div>
-          <span className="rounded-full bg-[#ece9df] px-3 py-1 text-xs font-medium text-[#6b6a68]">
-            {slipStanceLabel(slip.stance)}
-          </span>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          <ActionButton icon={Play} label="开始执行" onClick={onRerun} disabled={actionBusy} />
-          <ActionButton icon={Copy} label="复制" onClick={onCopy} disabled={actionBusy} subtle />
-          {slip.folio ? <ActionButton icon={FolderOutput} label="移出卷" onClick={onTakeOut} disabled={actionBusy} subtle /> : null}
-          <ActionButton icon={TimerReset} label="归档" onClick={onArchive} disabled={actionBusy} subtle />
-        </div>
-      </div>
-
-      <div className="grid gap-0 border-b border-[rgba(0,0,0,0.06)] md:grid-cols-[1.15fr_0.85fr]">
-        <div className="border-b border-[rgba(0,0,0,0.06)] px-6 py-5 md:border-b-0 md:border-r">
-          <div className="mb-4 flex items-center gap-2 text-sm font-medium text-[#1a1a18]">
-            <Waypoints width={16} height={16} />
-            <span>当前结构</span>
-          </div>
-          {timeline.length ? (
-            <ol className="space-y-2">
-              {timeline.map((item, index) => (
-                <li key={item.id || index} className="flex items-start gap-3 rounded-2xl bg-[#f5f5f0] px-4 py-3">
-                  <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white text-[11px] font-medium text-[#6b6a68]">
-                    {index + 1}
+    <div className="mt-6 px-1" data-testid="slip-deed-history">
+      <div className="mb-3 text-sm font-medium text-[#1a1a18]">历次行事</div>
+      <div className="-mx-1 overflow-x-auto pb-1">
+        <div className="flex gap-3 px-1">
+          {deeds.map((deed, index) => (
+          <button
+            key={deed.id}
+            type="button"
+            data-testid={`slip-deed-history-${deed.id}`}
+            onClick={() => onOpenDeed(deed.id)}
+            className={cx(
+              "w-[12.75rem] shrink-0 rounded-[1.5rem] border px-4 py-3 text-left transition duration-150",
+              deed.id === activeDeedId
+                ? "border-[rgba(174,86,48,0.28)] bg-[#fffdf8] shadow-[0_12px_26px_rgba(41,41,41,0.06),0_1px_0_rgba(255,255,255,0.9)_inset,0_-1px_0_rgba(174,86,48,0.08)_inset]"
+                : "border-[rgba(0,0,0,0.05)] bg-[#f7f3eb] hover:bg-[#fbf8f1] shadow-[0_8px_20px_rgba(41,41,41,0.04),0_1px_0_rgba(255,255,255,0.84)_inset]",
+              deed.status === "closed" && deed.id !== activeDeedId ? deedOpacityClass(deed.updatedUtc) : "",
+            )}
+          >
+            <div className="flex min-h-[5.25rem] flex-col justify-between">
+              <div className="flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-2 text-[12px] font-medium text-[#1a1a18]">
+                  <span
+                    className="inline-flex h-2.5 w-2.5 rounded-full"
+                    style={{ background: deedStatusDotTone(deed.status) }}
+                  />
+                  {deedStatusLabel(deed.status)}
+                </span>
+                {index === 0 ? <span className="text-[11px] text-[#8d8b84]">最近</span> : null}
+              </div>
+              <div className="mt-3 flex items-end justify-between gap-3">
+                <div className="text-[12px] text-[#8d8b84]">{formatDateTime(deed.updatedUtc || deed.createdUtc)}</div>
+                {deed.subStatus && deedSubStatusLabel(deed.subStatus) ? (
+                  <span className="rounded-full bg-white/84 px-2 py-1 text-[10px] text-[#6b6a68]">
+                    {deedSubStatusLabel(deed.subStatus)}
                   </span>
-                  <span className="text-sm leading-6 text-[#1a1a18]">{item.label}</span>
-                </li>
-              ))}
-            </ol>
-          ) : (
-            <p className="text-sm leading-6 text-[#6b6a68]">这张签札还没有结构化步骤，执行时会被后端拒绝。</p>
-          )}
-        </div>
-
-        <div className="px-6 py-5">
-          <div className="mb-4 text-sm font-medium text-[#1a1a18]">节律</div>
-          <div className="rounded-2xl bg-[#f5f5f0] p-4">
-            <p className="text-sm text-[#1a1a18]">
-              {slip.cadence?.active ? `已启用 · ${slip.cadence.schedule}` : "未启用"}
-            </p>
-            <p className="mt-2 text-xs leading-5 text-[#6b6a68]">
-              节律已接到后端 writ。输入框支持直接写后端当前接受的 schedule。
-            </p>
-            <div className="mt-4 flex flex-col gap-2">
-              <input
-                value={cadenceDraft}
-                onChange={(event) => setCadenceDraft(event.target.value)}
-                placeholder="例如：daily@09:00"
-                className="rounded-xl border border-[rgba(0,0,0,0.08)] bg-white px-3 py-2 text-sm outline-none"
-              />
-              <div className="flex gap-2">
-                <ActionButton icon={TimerReset} label="保存节律" onClick={onSaveCadence} disabled={cadenceSaving} subtle />
-                <ActionButton icon={TimerReset} label="停用" onClick={onDisableCadence} disabled={cadenceSaving} subtle />
+                ) : null}
               </div>
             </div>
-          </div>
+          </button>
+          ))}
         </div>
       </div>
-
-      <div className="grid gap-4 px-6 py-5 text-sm md:grid-cols-4">
-        <div>
-          <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">卷</div>
-          <div className="mt-2 font-medium text-[#1a1a18]">
-            {slip.folio ? (
-              <Link className="underline decoration-[#d5d0c2] underline-offset-4" to={`/folios/${encodeURIComponent(slip.folio.slug)}`}>
-                {slip.folio.title}
-              </Link>
-            ) : (
-              "卷外"
-            )}
-          </div>
-        </div>
-        <div>
-          <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">最近更新</div>
-          <div className="mt-2 font-medium text-[#1a1a18]">{formatDateTime(slip.updated_utc)}</div>
-        </div>
-        <div>
-          <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">消息数</div>
-          <div className="mt-2 font-medium text-[#1a1a18]">{slip.message_count || 0}</div>
-        </div>
-        <div>
-          <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">正式结果</div>
-          <div className="mt-2 font-medium text-[#1a1a18]">{slip.result_ready ? "已产出" : "未产出"}</div>
-        </div>
-      </div>
-    </SurfaceCard>
+    </div>
   );
 }
 
-function DeedCard({ slip, resultFiles, onRerun }) {
-  const deed = slip.current_deed || slip.deed || {};
-  const compareUnavailable = ["settling", "awaiting_eval"].includes(String(deed.status || "").toLowerCase());
+function DeedBlock({
+  slipDag,
+  deed,
+  detail,
+  files,
+  previewText,
+  expanded,
+  loading,
+  runtimeStatuses,
+  onToggle,
+  onPause,
+  onResume,
+  onSettle,
+}) {
+  const normalizedFiles = Array.isArray(files) ? files : [];
+  const status = deed.status || detail?.status || detail?.deed_status || "";
+  const subStatus = deed.subStatus || detail?.subStatus || detail?.deed_sub_status || "";
+  const mergedStatuses = useMemo(() => {
+    const next = { ...graphNodeStatusMapFromDag(slipDag) };
+    const moveResults = Array.isArray(detail?.plan?.move_results) ? detail.plan.move_results : [];
+    if ((status === "closed" || status === "settling") && !moveResults.length) {
+      Object.keys(next).forEach((nodeId) => {
+        next[nodeId] = status === "closed" ? "completed" : next[nodeId] || "pending";
+      });
+    }
+    moveResults.forEach((result) => {
+      const moveId = String(result?.move_id || "");
+      if (!moveId) return;
+      next[moveId] = result?.ok ? "completed" : "failed";
+    });
+    return { ...next, ...runtimeStatuses };
+  }, [detail?.plan?.move_results, runtimeStatuses, slipDag, status]);
+
+  const canPause = status === "running" && subStatus !== "paused";
+  const canResume = status === "running" && subStatus === "paused";
+  const canSettle = status === "running" || status === "settling";
 
   return (
-    <SurfaceCard className="mt-6">
-      <div className="border-b border-[rgba(0,0,0,0.06)] px-6 py-5">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">Deed</div>
-            <div className="mt-2 flex items-center gap-3">
-              <h2 className="portal-serif text-[1.45rem] leading-8 text-[#1a1a18]">最近一次行事</h2>
-              <span className={cx("rounded-full px-3 py-1 text-xs font-medium", deedStatusTone(deed.status))}>
-                {deedStatusLabel(deed.status)}
-              </span>
-            </div>
+    <div
+      data-testid={`slip-deed-block-${deed.id}`}
+      className={cx(
+        "rounded-[1.6rem] border border-[rgba(0,0,0,0.06)] bg-[#f9f6ef] px-4 py-4 shadow-[0_20px_44px_rgba(41,41,41,0.06),0_1px_0_rgba(255,255,255,0.88)_inset,0_-1px_0_rgba(41,41,41,0.03)_inset] transition",
+        status === "closed" && !expanded ? deedOpacityClass(deed.updatedUtc) : "",
+      )}
+    >
+      <button type="button" onClick={onToggle} className="flex w-full items-start justify-between gap-4 text-left">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className="inline-flex h-2.5 w-2.5 rounded-full"
+              style={{ background: deedStatusDotTone(status) }}
+            />
+            <span className={cx("rounded-full px-3 py-1 text-xs font-medium", deedStatusTone(status))}>{deedStatusLabel(status)}</span>
+            {subStatus && deedSubStatusLabel(subStatus) ? (
+              <span className="rounded-full bg-white px-3 py-1 text-[11px] text-[#6b6a68]">{deedSubStatusLabel(subStatus)}</span>
+            ) : null}
+            {status === "closed" && normalizedFiles.length ? (
+              <span className="rounded-full bg-white px-3 py-1 text-[11px] text-[#6b6a68]">{normalizedFiles[0].name}</span>
+            ) : null}
           </div>
-          <ActionButton icon={RefreshCw} label="再运行" onClick={onRerun} subtle />
-        </div>
-      </div>
-
-      <div className="grid gap-0 md:grid-cols-[0.9fr_1.1fr]">
-        <div className="border-b border-[rgba(0,0,0,0.06)] px-6 py-5 md:border-b-0 md:border-r">
-          <div className="space-y-3 text-sm text-[#1a1a18]">
-            <div>
-              <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">Deed ID</div>
-              <div className="mt-2 break-all font-medium">{deed.id || "还没有 deed"}</div>
-            </div>
-            <div>
-              <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">开始时间</div>
-              <div className="mt-2 font-medium">{formatDateTime(deed.created_utc)}</div>
-            </div>
-            <div>
-              <div className="text-[11px] uppercase tracking-[0.16em] text-[#8d8b84]">反馈状态</div>
-              <div className="mt-2 font-medium">{shortText(slip.feedback?.status || "未记录", 24)}</div>
-            </div>
-          </div>
+          <div className="mt-3 text-[12px] text-[#8d8b84]">{formatDateTime(deed.updatedUtc || deed.createdUtc)}</div>
         </div>
 
-        <div className="px-6 py-5">
-          <div className="mb-3 flex items-center gap-2 text-sm font-medium text-[#1a1a18]">
-            <FolderOutput width={16} height={16} />
-            <span>正式结果</span>
+        <div className="flex items-center gap-2">
+          {loading ? <Loader2 className="h-4 w-4 animate-spin text-[#8d8b84]" /> : null}
+          <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white/78 text-[#8d8b84] shadow-[0_1px_0_rgba(255,255,255,0.86)_inset]">
+            {expanded ? <ChevronUp width={15} height={15} /> : <ChevronDown width={15} height={15} />}
+          </span>
+        </div>
+      </button>
+
+      {expanded ? (
+        <div className="mt-4 space-y-4">
+          <div className="rounded-[1.45rem] border border-[rgba(0,0,0,0.04)] bg-white/82 p-3">
+            <MoveGraphCanvas
+              dag={slipDag}
+              mode="deed"
+              runtimeStatuses={mergedStatuses}
+              deedStatus={status}
+              compact
+              testId={`slip-deed-graph-${deed.id}`}
+            />
           </div>
-          {resultFiles.length ? (
-            <div className="space-y-2">
-              {resultFiles.map((file) => (
-                <a
-                  key={file.download}
-                  href={file.download}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center justify-between rounded-2xl border border-[rgba(0,0,0,0.06)] bg-[#f5f5f0] px-4 py-3 text-sm transition hover:bg-[#ecebe4]"
+
+          {previewText || normalizedFiles.length ? (
+            <div className="rounded-[1.4rem] border border-[rgba(0,0,0,0.05)] bg-white px-4 py-3">
+              {normalizedFiles.length ? (
+                <div className="flex flex-wrap gap-2">
+                  {normalizedFiles.map((file) => (
+                    <a
+                      key={file.download_path || file.download || file.relative_path || file.name}
+                      href={file.download_path || file.download}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-full bg-[#f6f2ea] px-3 py-1.5 text-[12px] text-[#6b6a68] transition hover:bg-[#efe8dd]"
+                    >
+                      {file.name}
+                    </a>
+                  ))}
+                </div>
+              ) : null}
+              {previewText ? (
+                <div className={cx("whitespace-pre-wrap text-[13px] leading-6 text-[#1a1a18]", normalizedFiles.length ? "mt-3 line-clamp-6" : "line-clamp-6")}>
+                  {previewText}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {(canPause || canResume || canSettle) ? (
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {canPause ? (
+                <button
+                  type="button"
+                  data-testid={`slip-deed-pause-${deed.id}`}
+                  onClick={onPause}
+                  title="暂停"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[#fbfaf7] text-[#6b6a68] transition hover:bg-white"
                 >
-                  <span className="truncate">{file.name}</span>
-                  <ExternalLink width={15} height={15} className="shrink-0 text-[#8d8b84]" />
-                </a>
-              ))}
+                  <Pause width={16} height={16} />
+                </button>
+              ) : null}
+              {canResume ? (
+                <button
+                  type="button"
+                  data-testid={`slip-deed-resume-${deed.id}`}
+                  onClick={onResume}
+                  title="继续"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[#fbfaf7] text-[#6b6a68] transition hover:bg-white"
+                >
+                  <Play width={16} height={16} />
+                </button>
+              ) : null}
+              {canSettle ? (
+                <button
+                  type="button"
+                  data-testid={`slip-deed-settle-${deed.id}`}
+                  onClick={onSettle}
+                  title="收束"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[#ae5630] text-white transition hover:bg-[#c4633a]"
+                >
+                  <Check width={16} height={16} />
+                </button>
+              ) : null}
             </div>
-          ) : (
-            <p className="text-sm leading-6 text-[#6b6a68]">这次 deed 还没有正式结果文件。</p>
-          )}
-
-          <div className="mt-5 rounded-2xl border border-dashed border-[rgba(0,0,0,0.09)] bg-[#fbfaf7] px-4 py-3">
-            <div className="text-sm font-medium text-[#1a1a18]">比较与阶段页</div>
-            <p className="mt-2 text-xs leading-5 text-[#6b6a68]">
-              {compareUnavailable
-                ? "当前 deed 已进入可评价阶段，但 Portal 还缺当前阶段页和候选比较接口。"
-                : "当前状态下不需要比较；阶段页只会在 running / settling 内存在。"}
-            </p>
-          </div>
+          ) : null}
         </div>
-      </div>
-    </SurfaceCard>
+      ) : null}
+    </div>
   );
 }
 
-export default function SlipPage({ onSidebarRefresh, onGap }) {
-  const { slipSlug } = useParams();
+export default function SlipPage() {
+  const { slipSlug, deedId } = useParams();
+  const { refreshSidebar, lastWsEvent } = useOutletContext();
   const decodedSlug = decodeURIComponent(slipSlug || "");
+
   const [slip, setSlip] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [resultFiles, setResultFiles] = useState([]);
+  const [neighbors, setNeighbors] = useState({ prev: [], next: [] });
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [dockFocused, setDockFocused] = useState(Boolean(deedId));
   const [composerValue, setComposerValue] = useState("");
-  const [actionBusy, setActionBusy] = useState(false);
-  const [cadenceDraft, setCadenceDraft] = useState("");
-  const [cadenceSaving, setCadenceSaving] = useState(false);
+  const [composerBusy, setComposerBusy] = useState(false);
+  const [messageHistory, setMessageHistory] = useState([]);
+  const [copiedMessageId, setCopiedMessageId] = useState("");
+  const [messageReactions, setMessageReactions] = useState({});
+  const [expandedMoveGraph, setExpandedMoveGraph] = useState(false);
+  const [expandedDeedId, setExpandedDeedId] = useState(String(deedId || ""));
+  const [scrollTargetId, setScrollTargetId] = useState(deedId ? `deed-block-${deedId}` : "");
+  const [deedDetails, setDeedDetails] = useState({});
+  const [deedFiles, setDeedFiles] = useState({});
+  const [deedPreviews, setDeedPreviews] = useState({});
+  const [deedLoading, setDeedLoading] = useState({});
+  const [liveMoveStatuses, setLiveMoveStatuses] = useState({});
+  const slipLoadedRef = useRef(false);
 
-  const loadSlip = useCallback(async () => {
-    setLoading(true);
+  const loadSlip = useCallback(async ({ silent = false } = {}) => {
+    const initial = !slipLoadedRef.current || !silent;
+    if (initial) {
+      setLoading(true);
+    } else {
+      setRefreshing(true);
+    }
     setError("");
     try {
-      const [slipData, messageData, resultData] = await Promise.all([
+      const [slipData, messageData, neighborData] = await Promise.all([
         getSlip(decodedSlug),
         getSlipMessages(decodedSlug),
-        getSlipResultFiles(decodedSlug),
+        getSlipWritNeighbors(decodedSlug).catch(() => ({ prev: [], next: [] })),
       ]);
       setSlip(slipData);
       setMessages(Array.isArray(messageData) ? messageData : []);
-      setResultFiles(Array.isArray(resultData?.files) ? resultData.files : []);
-      setCadenceDraft(slipData?.cadence?.schedule || "");
-      if (String(slipData?.current_deed?.status || slipData?.deed?.status || "").toLowerCase() === "awaiting_eval") {
-        onGap("Slip deed 已进入 awaiting_eval，但后端还没有阶段页或比较接口。");
-      }
+      setNeighbors(neighborData || { prev: [], next: [] });
+      slipLoadedRef.current = true;
     } catch (loadError) {
       setError(loadError.message || "Portal 载入失败。");
     } finally {
-      setLoading(false);
+      if (initial) {
+        setLoading(false);
+      } else {
+        setRefreshing(false);
+      }
     }
-  }, [decodedSlug, onGap]);
+  }, [decodedSlug]);
 
   useEffect(() => {
     loadSlip();
   }, [loadSlip]);
 
-  const reloadAll = async () => {
-    await Promise.all([loadSlip(), onSidebarRefresh?.()]);
-  };
+  useEffect(() => {
+    setDeedDetails({});
+    setDeedFiles({});
+    setDeedPreviews({});
+    setDeedLoading({});
+    setLiveMoveStatuses({});
+    setMessages([]);
+    setNeighbors({ prev: [], next: [] });
+    slipLoadedRef.current = false;
+  }, [decodedSlug]);
 
-  const runAction = async (handler) => {
-    setActionBusy(true);
+  const deeds = useMemo(() => {
+    const rows = [];
+    const current = deedSummary(slip?.current_deed);
+    if (current?.id) rows.push(current);
+    (slip?.recent_deeds || []).forEach((row) => {
+      const summary = deedSummary(row);
+      if (summary?.id && !rows.some((item) => item.id === summary.id)) {
+        rows.push(summary);
+      }
+    });
+    messages.forEach((message) => {
+      const messageDeedId = String(message?.deed_id || "");
+      if (messageDeedId && !rows.some((item) => item.id === messageDeedId)) {
+        rows.push({
+          id: messageDeedId,
+          status: "",
+          subStatus: "",
+          title: "",
+          createdUtc: String(message.created_utc || ""),
+          updatedUtc: String(message.created_utc || ""),
+          phase: "",
+        });
+      }
+    });
+    return rows.sort((left, right) => new Date(right.updatedUtc || right.createdUtc || 0).getTime() - new Date(left.updatedUtc || left.createdUtc || 0).getTime());
+  }, [messages, slip?.current_deed, slip?.recent_deeds]);
+
+  const deedIds = useMemo(() => new Set(deeds.map((item) => item.id)), [deeds]);
+  const currentDeed = useMemo(() => deeds.find((item) => item.status === "running" || item.status === "settling") || deeds[0] || null, [deeds]);
+  const slipDag = useMemo(() => normalizeDag(slip?.dag, slip?.plan || slip?.design || {}), [slip?.dag, slip?.plan, slip?.design]);
+  const triggerType = useMemo(() => resolvedTriggerType(slip, neighbors), [neighbors, slip]);
+
+  const ensureDeedDetail = useCallback(async (targetDeedId) => {
+    if (!targetDeedId || deedDetails[targetDeedId] || deedLoading[targetDeedId]) return;
+    setDeedLoading((current) => ({ ...current, [targetDeedId]: true }));
+    try {
+      const [detailPayload, filePayload] = await Promise.all([
+        getDeed(targetDeedId),
+        getDeedOfferingFiles(targetDeedId).catch(() => ({ files: [] })),
+      ]);
+      const files = Array.isArray(filePayload?.files) ? filePayload.files : [];
+      setDeedDetails((current) => ({ ...current, [targetDeedId]: detailPayload }));
+      setDeedFiles((current) => ({ ...current, [targetDeedId]: files }));
+      const previewable = files.find((file) => String(file?.preview_type || "").toLowerCase() === "text" && String(file?.download_path || "").trim());
+      if (previewable?.download_path) {
+        fetch(previewable.download_path)
+          .then((response) => (response.ok ? response.text() : ""))
+          .then((text) => {
+            if (!text) return;
+            setDeedPreviews((current) => ({ ...current, [targetDeedId]: shortText(text, 520) }));
+          })
+          .catch(() => {});
+      }
+    } catch (detailError) {
+      setError(detailError.message || "行事详情载入失败。");
+    } finally {
+      setDeedLoading((current) => ({ ...current, [targetDeedId]: false }));
+    }
+  }, [deedDetails, deedLoading]);
+
+  useEffect(() => {
+    if (!deedId) return;
+    setExpandedDeedId(String(deedId));
+    setScrollTargetId(`deed-block-${deedId}`);
+    setDockFocused(true);
+    ensureDeedDetail(String(deedId));
+  }, [deedId, ensureDeedDetail]);
+
+  useEffect(() => {
+    if (!currentDeed?.id) return;
+    ensureDeedDetail(currentDeed.id);
+  }, [currentDeed?.id, ensureDeedDetail]);
+
+  useEffect(() => {
+    if (!lastWsEvent?.event) return;
+    const payload = lastWsEvent.payload || {};
+    const targetDeedId = String(payload.deed_id || "");
+    if (!targetDeedId || !deedIds.has(targetDeedId)) return;
+
+    if (lastWsEvent.event === "deed_message") {
+      setMessages((current) => mergeMessageRows(current, [{ ...payload, deed_id: targetDeedId }]));
+      return;
+    }
+
+    if (lastWsEvent.event === "deed_progress") {
+      const moveId = String(payload.move_id || "");
+      const phase = String(payload.phase || "").toLowerCase();
+      if (!moveId) return;
+      const nextStatus = phase === "move_completed" ? "completed" : phase === "degraded" ? "failed" : "running";
+      setLiveMoveStatuses((current) => ({
+        ...current,
+        [targetDeedId]: {
+          ...(current[targetDeedId] || {}),
+          [moveId]: nextStatus,
+        },
+      }));
+      return;
+    }
+
+    if (["deed_closed", "deed_failed", "deed_settling"].includes(lastWsEvent.event)) {
+      loadSlip({ silent: true });
+      refreshSidebar?.();
+    }
+  }, [deedIds, lastWsEvent, loadSlip, refreshSidebar]);
+
+  const flowItems = useMemo(() => {
+    const deedById = new Map(deeds.map((deed) => [deed.id, deed]));
+    const inserted = new Set();
+    const items = [];
+    const orderedMessages = [...messages].sort(
+      (left, right) => new Date(left.created_utc || 0).getTime() - new Date(right.created_utc || 0).getTime(),
+    );
+
+    orderedMessages.forEach((message) => {
+      const targetDeedId = String(message.deed_id || "");
+      if (targetDeedId && deedById.has(targetDeedId) && !inserted.has(targetDeedId)) {
+        items.push({ kind: "deed_block", deedId: targetDeedId });
+        inserted.add(targetDeedId);
+      }
+      items.push({
+        ...message,
+        reaction: messageReactions[String(message.message_id || `${message.created_utc}|${message.content}`)] || "",
+      });
+    });
+
+    deeds.forEach((deed) => {
+      if (!inserted.has(deed.id)) {
+        items.push({ kind: "deed_block", deedId: deed.id });
+      }
+    });
+
+    return items;
+  }, [deeds, messageReactions, messages]);
+
+  const runSlipAction = async (runner, fallbackMessage) => {
+    setComposerBusy(true);
     setError("");
     try {
-      await handler();
-      await reloadAll();
+      await runner();
+      await Promise.all([loadSlip({ silent: true }), refreshSidebar?.()]);
     } catch (actionError) {
-      setError(actionError.message || "动作执行失败。");
+      setError(actionError.message || fallbackMessage);
     } finally {
-      setActionBusy(false);
+      setComposerBusy(false);
     }
   };
 
   const handleSend = async () => {
     const text = composerValue.trim();
-    if (!text || actionBusy) return;
-    setActionBusy(true);
+    if (!text || composerBusy) return;
+    setComposerBusy(true);
     setError("");
     try {
       await sendSlipMessage(decodedSlug, text);
+      setMessageHistory((current) => [...current.slice(-19), text]);
       setComposerValue("");
-      await reloadAll();
-    } catch (actionError) {
-      setError(actionError.message || "消息发送失败。");
+      setDockFocused(true);
+      await Promise.all([loadSlip({ silent: true }), refreshSidebar?.()]);
+    } catch (sendError) {
+      setError(sendError.message || "消息发送失败。");
     } finally {
-      setActionBusy(false);
+      setComposerBusy(false);
     }
   };
 
-  const handleSaveCadence = async () => {
-    setCadenceSaving(true);
-    setError("");
+  const handleOpenDeed = async (targetDeedId) => {
+    setExpandedDeedId((current) => (current === targetDeedId ? "" : targetDeedId));
+    setScrollTargetId(targetDeedId ? `deed-block-${targetDeedId}` : "");
+    setDockFocused(true);
+    if (targetDeedId) {
+      await ensureDeedDetail(targetDeedId);
+    }
+  };
+
+  const handleRetryMessage = async (message) => {
+    if (String(message.role || "").toLowerCase() === "user") {
+      setComposerValue(String(message.content || ""));
+      setDockFocused(true);
+      return;
+    }
+    await runSlipAction(() => rerunSlip(decodedSlug), "重新执行失败。");
+  };
+
+  const handleCopyMessage = async (message) => {
     try {
-      await setSlipCadence(decodedSlug, cadenceDraft.trim(), true);
-      await reloadAll();
-    } catch (actionError) {
-      setError(actionError.message || "节律保存失败。");
-    } finally {
-      setCadenceSaving(false);
+      await navigator.clipboard.writeText(String(message.content || ""));
+      const id = String(message.message_id || `${message.created_utc}|${message.content}`);
+      setCopiedMessageId(id);
+      window.setTimeout(() => setCopiedMessageId(""), 1400);
+    } catch {
+      setError("复制失败。");
     }
   };
 
-  const handleDisableCadence = async () => {
-    setCadenceSaving(true);
-    setError("");
-    try {
-      await deleteSlipCadence(decodedSlug);
-      await reloadAll();
-    } catch (actionError) {
-      setError(actionError.message || "节律停用失败。");
-    } finally {
-      setCadenceSaving(false);
-    }
+  const handleRateMessage = (message, reaction) => {
+    const id = String(message.message_id || `${message.created_utc}|${message.content}`);
+    setMessageReactions((current) => ({
+      ...current,
+      [id]: current[id] === reaction ? "" : reaction,
+    }));
   };
 
-  const sortedMessages = useMemo(() => {
-    return [...messages].sort((left, right) => new Date(left.created_utc || 0).getTime() - new Date(right.created_utc || 0).getTime());
-  }, [messages]);
+  const waitingPrev = (neighbors.prev || []).filter((item) => String(item.latest_deed_status || "") !== "closed");
+  const canRunManual = triggerType === "manual";
+  const showCurrentDeedAction = currentDeed && (currentDeed.status === "running" || currentDeed.status === "settling");
 
   if (loading) {
     return (
@@ -360,51 +615,168 @@ export default function SlipPage({ onSidebarRefresh, onGap }) {
   }
 
   return (
-    <div className="flex h-full flex-col bg-[#F5F5F0]">
-      <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[58rem] flex-col px-4 pb-12 pt-10">
-          {slip.folio ? (
-            <Link to={`/folios/${encodeURIComponent(slip.folio.slug)}`} className="mb-4 text-sm text-[#8d8b84] hover:text-[#1a1a18]">
-              返回卷宗 · {slip.folio.title}
-            </Link>
-          ) : null}
+    <div className="h-full bg-[#F5F5F0]" data-testid="slip-page">
+      <MoveGraphOverlay open={expandedMoveGraph} title="Move 全图" dag={slipDag} onClose={() => setExpandedMoveGraph(false)} />
 
+      <div className="relative mx-auto flex h-full w-full max-w-[72rem] flex-col px-6 pb-6 pt-6">
+        <div className="min-h-0 flex-1 overflow-y-auto pb-44" onPointerDownCapture={() => setDockFocused(false)}>
           {error ? <div className="mb-4 rounded-2xl border border-[#ead1ca] bg-[#f8ebe7] px-4 py-3 text-sm text-[#8b3c2f]">{error}</div> : null}
 
-          <SlipHero
-            slip={slip}
-            onRerun={() => runAction(() => rerunSlip(decodedSlug))}
-            onCopy={() => runAction(() => copySlip(decodedSlug))}
-            onTakeOut={() => runAction(() => takeOutSlip(decodedSlug))}
-            onArchive={() => runAction(() => updateSlipStance(decodedSlug, "archive"))}
-            cadenceDraft={cadenceDraft}
-            setCadenceDraft={setCadenceDraft}
-            onSaveCadence={handleSaveCadence}
-            onDisableCadence={handleDisableCadence}
-            cadenceSaving={cadenceSaving}
-            actionBusy={actionBusy}
-          />
+          <div className="px-1 py-2">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-[#8d8b84]">Slip</div>
+                <div className="flex items-center gap-3">
+                  <h1 className="portal-serif text-[1.92rem] leading-[2.25rem] text-[#1a1a18]">{slip.title}</h1>
+                  {refreshing ? <Loader2 className="h-4 w-4 animate-spin text-[#8d8b84]" /> : null}
+                </div>
+              </div>
+              <div className="flex flex-wrap justify-end gap-2">
+                <span className="rounded-full bg-[#ece9df] px-3 py-1 text-xs font-medium text-[#6b6a68]">{triggerTypeLabel(triggerType)}</span>
+              </div>
+            </div>
 
-          <DeedCard slip={slip} resultFiles={resultFiles} onRerun={() => runAction(() => rerunSlip(decodedSlug))} />
+            <div className="mt-5 flex flex-wrap gap-2">
+              <span className="inline-flex items-center gap-2 rounded-full bg-[#f8f7f2] px-3 py-1.5 text-[12px] text-[#6b6a68]">
+                <Folder width={13} height={13} />
+                {slip.folio ? (
+                  <Link className="underline decoration-[#d5d0c2] underline-offset-4" to={`/folios/${encodeURIComponent(slip.folio.slug)}`}>
+                    {slip.folio.title}
+                  </Link>
+                ) : (
+                  "卷外"
+                )}
+              </span>
 
-          <MessageThread
-            messages={sortedMessages}
-            emptyTitle="How can I help you today?"
-            emptySubtitle="这张签札已经打开，但目前还没有对话。你可以先开始执行，或者直接在下方补记。"
+              {triggerType === "timer" ? (
+                <span className="inline-flex items-center gap-2 rounded-full bg-[#f8f7f2] px-3 py-1.5 text-[12px] text-[#6b6a68]">
+                  <Clock3 width={13} height={13} />
+                  {slip.cadence?.next_trigger_utc ? `下次 ${formatDateTime(slip.cadence.next_trigger_utc)}` : "待下一次"}
+                </span>
+              ) : null}
+
+              {triggerType === "writ_chain" ? (
+                <span className="inline-flex items-center gap-2 rounded-full bg-[#f8f7f2] px-3 py-1.5 text-[12px] text-[#6b6a68]">
+                  {waitingPrev.length ? `等待前序 ${waitingPrev.length}` : "前序已满足"}
+                </span>
+              ) : null}
+            </div>
+
+            <div className="mt-5 flex flex-wrap gap-2">
+              {showCurrentDeedAction ? (
+                <button
+                  type="button"
+                  data-testid="slip-current-deed-button"
+                  onClick={() => handleOpenDeed(currentDeed.id)}
+                  className="inline-flex items-center gap-2 rounded-xl bg-[#ae5630] px-3 py-2 text-sm text-white transition hover:bg-[#c4633a]"
+                >
+                  <RefreshCw width={15} height={15} />
+                  查看当前行事
+                </button>
+              ) : null}
+              {canRunManual && !showCurrentDeedAction ? (
+                <button
+                  type="button"
+                  data-testid="slip-run-button"
+                  onClick={() => runSlipAction(() => rerunSlip(decodedSlug), "执行失败。")}
+                  className="inline-flex items-center gap-2 rounded-xl bg-[#ae5630] px-3 py-2 text-sm text-white transition hover:bg-[#c4633a]"
+                >
+                  <Play width={15} height={15} />
+                  执行
+                </button>
+              ) : null}
+              {triggerType === "writ_chain" && !showCurrentDeedAction ? (
+                <button
+                  type="button"
+                  data-testid="slip-trigger-button"
+                  disabled={waitingPrev.length > 0}
+                  onClick={() => runSlipAction(() => rerunSlip(decodedSlug), "执行失败。")}
+                  className="inline-flex items-center gap-2 rounded-xl bg-[#f1eee5] px-3 py-2 text-sm text-[#1a1a18] transition disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Play width={15} height={15} />
+                  触发执行
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="mt-6 px-1 py-1">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2 text-sm font-medium text-[#1a1a18]">
+                <Waypoints width={16} height={16} />
+                <span>Move 结构</span>
+              </div>
+              <button
+                type="button"
+                data-testid="slip-move-detail"
+                onClick={() => setExpandedMoveGraph(true)}
+                title="查看全图"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[#fbfaf7] text-[#6b6a68] transition hover:bg-white"
+              >
+                <Search width={15} height={15} />
+              </button>
+            </div>
+            <div className="mt-4">
+              <MoveGraphCanvas dag={slipDag} mode="structure" compact testId="slip-move-graph" />
+            </div>
+          </div>
+
+          <DeedHistoryStrip deeds={deeds} activeDeedId={expandedDeedId} onOpenDeed={handleOpenDeed} />
+        </div>
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10">
+          <ConversationDock
+            ownerLabel="Slip"
+            composerPlaceholder="继续这张札"
+            focused={dockFocused}
+            onFocusChange={setDockFocused}
+            messages={flowItems}
+            composerValue={composerValue}
+            onComposerChange={setComposerValue}
+            onComposerSubmit={handleSend}
+            onComposerHistoryUp={() => setComposerValue(messageHistory[messageHistory.length - 1] || "")}
+            composerDisabled={composerBusy}
+            composerLoading={composerBusy}
+            onRetryMessage={handleRetryMessage}
+            onEditMessage={(message) => {
+              setComposerValue(String(message.content || ""));
+              setDockFocused(true);
+            }}
+            onCopyMessage={handleCopyMessage}
+            onRateMessage={handleRateMessage}
+            copiedMessageId={copiedMessageId}
+            testIdPrefix="slip-dock"
+            renderMessage={(item) => {
+              if (item.kind !== "deed_block") return null;
+              const deed = deeds.find((row) => row.id === item.deedId);
+              if (!deed) return null;
+              return (
+                <DeedBlock
+                  slipDag={slipDag}
+                  deed={deed}
+                  detail={deedDetails[deed.id]}
+                  files={deedFiles[deed.id] || []}
+                  previewText={deedPreviews[deed.id] || ""}
+                  expanded={expandedDeedId === deed.id}
+                  loading={Boolean(deedLoading[deed.id])}
+                  runtimeStatuses={liveMoveStatuses[deed.id] || {}}
+                  onToggle={() => handleOpenDeed(deed.id)}
+                  onPause={() => runSlipAction(() => pauseDeed(deed.id), "暂停失败。")}
+                  onResume={() => runSlipAction(() => resumeDeed(deed.id), "恢复失败。")}
+                  onSettle={() => runSlipAction(() => updateSlipStance(decodedSlug, "settle"), "收束失败。")}
+                />
+              );
+            }}
+            getMessageKey={(item, index) =>
+              item.kind === "deed_block"
+                ? `deed-block:${item.deedId}`
+                : String(item.message_id || `${item.deed_id || "none"}|${item.created_utc || ""}|${index}`)
+            }
+            getMessageId={(item) => (item.kind === "deed_block" ? `deed-block-${item.deedId}` : "")}
+            scrollToMessageId={scrollTargetId}
           />
         </div>
       </div>
-
-      <Composer
-        value={composerValue}
-        onChange={setComposerValue}
-        onSubmit={handleSend}
-        loading={actionBusy}
-        disabled={actionBusy}
-        placeholder="继续补记这张签札…"
-        metaLabel={slip.folio ? "Slip" : "Loose Slip"}
-        note="上传材料还没有接到后端材料集；当前只接文字补记。"
-      />
     </div>
   );
 }

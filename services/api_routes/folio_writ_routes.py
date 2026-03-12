@@ -72,6 +72,28 @@ def register_folio_writ_routes(app: FastAPI, folio_writ) -> None:
             raise HTTPException(404, "draft not found or invalid update")
         return row
 
+    @app.post("/drafts/{draft_id}/crystallize")
+    def crystallize_draft(draft_id: str, payload: dict):
+        body = payload if isinstance(payload, dict) else {}
+        title = str(body.get("title") or "").strip()
+        objective = str(body.get("objective") or "").strip()
+        if not title:
+            raise HTTPException(400, "title required")
+        if not objective:
+            raise HTTPException(400, "objective required")
+        try:
+            return folio_writ.crystallize_draft(
+                draft_id,
+                title=title,
+                objective=objective,
+                brief=body.get("brief") if isinstance(body.get("brief"), dict) else {},
+                design=body.get("design") if isinstance(body.get("design"), dict) else {},
+                folio_id=str(body.get("folio_id") or "").strip() or None,
+                standing=bool(body.get("standing")),
+            )
+        except ValueError as exc:
+            raise HTTPException(404, str(exc))
+
     @app.get("/writs")
     def list_writs(folio_id: str | None = None):
         return folio_writ.list_writs(folio_id=folio_id)

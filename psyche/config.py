@@ -117,13 +117,13 @@ class PsycheConfig:
 
     # ── Preferences ───────────────────────────────────────────────────────────
 
-    def get_pref(self, key: str, default: str = "") -> str:
-        """Get a preference value by dotted or flat key. Returns string."""
+    def get_pref(self, key: str, default: Any = "") -> Any:
+        """Get a preference value by dotted or flat key. Preserves TOML types (int/bool/list/str)."""
         data = _read_toml(self._prefs_path)
         val = self._deep_get(data, key)
         if val is None:
             return default
-        return str(val)
+        return val
 
     def set_pref(self, key: str, value: str, **_kwargs: Any) -> None:
         """Set a preference. Accepts source/changed_by kwargs for compat but ignores them."""

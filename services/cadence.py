@@ -207,6 +207,7 @@ class Cadence:
                     await asyncio.to_thread(self._run_routine, rdef.name, None, "cron")
             await self._check_adaptive_routines()
             await asyncio.to_thread(self._tick_eval_windows)
+            await asyncio.to_thread(self._tick_running_ttl)
             await asyncio.to_thread(self._retry_failed_notifications)
             await asyncio.sleep(30)
 
@@ -433,7 +434,7 @@ class Cadence:
             interval = max(interval, min_s)
         if max_s:
             interval = min(interval, max_s)
-        return interval
+        return max(60, interval)
 
     def _check_upstream_deps(self, routine_name: str) -> tuple[bool, str]:
         """Check if all depends_on routines succeeded recently."""
@@ -698,17 +699,68 @@ class Cadence:
             except Exception:
                 continue
         for row in expired:
+            deed_id = str(row.get("deed_id") or "")
             try:
                 self._nerve.emit(
                     "deed_eval_expired",
                     {
-                        "deed_id": str(row.get("deed_id") or ""),
+                        "deed_id": deed_id,
                         "slip_id": str(row.get("slip_id") or ""),
                         "folio_id": str(row.get("folio_id") or ""),
                         "deed_title": str(row.get("slip_title") or row.get("deed_title") or row.get("title") or ""),
                         "feedback_expired": True,
                     },
                 )
+                self._nerve.emit(
+                    "deed_closed",
+                    {
+                        "deed_id": deed_id,
+                        "sub_status": "timed_out",
+                        "source": "eval_expired",
+                    },
+                )
+            except Exception:
+                continue
+
+    def _tick_running_ttl(self) -> None:
+        """Expire running deeds that exceed max lifetime (default 4 hours)."""
+        now = datetime.now(timezone.utc)
+        max_running_s = 4 * 3600  # 4 hours
+        try:
+            prefs = self._instinct.all_prefs() if self._instinct else {}
+            max_running_s = int(prefs.get("deed_running_ttl_s") or max_running_s)
+        except Exception:
+            pass
+        expired: list[dict] = []
+
+        def _mutate(deeds: list[dict]) -> None:
+            for row in deeds:
+                status = str(row.get("deed_status") or "").strip().lower()
+                if status != "running":
+                    continue
+                created = self._parse_utc_iso(str(row.get("created_utc") or ""))
+                if created is None:
+                    continue
+                elapsed = (now - created).total_seconds()
+                if elapsed < max_running_s:
+                    continue
+                row["deed_status"] = "closed"
+                row["deed_sub_status"] = "timed_out"
+                row["phase"] = "history"
+                row["updated_utc"] = self._utc_now_iso()
+                row["running_ttl_exceeded"] = True
+                expired.append(dict(row))
+
+        self._ledger.mutate_deeds(_mutate)
+        for row in expired:
+            deed_id = str(row.get("deed_id") or "")
+            try:
+                self._nerve.emit("deed_closed", {
+                    "deed_id": deed_id,
+                    "sub_status": "timed_out",
+                    "source": "running_ttl_exceeded",
+                })
+                logger.warning("Deed %s exceeded running TTL (%ds), force-closed", deed_id, max_running_s)
             except Exception:
                 continue
 

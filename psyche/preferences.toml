@@ -13,3 +13,5 @@ deed_ration_ratio = 0.75
 [routing]
 research_default_sources = ["brave", "semantic_scholar"]
 code_default_sources = ["github"]
+
+eval_window_hours = "48"

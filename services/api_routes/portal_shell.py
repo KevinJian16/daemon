@@ -125,12 +125,23 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
 
     def _cadence_state_for_slip(slip: dict) -> dict:
         writ = _cadence_writ_for_slip(slip)
+        schedule = str(((writ or {}).get("match") or {}).get("schedule") or "")
+        next_trigger = ""
+        if schedule and bool(writ) and str((writ or {}).get("status") or "") == "active":
+            try:
+                from services.cadence import Cadence
+                nxt = Cadence._next_cron_occurrence(schedule, datetime.now(timezone.utc))
+                if nxt:
+                    next_trigger = nxt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            except Exception:
+                pass
         return {
             "writ_id": str((writ or {}).get("writ_id") or ""),
-            "schedule": str(((writ or {}).get("match") or {}).get("schedule") or ""),
+            "schedule": schedule,
             "status": str((writ or {}).get("status") or ""),
             "standing": bool(slip.get("standing")),
             "active": bool(writ) and str((writ or {}).get("status") or "") == "active",
+            "next_trigger_utc": next_trigger,
         }
 
     def _ordered_slips_for_folio(folio: dict) -> list[dict]:
@@ -147,36 +158,56 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
         )
         return slips
 
-    def _timeline_for_slip(slip: dict, deed: dict | None) -> list[dict]:
-        rows: list[dict] = []
+    def _dag_for_slip(slip: dict, deed: dict | None) -> dict:
+        """Build dag.nodes + dag.edges from deed plan or slip design."""
+        nodes: list[dict] = []
+        edges: list[dict] = []
+        move_results: dict[str, str] = {}
+
         if isinstance(deed, dict):
             plan = deed.get("plan") if isinstance(deed.get("plan"), dict) else {}
+            # Extract move result statuses
+            for mr in (plan.get("move_results") or []):
+                if isinstance(mr, dict):
+                    mid = str(mr.get("move_id") or "")
+                    if mid:
+                        move_results[mid] = "completed" if mr.get("ok") else "failed"
+            # Try plan_display.timeline first (runtime view)
             display = plan.get("plan_display") if isinstance(plan.get("plan_display"), dict) else {}
             timeline = display.get("timeline") if isinstance(display.get("timeline"), list) else []
             if timeline:
                 for index, item in enumerate(timeline):
                     if not isinstance(item, dict):
                         continue
-                    rows.append(
-                        {
-                            "id": str(item.get("id") or f"step_{index + 1}"),
-                            "label": str(item.get("label") or item.get("instruction") or item.get("title") or f"步骤 {index + 1}"),
-                        }
-                    )
-        if rows:
-            return rows
-        design = slip.get("design") if isinstance(slip.get("design"), dict) else {}
-        moves = design.get("moves") if isinstance(design.get("moves"), list) else []
-        for index, move in enumerate(moves):
-            if not isinstance(move, dict):
-                continue
-            rows.append(
-                {
-                    "id": str(move.get("id") or f"move_{index + 1}"),
+                    node_id = str(item.get("id") or f"step_{index + 1}")
+                    nodes.append({
+                        "id": node_id,
+                        "label": str(item.get("label") or item.get("instruction") or item.get("title") or f"步骤 {index + 1}"),
+                        "agent": str(item.get("agent") or item.get("role") or ""),
+                        "status": move_results.get(node_id, "pending"),
+                    })
+                    if index > 0:
+                        prev_id = str(timeline[index - 1].get("id") or f"step_{index}") if isinstance(timeline[index - 1], dict) else f"step_{index}"
+                        edges.append({"from": prev_id, "to": node_id})
+
+        if not nodes:
+            design = slip.get("design") if isinstance(slip.get("design"), dict) else {}
+            moves = design.get("moves") if isinstance(design.get("moves"), list) else []
+            for index, move in enumerate(moves):
+                if not isinstance(move, dict):
+                    continue
+                node_id = str(move.get("id") or f"move_{index + 1}")
+                nodes.append({
+                    "id": node_id,
                     "label": str(move.get("instruction") or move.get("message") or move.get("title") or f"步骤 {index + 1}"),
-                }
-            )
-        return rows
+                    "agent": str(move.get("agent") or move.get("role") or ""),
+                    "status": move_results.get(node_id, "pending"),
+                })
+                if index > 0:
+                    prev_id = str(moves[index - 1].get("id") or f"move_{index}") if isinstance(moves[index - 1], dict) else f"move_{index}"
+                    edges.append({"from": prev_id, "to": node_id})
+
+        return {"nodes": nodes, "edges": edges}
 
     def _deed_status(deed: dict | None) -> str:
         return str((deed or {}).get("deed_status") or "").strip().lower()
@@ -210,9 +241,7 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
             "result_ready": result_ready,
             "cadence": _cadence_state_for_slip(slip),
             "message_count": len(ctx.load_deed_messages(str((deed or {}).get("deed_id") or ""), 500)) if deed else 0,
-            "plan": {
-                "timeline": _timeline_for_slip(slip, deed),
-            },
+            "dag": _dag_for_slip(slip, deed),
         }
 
     def _bucket_for_slip(summary: dict) -> str:
@@ -412,15 +441,26 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
         return payload
 
     @app.get("/portal-api/slips/{slip_slug}/messages")
-    def portal_slip_messages(slip_slug: str, request: Request, limit: int = 300):
+    def portal_slip_messages(slip_slug: str, request: Request, limit: int = 500):
         slip = _resolve_slip(slip_slug)
-        deed = _active_deed_for_slip(slip) or _latest_deed_for_slip(slip)
-        if not isinstance(deed, dict):
+        deeds = _deeds_for_slip(slip)
+        if not deeds:
             return []
-        deed_id = str(deed.get("deed_id") or "")
-        rows = ctx.load_deed_messages(deed_id, max(1, min(limit, 500)))
-        ctx.log_portal_event("portal_slip_messages", {"slip_id": slip.get("slip_id"), "count": len(rows)}, request)
-        return rows
+        all_messages: list[dict] = []
+        for deed_row in deeds:
+            deed_id = str(deed_row.get("deed_id") or "")
+            if not deed_id:
+                continue
+            msgs = ctx.load_deed_messages(deed_id, 500)
+            for msg in msgs:
+                if not isinstance(msg, dict):
+                    continue
+                msg.setdefault("deed_id", deed_id)
+                all_messages.append(msg)
+        all_messages.sort(key=lambda m: str(m.get("created_utc") or ""))
+        result = all_messages[:max(1, min(limit, 1000))]
+        ctx.log_portal_event("portal_slip_messages", {"slip_id": slip.get("slip_id"), "count": len(result), "deed_count": len(deeds)}, request)
+        return result
 
     @app.post("/portal-api/slips/{slip_slug}/message")
     async def portal_slip_message(slip_slug: str, request: Request):
@@ -433,11 +473,8 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
         if isinstance(deed, dict):
             deed_id = str(deed.get("deed_id") or "")
             ctx.append_deed_message(deed_id, role="user", content=text, event="user_message", meta={"source": "portal"})
-            workflow_id = ""
-            if _deed_status(deed) == "running":
-                workflow_id = await _signal_deed(deed_id, deed, signal_name="pause_execution", payload={"source": "portal_message"})
-            ctx.log_portal_event("portal_slip_message", {"slip_id": slip.get("slip_id"), "deed_id": deed_id, "workflow_id": workflow_id}, request)
-            return {"ok": True, "slip_id": slip.get("slip_id"), "deed_id": deed_id, "workflow_id": workflow_id}
+            ctx.log_portal_event("portal_slip_message", {"slip_id": slip.get("slip_id"), "deed_id": deed_id}, request)
+            return {"ok": True, "slip_id": slip.get("slip_id"), "deed_id": deed_id}
 
         _check_writ_preconditions(slip)
         plan = _spawn_plan_for_slip(slip, extra_text=text)
@@ -452,7 +489,7 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
         slip = _resolve_slip(slip_slug)
         body = await request.json()
         target = str(body.get("target") or "").strip().lower()
-        if target not in {"continue", "park", "archive"}:
+        if target not in {"continue", "park", "settle", "archive"}:
             raise HTTPException(status_code=400, detail="invalid_stance_target")
         deed = _active_deed_for_slip(slip)
         if target == "continue":
@@ -467,6 +504,31 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
                 raise HTTPException(status_code=409, detail=result.get("error_code") or result.get("error") or "slip_resume_failed")
             _record_operation(str(result.get("deed_id") or ""), "继续执行")
             return result
+        if target == "settle":
+            if not isinstance(deed, dict):
+                raise HTTPException(status_code=409, detail="no_active_deed_to_settle")
+            deed_id = str(deed.get("deed_id") or "")
+            deed_status = _deed_status(deed)
+            if deed_status == "closed":
+                raise HTTPException(status_code=409, detail="deed_already_closed")
+            _record_operation(deed_id, "收束")
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            if deed_status == "running":
+                await _signal_deed(deed_id, deed, signal_name="pause_execution", payload={"source": "portal_settle"})
+            def _settle(deeds: list[dict]) -> None:
+                for row in deeds:
+                    if str(row.get("deed_id") or "") != deed_id:
+                        continue
+                    row["deed_status"] = "closed"
+                    row["deed_sub_status"] = "succeeded"
+                    row["phase"] = "history"
+                    row["updated_utc"] = now
+                    row["settled_utc"] = now
+                    break
+            ctx.ledger.mutate_deeds(_settle)
+            ctx.nerve.emit("deed_closed", {"deed_id": deed_id, "sub_status": "succeeded", "source": "portal_settle"})
+            return {"ok": True, "slip_id": slip.get("slip_id"), "deed_id": deed_id, "settled": True}
+
         if target == "park":
             deed_id = str((deed or {}).get("deed_id") or "")
             _record_operation(deed_id, "暂存")
@@ -582,11 +644,16 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
         for writ in ctx.folio_writ.list_writs(folio_id=str(folio.get("folio_id") or "")):
             if not isinstance(writ, dict):
                 continue
+            match = writ.get("match") if isinstance(writ.get("match"), dict) else {}
+            action = writ.get("action") if isinstance(writ.get("action"), dict) else {}
+            filters = match.get("filter") if isinstance(match.get("filter"), dict) else {}
             writs.append(
                 {
                     "id": str(writ.get("writ_id") or ""),
                     "title": str(writ.get("title") or "新成文"),
                     "status": str(writ.get("status") or "active"),
+                    "source_slip_id": str(filters.get("slip_id") or ""),
+                    "target_slip_id": str(action.get("slip_id") or ""),
                     "last_triggered_utc": str(writ.get("last_triggered_utc") or ""),
                     "recent_deeds": ctx.folio_writ.recent_deed_summaries(str(writ.get("writ_id") or ""), limit=3),
                 }
@@ -602,6 +669,12 @@ def register_portal_shell_routes(app: FastAPI, *, ctx: Any) -> None:
     def portal_slip_writ_neighbors(slip_slug: str, request: Request):
         slip = _resolve_slip(slip_slug)
         neighbors = ctx.folio_writ.writ_neighbors(str(slip.get("slip_id") or ""))
+        for group in (neighbors.get("prev") or [], neighbors.get("next") or []):
+            for entry in group:
+                neighbor_slip = ctx.folio_writ.get_slip(str(entry.get("slip_id") or ""))
+                if neighbor_slip:
+                    deed = _latest_deed_for_slip(neighbor_slip)
+                    entry["latest_deed_status"] = _deed_status(deed) if deed else ""
         ctx.log_portal_event("portal_slip_writ_neighbors", {"slip_id": slip.get("slip_id")}, request)
         return neighbors
 

@@ -62,10 +62,12 @@ async def run_openclaw_move(self, deed_root: str, plan: dict, move: dict) -> dic
         context=context_payload,
     )
 
+    rework_attempt = int(move.get("rework_attempt") or 0)
+    rework_prefix = f"[Rework attempt {rework_attempt}]\n" if rework_attempt > 0 else ""
     composed_message = (
-        f"{instruction}\n\n{json.dumps(context_payload, ensure_ascii=False)}"
+        f"{rework_prefix}{instruction}\n\n{json.dumps(context_payload, ensure_ascii=False)}"
         if context_payload
-        else instruction
+        else f"{rework_prefix}{instruction}"
     )
 
     _emit_progress("started")

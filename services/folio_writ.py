@@ -126,7 +126,7 @@ VALID_SLIP_TRIGGER_TYPES = {"manual", "timer", "writ_chain"}
 VALID_FOLIO_SUB_STATUSES = {"normal", "parked"}
 VALID_DEED_SUB_STATUSES = {
     "queued", "executing", "paused", "cancelling", "retrying",
-    "reviewing", "comparing", "evaluating",
+    "reviewing",
     "succeeded", "failed", "cancelled", "timed_out",
 }
 
@@ -734,6 +734,11 @@ class FolioWritManager:
         if not ok:
             logger.info("Writ %s skipped: %s", writ_id, reason)
             return
+        # Pre-update last_triggered_utc to prevent duplicate triggers before consumer confirms
+        if source_event == "cadence.tick":
+            tick_utc = str(payload.get("tick_utc") or "")
+            if tick_utc:
+                self.update_writ(writ_id, {"last_triggered_utc": tick_utc})
         self._nerve.emit(
             "writ_trigger_ready",
             {
@@ -959,14 +964,23 @@ class FolioWritManager:
         return (len(blocking) == 0, blocking)
 
     def active_folio_matches(self, text: str, *, limit: int = 3) -> list[dict]:
-        hay = {token for token in str(text or "").lower().split() if token}
+        query = str(text or "").strip().lower()
+        if not query:
+            return []
+        hay_tokens = {token for token in query.split() if token}
         ranked: list[tuple[int, dict]] = []
         for folio in self.list_folios():
             if str(folio.get("status") or "") != "active":
                 continue
-            title_tokens = {token for token in str(folio.get("title") or "").lower().split() if token}
-            summary_tokens = {token for token in str(folio.get("summary") or "").lower().split() if token}
-            score = len(hay & (title_tokens | summary_tokens))
+            title = str(folio.get("title") or "").lower()
+            summary = str(folio.get("summary") or "").lower()
+            combined = title + " " + summary
+            # Token intersection (works for space-delimited languages)
+            combined_tokens = {token for token in combined.split() if token}
+            token_score = len(hay_tokens & combined_tokens)
+            # Substring matching (works for CJK and all languages)
+            substr_score = sum(1 for token in hay_tokens if token in combined)
+            score = max(token_score, substr_score)
             if score > 0:
                 ranked.append((score, folio))
         ranked.sort(key=lambda item: (-item[0], str(item[1].get("updated_utc") or "")))
@@ -980,13 +994,22 @@ class FolioWritManager:
             self.update_slip(slip_id, {"folio_id": folio_id})
 
     def _attach_slip_to_folio(self, slip_id: str, folio_id: str) -> None:
-        folio = self.get_folio(folio_id)
-        if not folio:
-            return
-        slip_ids = folio.get("slip_ids") if isinstance(folio.get("slip_ids"), list) else []
-        if slip_id not in slip_ids:
-            slip_ids.append(slip_id)
-            self.update_folio(folio_id, {"slip_ids": slip_ids})
+        """Atomically append slip_id to folio.slip_ids."""
+        path = self._ledger.state_dir / self._folios_file
+
+        def _transform(data):
+            rows = data if isinstance(data, list) else []
+            for row in rows:
+                if str(row.get("folio_id") or "") == str(folio_id):
+                    slip_ids = row.get("slip_ids") if isinstance(row.get("slip_ids"), list) else []
+                    if slip_id not in slip_ids:
+                        slip_ids.append(slip_id)
+                        row["slip_ids"] = slip_ids
+                        row["updated_utc"] = _utc()
+                    break
+            return rows
+
+        self._ledger._locked_rw(path, [], _transform)
 
     def _detach_slip_from_folio(self, slip_id: str, folio_id: str) -> None:
         folio = self.get_folio(folio_id)

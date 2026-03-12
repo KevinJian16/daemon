@@ -42,7 +42,10 @@ Daemon 是一个 AI 任务系统。用户（主人）通过 **Portal** 下达任
 
 ### Deed 状态
 - 主状态：`running` | `settling` | `closed`
-- 子状态：`queued` | `executing` | `paused` | `cancelling` | `retrying` | `reviewing` | `comparing` | `evaluating` | `succeeded` | `failed` | `cancelled` | `timed_out`
+- 子状态（按主状态分组）：
+  - `running` → `queued` | `executing` | `paused` | `retrying`
+  - `settling` → `reviewing`
+  - `closed` → `succeeded` | `failed` | `cancelled` | `timed_out`
 
 ### Folio 状态
 - 主状态：`active` | `archived` | `deleted`
@@ -151,13 +154,17 @@ npm run build    # 产出到 compiled/
     "schedule": "0 9 * * 1-5",
     "status": "active",
     "standing": true,
-    "active": true
+    "active": true,
+    "next_trigger_utc": "2026-03-13T09:00:00Z"
   },
   "message_count": 12,
-  "plan": {
-    "timeline": [
-      { "id": "move_1", "label": "搜集资料" },
-      { "id": "move_2", "label": "撰写报告" }
+  "dag": {
+    "nodes": [
+      { "id": "move_1", "label": "搜集资料", "agent": "scout", "status": "completed" },
+      { "id": "move_2", "label": "撰写报告", "agent": "scribe", "status": "pending" }
+    ],
+    "edges": [
+      { "from": "move_1", "to": "move_2" }
     ]
   }
 }
@@ -190,7 +197,6 @@ Folio 摘要（`FolioSummary`）：
 ```json
 {
   ...SlipSummary,
-  "feedback": { ... },        // 当前反馈状态
   "current_deed": { "id": "", "status": "", "created_utc": "", "updated_utc": "" },
   "recent_deeds": [           // 最近 6 个 Deed
     { "id": "", "status": "", "created_utc": "", "updated_utc": "" }
@@ -248,8 +254,8 @@ writ_precondition_unmet:predecessors_not_closed:slip_xxx,slip_yyy
 响应：
 ```json
 {
-  "prev": [{ "slip_id": "...", "slug": "...", "title": "..." }],
-  "next": [{ "slip_id": "...", "slug": "...", "title": "..." }]
+  "prev": [{ "slip_id": "...", "slug": "...", "title": "...", "latest_deed_status": "closed" }],
+  "next": [{ "slip_id": "...", "slug": "...", "title": "...", "latest_deed_status": "running" }]
 }
 ```
 
@@ -259,13 +265,15 @@ writ_precondition_unmet:predecessors_not_closed:slip_xxx,slip_yyy
 - `prev` 有多个 → 合并（列出多个"上一张"，标注各自标题）
 - 都为空 → 不显示导航
 
-### 6.6 反馈
+### 6.6 反馈（仅后端内部使用）
+
+> **Portal 不调用这些接口。** 反馈是对话流的一部分——用户在 Slip 对话框中说的话就是反馈，不存在独立反馈 UI（DESIGN_QA §7.3）。以下接口供 Console 和内部统计使用。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/portal-api/slips/{slug}/feedback/state` | 反馈状态 |
-| POST | `/portal-api/slips/{slug}/feedback` | 提交反馈 |
-| POST | `/portal-api/slips/{slug}/feedback/append` | 追加反馈 |
+| GET | `/portal-api/slips/{slug}/feedback/state` | 反馈状态（backend-only） |
+| POST | `/portal-api/slips/{slug}/feedback` | 提交反馈（backend-only） |
+| POST | `/portal-api/slips/{slug}/feedback/append` | 追加反馈（backend-only） |
 
 ### 6.7 结果文件
 
@@ -301,6 +309,8 @@ Folio 详情响应：
       "id": "writ_xxx",
       "title": "每日报告",
       "status": "active",
+      "source_slip_id": "slip_abc",
+      "target_slip_id": "slip_def",
       "last_triggered_utc": "...",
       "recent_deeds": [...]
     }
@@ -343,7 +353,16 @@ const ws = new WebSocket(`ws://${location.host}/ws`);
 ```
 
 ### 心跳
-服务端每 20 秒发 ping，客户端收到后回 `"pong"`。超时 20 秒断连。
+
+实际行为（api.py:1215-1226）：
+1. 服务端等待客户端消息，超时 20 秒
+2. 超时后服务端发 `{"event": "ping"}`
+3. 客户端发文本 `"ping"` 时，服务端回 `{"event": "pong"}`
+
+**前端应实现**：
+- 每 15 秒发一次文本 `"ping"`
+- 收到 `{"event": "ping"}` 时回文本 `"ping"`
+- 20 秒没收到任何服务端消息 → 断连重连
 
 ### 事件格式
 ```json
@@ -368,7 +387,7 @@ const ws = new WebSocket(`ws://${location.host}/ws`);
 
 **推荐用法**：
 - 收到 `deed_progress` / `deed_message` → 追加到当前 Slip 的消息列表
-- 收到 `deed_settling` → 更新 Deed 状态为 settling，提示用户评价
+- 收到 `deed_settling` → 更新 Deed 执行块状态为 settling，显示产物预览
 - 收到 `deed_closed` → 更新 Deed 状态，刷新 sidebar
 - 所有事件不分频道，前端按 `deed_id` / `slip_id` 过滤
 
@@ -394,18 +413,14 @@ const ws = new WebSocket(`ws://${location.host}/ws`);
    - 显示 `plan.timeline` 里的步骤列表
    - DAG 执行中时，当前步骤高亮
 
-4. **历次 Deed 列表**
-   - `recent_deeds` 数组，最近的在上
-   - 旧 Deed 逐渐淡去（CSS opacity 递减）
-   - 点击进入 Deed 详情页
-
-5. **对话流**
-   - 调用 `GET .../messages`
-   - 渲染所有消息（user / assistant / system）
+4. **统一对话流**（Slip 级）
+   - 调用 `GET /portal-api/slips/{slug}/messages` 获取该 Slip 下所有 Deed 的合并对话流
+   - 渲染所有消息（user / assistant / system），每条消息带 `deed_id` 字段
+   - Deed 执行块内嵌在对话流中（通过 `event: "operation"` 消息标识边界），可展开/折叠
    - `event == "operation"` 的 system 消息用淡色标签
    - WebSocket 推送 `deed_message` 时实时追加
 
-6. **底部区域**
+5. **底部区域**
    - 输入框（Composer）
    - **动作按钮区**（按 `trigger_type` 动态显示）：
 
@@ -415,28 +430,27 @@ const ws = new WebSocket(`ws://${location.host}/ws`);
 | `timer` | 定时信息。显示 `cadence.schedule` + 下次触发时间 + 开/关 |
 | `writ_chain` | 前驱条件。调 writ-neighbors，列出 prev Slips 的状态。全部 closed → 显示可执行；否则 disabled"等待前置任务" |
 
-### 8.2 Deed 页面（`/portal/slips/{slug}/deeds/{deed_id}`）
+### 8.2 Deed 执行块（内嵌于 Slip 页面）
 
-从 Slip 页面点入某个 Deed，或执行后自动跳转。
+Deed 不是独立页面，是 Slip 页面对话流中的内嵌展开块。路由 `/portal/slips/{slug}/deeds/{deed_id}` 作为**深链接**保留：打开后渲染 Slip 页面，自动滚动到对应 Deed 块并展开。
 
-**结构**：
+**Deed 块结构**（嵌在 Slip 对话流中，可展开/折叠）：
 
 1. **DAG 进度**
    - 同 plan card，但显示当前 Move 的执行流动
    - WebSocket `deed_progress` 事件驱动进度更新
 
-2. **对话流**
-   - 同 Slip 消息但只显示该 Deed 的
-   - running 期间输入框开放，对话不影响执行
+2. **执行详情**
+   - Offering 版本和执行细节
+   - running 期间对话框继续可用，对话不影响执行
 
 3. **按钮区**
-   - **开始/停止** (toggle)：`running` 时显示"停止"（→ `POST .../stance` target=park），`paused` 时显示"继续"（→ target=continue）
-   - **收束**：结束评价周期，关闭 Deed
+   - **暂停/恢复** (toggle)：`running` 时显示"暂停"（→ `POST /deeds/{deed_id}/pause`），`paused` 时显示"恢复"（→ `POST /deeds/{deed_id}/resume`）
+   - **收束**：结束评价周期，关闭 Deed（→ `POST /portal-api/slips/{slug}/stance` + `{ "target": "park" }`）
 
 4. **收束后**
-   - 页面冻结为只读
+   - 块冻结为只读
    - 显示产物标签（result files）
-   - 显示完整对话历史
    - 无操作按钮
 
 ### 8.3 Folio 页面（`/portal/folios/{slug}`）
@@ -592,18 +606,7 @@ export function sendVoiceMessage(sessionId, message) {
   });
 }
 
-// 反馈
-export function getSlipFeedbackState(slug) {
-  return request(`/portal-api/slips/${encodeURIComponent(slug)}/feedback/state`);
-}
-
-export function submitSlipFeedback(slug, feedback) {
-  return request(`/portal-api/slips/${encodeURIComponent(slug)}/feedback`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(feedback),
-  });
-}
+// 注意：feedback API 不供 Portal 使用（仅后端内部），无需在前端实现
 ```
 
 同时在 `friendlyError` 中添加新增的错误处理：
@@ -658,9 +661,18 @@ API 错误格式统一：HTTP 状态码 + `detail` 字段。
 | deed | 行事 | |
 | draft | 草稿 | |
 | writ | 成文 | |
-| running | 执行中 | deed 状态 |
-| settling | 待收束 | deed 状态 |
-| closed | 已冻结 | deed 状态 |
+| running | 执行中 | deed 主状态 |
+| settling | 待收束 | deed 主状态 |
+| closed | 已关闭 | deed 主状态 |
+| queued | 排队中 | deed 子状态（running） |
+| executing | 执行中 | deed 子状态（running） |
+| paused | 已暂停 | deed 子状态（running） |
+| retrying | 重试中 | deed 子状态（running） |
+| reviewing | 待收束 | deed 子状态（settling） |
+| succeeded | 已完成 | deed 子状态（closed） |
+| failed | 失败 | deed 子状态（closed） |
+| cancelled | 已取消 | deed 子状态（closed） |
+| timed_out | 已超时 | deed 子状态（closed） |
 | active | 在场 | slip/folio 状态 |
 | archived | 归档 | slip/folio 状态 |
 | parked | 暂放 | sub_status |

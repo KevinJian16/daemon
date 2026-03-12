@@ -163,6 +163,7 @@ class Will:
         deed_root = self._make_deed_root(deed_id)
         self._record_deed(plan, "running", deed_root, sub_status="executing")
         self._record_registry_links(plan)
+        self._wash_previous_segment(plan, deed_id)
 
         try:
             workflow_id = f"daemon-{deed_id}"
@@ -485,6 +486,46 @@ class Will:
         plan_copy["deed_sub_status"] = "queued"
         plan_copy["queued_utc"] = _utc()
         self._record_deed(plan_copy, "running", "", sub_status="queued")
+
+    def _wash_previous_segment(self, plan: dict, deed_id: str) -> None:
+        """Trigger message washing at run boundary if this Slip has previous deeds."""
+        slip_id = str(plan.get("slip_id") or "")
+        if not slip_id or not self._folio_writ:
+            return
+        try:
+            from services.wash import wash_at_run_boundary
+            previous_deeds = self._ledger.load_deeds()
+            prev_deed_ids = [
+                str(d.get("deed_id") or "")
+                for d in sorted(
+                    [d for d in previous_deeds if isinstance(d, dict) and str(d.get("slip_id") or "") == slip_id and str(d.get("deed_id") or "") != deed_id],
+                    key=lambda d: str(d.get("created_utc") or ""),
+                    reverse=True,
+                )
+                if str(d.get("deed_id") or "")
+            ]
+            if not prev_deed_ids:
+                return
+            result = wash_at_run_boundary(
+                slip_id=slip_id,
+                new_deed_id=deed_id,
+                previous_deed_ids=prev_deed_ids,
+                load_messages_fn=lambda did, limit: self._ledger.load_jsonl(
+                    self._state / "deeds" / did / "messages.jsonl", max_items=limit
+                ),
+                ledger=self._ledger,
+                state_dir=self._state,
+            )
+            if result.get("washed") and result.get("brief_supplement"):
+                # Inject supplement into plan for the new run
+                brief = plan.get("brief") if isinstance(plan.get("brief"), dict) else {}
+                existing = str(brief.get("context_supplement") or "")
+                supplement = str(result["brief_supplement"])
+                brief["context_supplement"] = f"{existing}\n\n[上轮对话摘要]\n{supplement}".strip() if existing else f"[上轮对话摘要]\n{supplement}"
+                plan["brief"] = brief
+                logger.info("Wash: injected supplement for deed %s from %s (%d chars)", deed_id, prev_deed_ids[0], len(supplement))
+        except Exception as exc:
+            logger.warning("Wash failed for slip %s: %s", slip_id, exc)
 
     def _notify_deed_started(self, plan: dict) -> None:
         prefs = {}

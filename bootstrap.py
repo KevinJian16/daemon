@@ -209,7 +209,7 @@ def bootstrap(daemon_home: Path | None = None, openclaw_home: Path | None | obje
         # ── Retinue registration ──────────────────────────────────────
         retinue_status_file = home / "state" / "pool_status.json"
         if not retinue_status_file.exists() or force:
-            retinue_size = int(psyche_config.get_pref("retinue_size_n", str(DEFAULT_POOL_SIZE)))
+            retinue_size = int(psyche_config.get_pref("retinue_size_n", DEFAULT_POOL_SIZE))
             retinue_report = register_retinue_instances(oc_home, home, pool_size=retinue_size)
             report["retinue"] = retinue_report
             if not retinue_report.get("ok"):

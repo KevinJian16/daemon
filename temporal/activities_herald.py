@@ -81,8 +81,23 @@ async def run_update_deed_status(self, deed_root: str, plan: dict, deed_status: 
         }
         if deed_sub_status == "failed":
             self._ether.emit("deed_failed", payload)
-            if "rework_exhausted" in str(plan.get("last_error") or ""):
-                self._ether.emit("deed_rework_exhausted", payload)
+            try:
+                import os
+                import httpx
+                prefs = self._psyche_config.all_prefs() if self._psyche_config else {}
+                if prefs.get("telegram_enabled") == "true":
+                    adapter_url = os.environ.get("TELEGRAM_ADAPTER_URL", "http://127.0.0.1:8001")
+                    httpx.post(f"{adapter_url}/notify", json={
+                        "event": "deed_failed",
+                        "payload": {
+                            "deed_id": deed_id,
+                            "deed_title": str(plan.get("deed_title") or plan.get("title") or deed_id),
+                            "error": str(plan.get("last_error") or "未知错误"),
+                        },
+                    }, timeout=5)
+            except Exception as exc:
+                from temporalio import activity as _act
+                _act.logger.warning("Telegram notify deed_failed failed: %s", exc)
         self._ether.emit("deed_closed", payload)
 
     elif deed_status == "closed" and deed_sub_status not in {"failed", "cancelled"}:

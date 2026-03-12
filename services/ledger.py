@@ -135,6 +135,11 @@ class Ledger:
             for row in deeds:
                 if str(row.get("deed_id") or "") == key:
                     row_out = row
+                    # Merge default_row fields that don't already exist
+                    if default_row:
+                        for k, v in default_row.items():
+                            if k not in row_out or row_out[k] is None or row_out[k] == "":
+                                row_out[k] = v
                     break
             else:
                 row_out = dict(default_row or {})

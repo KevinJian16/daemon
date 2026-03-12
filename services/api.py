@@ -103,6 +103,126 @@ class WebSocketHub:
             self.disconnect(ws)
 
 
+class _CompatMemory:
+    def search_by_tags(self, tags: list[str], *, limit: int = 10, folio_id: str | None = None) -> list[dict[str, Any]]:
+        del tags, limit, folio_id
+        return []
+
+    def add(self, *, content: str, tags: list[str] | None = None, folio_id: str | None = None, metadata: dict[str, Any] | None = None) -> None:
+        del content, tags, folio_id, metadata
+
+
+class _CompatLore:
+    def list_records(self, *, folio_id: str | None = None, writ_id: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
+        del folio_id, writ_id, limit
+        return []
+
+
+class _CompatInstinct:
+    def __init__(self, psyche_dir: Path) -> None:
+        self._versions_path = psyche_dir / "config_versions.jsonl"
+        self._rations_path = psyche_dir / "rations_compat.json"
+
+    def _load_versions(self) -> list[dict[str, Any]]:
+        if not self._versions_path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        for line in self._versions_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+        return rows
+
+    def _save_versions(self, rows: list[dict[str, Any]]) -> None:
+        self._versions_path.parent.mkdir(parents=True, exist_ok=True)
+        text = "".join(f"{json.dumps(row, ensure_ascii=False)}\n" for row in rows)
+        self._versions_path.write_text(text, encoding="utf-8")
+
+    def _load_rations(self) -> dict[str, dict[str, Any]]:
+        if not self._rations_path.exists():
+            return {}
+        try:
+            data = json.loads(self._rations_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _save_rations(self, payload: dict[str, dict[str, Any]]) -> None:
+        self._rations_path.parent.mkdir(parents=True, exist_ok=True)
+        self._rations_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def record_config_version(self, target: str, payload: dict[str, Any], *, changed_by: str = "", reason: str = "") -> dict[str, Any]:
+        rows = self._load_versions()
+        target_rows = [row for row in rows if str(row.get("target") or "") == target]
+        version = max((int(row.get("version") or 0) for row in target_rows), default=0) + 1
+        row = {
+            "target": target,
+            "version": version,
+            "value_json": json.dumps(payload, ensure_ascii=False),
+            "changed_by": changed_by,
+            "reason": reason,
+            "updated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        rows.append(row)
+        self._save_versions(rows)
+        return row
+
+    def versions(self, target: str, *, limit: int = 50) -> list[dict[str, Any]]:
+        rows = [row for row in self._load_versions() if str(row.get("target") or "") == target]
+        rows.sort(key=lambda row: int(row.get("version") or 0), reverse=True)
+        return rows[: max(1, limit)]
+
+    def all_rations(self) -> list[dict[str, Any]]:
+        payload = self._load_rations()
+        return [{"resource_type": key, **value} for key, value in sorted(payload.items())]
+
+    def get_ration(self, resource_type: str) -> dict[str, Any]:
+        payload = self._load_rations()
+        row = payload.get(resource_type)
+        if not isinstance(row, dict):
+            return {}
+        return {"resource_type": resource_type, **row}
+
+    def set_ration(self, resource_type: str, daily_limit: int, *, changed_by: str = "") -> dict[str, Any]:
+        payload = self._load_rations()
+        row = {
+            "daily_limit": int(daily_limit),
+            "updated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "changed_by": changed_by,
+        }
+        payload[resource_type] = row
+        self._save_rations(payload)
+        self.record_config_version(f"ration.{resource_type}", row, changed_by=changed_by, reason="set_ration")
+        return {"resource_type": resource_type, **row}
+
+    def rollback(self, target: str, version: int, *, changed_by: str = "") -> bool:
+        row = next((item for item in self.versions(target, limit=500) if int(item.get("version") or 0) == int(version)), None)
+        if not row:
+            return False
+        if target.startswith("ration."):
+            resource_type = target.split(".", 1)[1]
+            try:
+                payload = json.loads(str(row.get("value_json") or "{}"))
+            except Exception:
+                return False
+            if not isinstance(payload, dict):
+                return False
+            current = self._load_rations()
+            payload["updated_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            payload["changed_by"] = changed_by
+            current[resource_type] = payload
+            self._save_rations(current)
+            self.record_config_version(target, payload, changed_by=changed_by, reason=f"rollback_to_v{version}")
+            return True
+        return False
+
+
 
 def create_app() -> FastAPI:
     # Ensure runtime entrypoint can read .env without relying on shell exports.
@@ -117,7 +237,10 @@ def create_app() -> FastAPI:
     psyche_dir.mkdir(parents=True, exist_ok=True)
     psyche_config = PsycheConfig(home / "psyche")
     ledger_stats = LedgerStats(psyche_dir / "ledger.db")
-    instinct_engine = InstinctEngine(home / "psyche")
+    instinct_engine = InstinctEngine(home / "psyche" / "instinct.md")
+    memory = _CompatMemory()
+    lore = _CompatLore()
+    instinct = _CompatInstinct(psyche_dir)
 
     # Initialize infrastructure.
     cortex = Cortex(psyche_config)
@@ -1412,6 +1535,7 @@ p{
                     break
 
             ledger.mutate_deeds(_close_eval)
+            nerve.emit("deed_closed", {"deed_id": deed_id, "sub_status": "succeeded", "source": "feedback_submitted"})
 
         # Flow feedback to Writ trigger statistics (P5: feedback→Writ learning).
         if first_scored_feedback and deed_record:
@@ -1505,6 +1629,10 @@ p{
 
         @app.get("/portal/slips/{slip_slug}", include_in_schema=False)
         async def _serve_portal_slip(slip_slug: str):
+            return _FileResponse(_portal_index, media_type="text/html")
+
+        @app.get("/portal/slips/{slip_slug}/deeds/{deed_id}", include_in_schema=False)
+        async def _serve_portal_slip_deed(slip_slug: str, deed_id: str):
             return _FileResponse(_portal_index, media_type="text/html")
 
         app.mount("/_portal", StaticFiles(directory=_portal_static_dir), name="portal_static")

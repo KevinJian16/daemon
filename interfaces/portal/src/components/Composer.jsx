@@ -6,7 +6,7 @@ export default function Composer({
   value,
   onChange,
   onSubmit,
-  placeholder = "How can I help you today?",
+  placeholder = "继续说",
   disabled = false,
   loading = false,
   metaLabel = "Slip",
@@ -19,6 +19,7 @@ export default function Composer({
   onInputFocus = null,
   onHistoryUp = null,
   embedded = false,
+  testIdPrefix = "composer",
 }) {
   const inputRef = useRef(null);
 
@@ -44,6 +45,7 @@ export default function Composer({
 
   return (
     <div
+      data-testid={`${testIdPrefix}-root`}
       className={
         embedded
           ? "px-4 pb-4 pt-3"
@@ -56,6 +58,7 @@ export default function Composer({
             <div className="relative">
               <textarea
                 ref={inputRef}
+                data-testid={`${testIdPrefix}-input`}
                 value={value}
                 onChange={(event) => onChange(event.target.value)}
                 onFocus={onInputFocus || undefined}
@@ -82,6 +85,7 @@ export default function Composer({
                   type="button"
                   disabled={attachDisabled}
                   onClick={onAttachClick || undefined}
+                  data-testid={`${testIdPrefix}-attach`}
                   title={attachDisabled ? "材料上传后端未接入" : "挂一份假材料"}
                   className="flex h-8 min-w-8 items-center justify-center overflow-hidden rounded-lg border border-[#00000015] bg-transparent px-1.5 text-[#6b6a68] transition hover:bg-[#f5f5f0] disabled:opacity-60"
                 >
@@ -91,12 +95,13 @@ export default function Composer({
 
               {metaDisabled || !onMetaClick ? (
                 <div className="inline-flex h-8 min-w-16 items-center justify-center rounded-md bg-[#f5f5f0] px-3 text-[14px] text-[#6b6a68]">
-                  {metaLabel}
+                  <span data-testid={`${testIdPrefix}-meta-label`}>{metaLabel}</span>
                 </div>
               ) : (
                 <button
                   type="button"
                   onClick={onMetaClick}
+                  data-testid={`${testIdPrefix}-meta-button`}
                   className="flex h-8 min-w-16 items-center justify-center whitespace-nowrap rounded-md px-3 text-[14px] text-[#1a1a18] transition hover:bg-[#f5f5f0]"
                 >
                   {metaLabel}
@@ -106,6 +111,7 @@ export default function Composer({
               <button
                 type="button"
                 onClick={onSubmit}
+                data-testid={`${testIdPrefix}-submit`}
                 disabled={disabled || loading || !String(value || "").trim()}
                 className={cx(
                   "flex h-8 w-8 items-center justify-center rounded-lg transition-colors disabled:pointer-events-none disabled:opacity-50",

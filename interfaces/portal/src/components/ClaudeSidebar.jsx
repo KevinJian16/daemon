@@ -1,46 +1,127 @@
-import { ChevronLeft, ChevronRight, MoreHorizontal, Search, Sparkles, SquarePen } from "lucide-react";
+import { BookOpen, ChevronLeft, ChevronRight, FileText, Folder, Inbox, Search, Sparkles, StickyNote } from "lucide-react";
 import { Link } from "react-router-dom";
-import { cx, deedStatusLabel, shortText, slipStanceLabel } from "../lib/format";
+import { cx, deedStatusLabel, shortText } from "../lib/format";
 
-function SidebarItem({ to, title, subtitle, active, collapsed, meta }) {
+function matchesSearch(search, ...values) {
+  const token = String(search || "").trim().toLowerCase();
+  if (!token) return true;
+  return values
+    .map((value) => String(value || "").toLowerCase())
+    .join(" ")
+    .includes(token);
+}
+
+function dedupeRows(rows) {
+  const seen = new Set();
+  return rows.filter((row) => {
+    const key = String(row?.id || row?.draft_id || row?.slug || "");
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function deskLooseRows(sidebar, search) {
+  return dedupeRows([...(sidebar?.pending || []), ...(sidebar?.live || []), ...(sidebar?.recent || [])])
+    .filter((row) => !row?.folio)
+    .filter((row) => matchesSearch(search, row?.title, row?.objective, row?.slug, row?.deed?.status))
+    .sort((left, right) => new Date(right?.updated_utc || 0).getTime() - new Date(left?.updated_utc || 0).getTime());
+}
+
+function deskDraftRows(drafts, search) {
+  return (Array.isArray(drafts) ? drafts : [])
+    .filter((row) => String(row?.status || "").toLowerCase() === "drafting" && !String(row?.folio_id || "").trim())
+    .filter((row) =>
+      matchesSearch(search, row?.intent_snapshot, row?.candidate_brief?.objective, row?.candidate_brief?.title, row?.source),
+    )
+    .sort((left, right) => new Date(right?.updated_utc || 0).getTime() - new Date(left?.updated_utc || 0).getTime());
+}
+
+function folioRows(sidebar, search) {
+  return (sidebar?.folios || [])
+    .filter((row) => matchesSearch(search, row?.title, row?.summary, row?.slug))
+    .sort((left, right) => new Date(right?.updated_utc || 0).getTime() - new Date(left?.updated_utc || 0).getTime());
+}
+
+function topPreviewText(draft) {
+  return shortText(draft?.candidate_brief?.objective || draft?.intent_snapshot || "未成札草稿", 18);
+}
+
+function SidebarPreviewGroup({ label, children }) {
+  if (!children.length) return null;
+  return (
+    <div className="mt-3" data-testid={`sidebar-preview-group-${label}`}>
+      <div className="mb-1 px-3 text-[11px] uppercase tracking-[0.14em] text-[#9a9893]">{label}</div>
+      <div className="space-y-1">{children}</div>
+    </div>
+  );
+}
+
+function SidebarPreviewItem({ to, title, subtitle, active, icon, testId }) {
   return (
     <Link
       to={to}
+      data-testid={testId}
       className={cx(
-        "group flex items-start gap-3 rounded-2xl px-3 py-2.5 transition-colors",
+        "flex items-start gap-3 rounded-2xl px-3 py-2 transition",
         active ? "bg-[#DDD9CE]" : "hover:bg-[#E5E2D8]",
       )}
     >
-      <div className="mt-1 h-2 w-2 shrink-0 rounded-full bg-[#c8c2b3]" />
+      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-white/82 text-[#8d8b84] shadow-sm">
+        {icon}
+      </div>
+      <div className="min-w-0">
+        <div className="truncate text-sm text-[#1a1a18]">{title}</div>
+        {subtitle ? <div className="mt-0.5 truncate text-[11px] text-[#8d8b84]">{subtitle}</div> : null}
+      </div>
+    </Link>
+  );
+}
+
+function WorkspaceRow({ to, title, meta, active, collapsed, icon, testId }) {
+  return (
+    <Link
+      to={to}
+      data-testid={testId}
+      className={cx(
+        "group flex items-center gap-3 rounded-2xl px-3 py-2.5 transition-colors",
+        active ? "bg-[#DDD9CE]" : "hover:bg-[#E5E2D8]",
+      )}
+    >
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl bg-white/85 text-[#6b6a68] shadow-sm">
+        {icon}
+      </div>
       {collapsed ? null : (
-        <>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium text-[#1a1a18]">{title}</div>
-            {subtitle ? <div className="mt-0.5 truncate text-xs text-[#6b6a68]">{subtitle}</div> : null}
-            {meta ? <div className="mt-1 text-[11px] text-[#9a9893]">{meta}</div> : null}
-          </div>
-          <button type="button" disabled className="mt-0.5 opacity-0 transition group-hover:opacity-100">
-            <MoreHorizontal width={16} height={16} className="text-[#8d8b84]" />
-          </button>
-        </>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium text-[#1a1a18]">{title}</div>
+          {meta ? <div className="mt-0.5 truncate text-[11px] text-[#8d8b84]">{meta}</div> : null}
+        </div>
       )}
     </Link>
   );
 }
 
-function SidebarSection({ title, children, collapsed }) {
-  if (!children.length) return null;
+function WorkspaceHeader({ title, meta, collapsed, icon, testId }) {
   return (
-    <section className="mt-6">
-      {collapsed ? null : <div className="mb-2 px-3 text-[11px] font-medium uppercase tracking-[0.16em] text-[#8d8b84]">{title}</div>}
-      <div className="space-y-1">{children}</div>
-    </section>
+    <div data-testid={testId} className={cx("flex items-center gap-3 rounded-2xl px-3 py-2.5", collapsed && "justify-center")}>
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl bg-white/85 text-[#6b6a68] shadow-sm">
+        {icon}
+      </div>
+      {collapsed ? null : (
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium text-[#1a1a18]">{title}</div>
+          {meta ? <div className="mt-0.5 truncate text-[11px] text-[#8d8b84]">{meta}</div> : null}
+        </div>
+      )}
+    </div>
   );
 }
 
 export default function ClaudeSidebar({
   sidebar,
+  drafts,
   loading,
+  draftsLoading,
   error,
   collapsed,
   onToggleCollapse,
@@ -48,41 +129,18 @@ export default function ClaudeSidebar({
   onSearchChange,
   pathname,
 }) {
-  const normalizedSearch = String(search || "").trim().toLowerCase();
-  const filterItems = (items, type) =>
-    (items || []).filter((item) => {
-      if (!normalizedSearch) return true;
-      const haystack = [item.title, item.summary, item.objective, item.slug, item.status].join(" ").toLowerCase();
-      return haystack.includes(normalizedSearch);
-    }).map((item) => {
-      if (type === "folio") {
-        return {
-          key: item.id,
-          to: `/folios/${encodeURIComponent(item.slug)}`,
-          title: item.title,
-          subtitle: shortText(item.summary || `${item.slip_count || 0} 张签札`, 38),
-          meta: `${item.slip_count || 0} 张签札 · ${item.writ_count || 0} 道成文`,
-        };
-      }
-      return {
-        key: item.id,
-        to: `/slips/${encodeURIComponent(item.slug)}`,
-        title: item.title,
-        subtitle: shortText(item.objective || item.summary, 38),
-        meta: `${slipStanceLabel(item.stance)} · ${deedStatusLabel(item.deed?.status)}`,
-      };
-    });
-
-  const reviewItems = filterItems(sidebar?.pending, "slip");
-  const liveItems = filterItems(sidebar?.live, "slip");
-  const folioItems = filterItems(sidebar?.folios, "folio");
-  const recentItems = filterItems(sidebar?.recent, "slip");
+  const deskSlips = deskLooseRows(sidebar, search);
+  const deskDrafts = deskDraftRows(drafts, search);
+  const folios = folioRows(sidebar, search);
+  const nothingVisible = !loading && !error && !deskSlips.length && !deskDrafts.length && !folios.length;
+  const deskActive = pathname === "/";
 
   return (
     <aside
+      data-testid="portal-sidebar"
       className={cx(
         "h-full shrink-0 border-r border-[rgba(0,0,0,0.06)] bg-[#ECEBE4] transition-all duration-300",
-        collapsed ? "w-[78px]" : "w-[306px]",
+        collapsed ? "w-[82px]" : "w-[320px]",
       )}
     >
       <div className="flex h-full flex-col">
@@ -97,29 +155,10 @@ export default function ClaudeSidebar({
             <button
               type="button"
               onClick={onToggleCollapse}
+              data-testid="sidebar-collapse-toggle"
               className="flex h-8 w-8 items-center justify-center rounded-xl text-[#6b6a68] transition hover:bg-[#E5E2D8] hover:text-[#1a1a18]"
             >
               {collapsed ? <ChevronRight width={16} height={16} /> : <ChevronLeft width={16} height={16} />}
-            </button>
-          </div>
-
-          <div className={cx("mt-4 flex items-center gap-2", collapsed && "flex-col")}>
-            <button
-              type="button"
-              disabled
-              title="新建对象后端未接入"
-              className="flex h-9 min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl border border-[rgba(0,0,0,0.08)] bg-white/80 px-3 text-sm font-medium text-[#1a1a18] shadow-sm disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              <SquarePen width={16} height={16} />
-              {collapsed ? null : <span>新建</span>}
-            </button>
-            <button
-              type="button"
-              disabled
-              title="系统搜索后端未接入"
-              className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[rgba(0,0,0,0.08)] bg-white/80 text-[#6b6a68] shadow-sm disabled:cursor-not-allowed"
-            >
-              <Sparkles width={16} height={16} />
             </button>
           </div>
 
@@ -127,6 +166,7 @@ export default function ClaudeSidebar({
             <label className="mt-4 flex items-center gap-2 rounded-2xl border border-[rgba(0,0,0,0.06)] bg-white/70 px-3 py-2 shadow-sm">
               <Search width={15} height={15} className="text-[#8d8b84]" />
               <input
+                data-testid="sidebar-search-input"
                 value={search}
                 onChange={(event) => onSearchChange(event.target.value)}
                 placeholder="Search Portal"
@@ -137,35 +177,85 @@ export default function ClaudeSidebar({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-5">
-          {loading ? <div className="px-3 pt-5 text-sm text-[#6b6a68]">正在装载目录…</div> : null}
+          {loading ? <div className="px-3 pt-5 text-sm text-[#6b6a68]">正在装载案头…</div> : null}
           {error ? <div className="px-3 pt-5 text-sm text-[#8b3c2f]">{error}</div> : null}
 
-          <SidebarSection title="待收束" collapsed={collapsed}>
-            {reviewItems.map((item) => (
-              <SidebarItem key={item.key} {...item} active={pathname === item.to} collapsed={collapsed} />
-            ))}
-          </SidebarSection>
+          <section className="mt-5">
+            <WorkspaceRow
+              to="/"
+              title="案头"
+              meta={`${deskSlips.length} 张散札 · ${draftsLoading ? "…" : deskDrafts.length} 张草稿`}
+              active={deskActive}
+              collapsed={collapsed}
+              icon={<Sparkles width={16} height={16} />}
+              testId="sidebar-workspace-desk"
+            />
 
-          <SidebarSection title="进行中" collapsed={collapsed}>
-            {liveItems.map((item) => (
-              <SidebarItem key={item.key} {...item} active={pathname === item.to} collapsed={collapsed} />
-            ))}
-          </SidebarSection>
+            {collapsed ? null : (
+              <div className="mt-2 border-l border-[rgba(0,0,0,0.05)] pl-3 ml-7" data-testid="sidebar-desk-children">
+                <SidebarPreviewGroup label="散札">
+                  {deskSlips.slice(0, 4).map((row) => (
+                    <SidebarPreviewItem
+                      key={row.id}
+                      to={`/slips/${encodeURIComponent(row.slug)}`}
+                      title={row.title}
+                      subtitle={deedStatusLabel(row?.deed?.status) || shortText(row.objective, 20)}
+                      icon={<StickyNote width={14} height={14} />}
+                      active={pathname === `/slips/${encodeURIComponent(row.slug)}`}
+                      testId={`sidebar-desk-slip-${row.slug}`}
+                    />
+                  ))}
+                </SidebarPreviewGroup>
 
-          <SidebarSection title="卷宗" collapsed={collapsed}>
-            {folioItems.map((item) => (
-              <SidebarItem key={item.key} {...item} active={pathname === item.to} collapsed={collapsed} />
-            ))}
-          </SidebarSection>
+                <SidebarPreviewGroup label="Tray">
+                  {deskDrafts.slice(0, 4).map((row) => (
+                    <SidebarPreviewItem
+                      key={row.draft_id}
+                      to={`/?draft=${encodeURIComponent(row.draft_id)}`}
+                      title={topPreviewText(row)}
+                      subtitle={String(row?.source || "chat")}
+                      icon={<Inbox width={14} height={14} />}
+                      active={deskActive}
+                      testId={`sidebar-desk-draft-${row.draft_id}`}
+                    />
+                  ))}
+                </SidebarPreviewGroup>
+              </div>
+            )}
+          </section>
 
-          <SidebarSection title="散札" collapsed={collapsed}>
-            {recentItems.map((item) => (
-              <SidebarItem key={item.key} {...item} active={pathname === item.to} collapsed={collapsed} />
-            ))}
-          </SidebarSection>
+          <section className="mt-6">
+            <WorkspaceHeader
+              title="卷宗"
+              meta={`${folios.length} 卷`}
+              collapsed={collapsed}
+              icon={<BookOpen width={16} height={16} />}
+              testId="sidebar-workspace-folios"
+            />
+            <div
+              data-testid="sidebar-folio-list"
+              className={cx("space-y-1", collapsed ? "mt-2" : "mt-2 border-l border-[rgba(0,0,0,0.05)] pl-3 ml-7")}
+            >
+              {folios.map((folio) => {
+                const to = `/folios/${encodeURIComponent(folio.slug)}`;
+                return (
+                  <WorkspaceRow
+                    key={folio.id}
+                    to={to}
+                    title={folio.title}
+                    meta={`${folio.slip_count || 0} 张签札`}
+                    active={pathname === to}
+                    collapsed={collapsed}
+                    icon={<Folder width={16} height={16} />}
+                    testId={`sidebar-folio-${folio.slug}`}
+                  />
+                );
+              })}
+            </div>
+          </section>
 
-          {!loading && !error && !reviewItems.length && !liveItems.length && !folioItems.length && !recentItems.length ? (
-            <div className="px-3 pt-10 text-sm text-[#6b6a68]">{normalizedSearch ? "没有匹配项。" : "Portal 里还没有可展示的对象。"}</div>
+          {nothingVisible ? (
+            <div className="px-3 pt-10 text-sm text-[#6b6a68]">{String(search || "").trim() ? "没有匹配项。" : "Portal 里还没有可展示的对象。"}</div>
           ) : null}
         </div>
 

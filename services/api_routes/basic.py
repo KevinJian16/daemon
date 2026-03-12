@@ -310,6 +310,7 @@ def register_basic_routes(
         requirement = str(body.get("requirement") or body.get("text") or "").strip()
         if not requirement:
             raise HTTPException(status_code=400, detail="requirement_required")
+        _record_operation(deed_id, "追加要求", requirement[:80])
         result = await _append_requirement(deed_id, requirement, source=str(body.get("source") or "portal"))
         log_portal_event("deed_append", {"deed_id": deed_id, "workflow_id": result.get("workflow_id", ""), "requirement_len": len(requirement)}, request)
         return result
@@ -336,15 +337,7 @@ def register_basic_routes(
             raise HTTPException(status_code=400, detail="message_required")
         append_deed_message(deed_id, role="user", content=text, event="user_message", meta={"source": str(body.get("source") or "portal")})
 
-        deed_status = _deed_status(row).lower()
-        workflow_id = ""
-        paused = False
-        if deed_status == "running":
-            workflow_id = await _signal_workflow(deed_id, row, signal_name="pause_execution", payload={"source": "portal_message"})
-            paused = True
-            await _append_requirement(deed_id, text, source=str(body.get("source") or "portal_message"))
-
-        payload = {"deed_id": deed_id, "content": text, "paused": paused, "workflow_id": workflow_id}
+        payload = {"deed_id": deed_id, "content": text}
         schedule_broadcast("deed_message", {"deed_id": deed_id, "role": "user", "content": text, "created_utc": _utc()})
         log_portal_event("deed_message", payload, request)
         return {"ok": True, **payload}
