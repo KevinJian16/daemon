@@ -3,6 +3,10 @@
 > 日期：2026-03-13
 > 状态：方案草案，待确认
 > 目的：梳理 daemon 系统中哪些自造组件可以被成熟开源方案替代，降低维护成本，提升质量。
+>
+> **⚠ 术语注意（2026-03-13）**：本文档使用旧术语（Folio/Slip/Writ/Deed/Move/Brief/Wash）。
+> 新术语（Project/Task/Trigger/Job/Step/Context/Extract）以 SYSTEM_DESIGN.md §1 为准。
+> 本文档内容仍有参考价值，但术语映射请查 SYSTEM_DESIGN.md §1.8 废弃术语表。
 
 ---
 
@@ -499,10 +503,330 @@ envoy 对外出口（MCP servers）：
 
 ---
 
-## 14. 下一步
+## 14. 第二轮开源替代（2026-03-13 讨论确认）
+
+> **评判标准**：daemon 要能做出自己这个程度的项目，能写出人类水平的论文。只看能力和 token 的 tradeoff，其他一概不管，硬件资源充足。
+
+### 14.1 替代方案总表（第二轮）
+
+| 自写组件 | 替换为 | token 影响 | 能力变化 | 结论 |
+|---|---|---|---|---|
+| psyche snapshot → MEMORY.md 管线 | **Mem0**（记忆层） | 省 90%（按需检索 vs 全量注入） | 自动提取/去重/更新记忆 | ✅ 通过 |
+| InstinctEngine（Python 类） | **NeMo Guardrails**（NVIDIA） | 零 token（规则引擎替代 LLM 审查） | 60+ 预置 validator + Colang DSL | ✅ 通过 |
+| SourceCache（PG+pgvector 自写 RAG） | **RAGFlow**（文档解析+分块+检索） | 省（精准分块 → 精准检索 → 少 token） | PDF 表格/图表/公式理解 | ✅ 通过 |
+| 无（网页只有搜索摘要） | **Firecrawl**（网页→干净 Markdown） | 省 80%+（去 HTML 噪音） | 全文获取能力 | ✅ 通过 |
+| 通用 MCP search | **Semantic Scholar API** | 省（精准学术搜索，少走弯路） | 学术论文专用搜索 + 引用关系 | ✅ 通过 |
+| 无 | **tree-sitter 代码索引**（MCP tool） | 省大量（结构化查询 vs grep 全项目） | 函数/类/调用关系图谱 | ✅ 通过 |
+| SourceCache | **RAGFlow** | 不省 token，运维成本高 | 文档解析分块 | ❌ 最初否决 |
+| — | 后经深入讨论确认 RAGFlow 对论文写作不可或缺 | 省（精准检索）| PDF 深度理解 | ✅ 最终通过 |
+
+### 14.2 不引入的
+
+| 方案 | 理由 |
+|---|---|
+| **Dify** | 第二代 workflow 平台，理念落后于 OC 的 Agent OS 范式 |
+| **LangGraph / CrewAI** | 代码框架，需要自己写更多代码，与"用现成的"原则矛盾 |
+| **Coze Studio** | 开源较新（2025-07），成熟度不如 OC |
+
+### 14.3 Voice 处理
+
+Voice（写作风格）并入 Mem0 的 procedural memory，不再单独维护 `psyche/voice/` 目录。理由：
+- Voice 本质是"怎么做"的记忆 → Mem0 procedural memory 类型
+- 注入方式从全量改为按需检索 → 省 token
+- Mem0 可自动从 scribe 输出中提取风格模式 → 减少手动维护
+
+### 14.4 新增 MCP tools（零 token 能力扩展）
+
+| 工具 | 作用 | 说明 |
+|---|---|---|
+| tree-sitter 代码索引 | 函数列表、调用关系、类结构 | Python 库，作为 MCP tool 暴露 |
+| LaTeX 编译 | 论文 PDF 输出 | shell command，Direct Move |
+| BibTeX 引用管理 | 论文引用格式 | 工具函数，Direct Move |
+| matplotlib/mermaid 图表 | 论文图表生成 | Python 库，Direct Move |
+
+---
+
+## 15. Mem0 — 替代 psyche snapshot + MEMORY.md 管线
+
+### 15.1 基本信息
+
+| 项目 | 值 |
+|---|---|
+| 仓库 | https://github.com/mem0ai/mem0 |
+| Stars | 大量（Netflix、Lemonade、Rocket Money 已采用） |
+| 协议 | Apache 2.0 |
+| 论文 | arXiv:2504.19413 |
+| 部署 | Python 库 + PG + pgvector（可自部署） |
+
+### 15.2 核心能力
+
+- 自动从对话中提取记忆（Extraction + Update 两阶段管线）
+- 分层记忆：user / session / **agent** 级别
+- 四种记忆类型：episodic（情景）、semantic（语义）、procedural（程序性）、associative（关联）
+- Graph Memory（知识图谱形式存储）
+- 按需检索相关记忆（不是全量注入）
+
+### 15.3 性能数据
+
+- LOCOMO benchmark 上比 OpenAI Memory **准确率高 26%**
+- 比全量上下文注入 **快 91%、省 90% token**
+
+### 15.4 替代映射
+
+| daemon 原有组件 | Mem0 替代 |
+|---|---|
+| psyche snapshot → MEMORY.md | Mem0 自动提取 + agent 级记忆 |
+| Voice identity.md | Mem0 semantic memory（agent 级） |
+| Voice style files | Mem0 procedural memory（agent 级） |
+| Preferences | Mem0 user 级记忆 |
+| retinue.write_psyche_snapshot() | 删除，Mem0 自动管理 |
+
+### 15.5 集成方式
+
+Mem0 作为 Python 库运行在 Worker 进程中，使用现有 PG + pgvector 作为后端。不需要额外 Docker 服务。
+
+```python
+from mem0 import Memory
+
+config = {
+    "vector_store": {
+        "provider": "pgvector",
+        "config": {"connection_string": DATABASE_URL}
+    }
+}
+m = Memory.from_config(config)
+
+# 写入记忆（自动提取）
+m.add("用户偏好简洁风格，避免冗余修辞", agent_id="scribe", metadata={"type": "voice"})
+
+# 按需检索
+results = m.search("写论文时的风格偏好", agent_id="scribe", limit=5)
+```
+
+---
+
+## 16. NeMo Guardrails — 替代 InstinctEngine
+
+### 16.1 基本信息
+
+| 项目 | 值 |
+|---|---|
+| 仓库 | https://github.com/NVIDIA-NeMo/Guardrails |
+| 协议 | Apache 2.0 |
+| 技术栈 | Python，Colang DSL |
+| 部署 | Python 库（不是独立服务） |
+
+### 16.2 替代 InstinctEngine 的映射
+
+| InstinctEngine 方法 | NeMo 替代 |
+|---|---|
+| `check_outbound_query()` | Input rail（过滤外发 query） |
+| `check_output()` | Output rail（检查输出违规） |
+| `check_wash_output()` | Custom action + validation rail |
+| `check_voice_update()` | Custom action + validation rail |
+| `prompt_fragment()` | 不再需要（规则在引擎层执行，不注入 prompt） |
+
+### 16.3 Colang 规则示例
+
+```colang
+# 硬规则：Tier C 不可作唯一来源
+define flow check_source_tier
+  when bot_said "..."
+  if only_source_tier == "C"
+    bot refuse with explanation "Tier C 来源不可作为事实性主张的唯一支撑"
+
+# 硬规则：敏感词过滤
+define flow check_outbound_query
+  when user_query contains sensitive_term
+  bot replace sensitive_term with generic_description
+```
+
+### 16.4 收益
+
+- **零 token**：规则匹配在 Python 层执行，不调 LLM
+- **Colang DSL**：比 Python if/else 更可读、更易维护
+- **60+ 预置 validator**：常见检查不用自己写
+- **与 Guardrails AI 互补**：NeMo 做对话流控制，Guardrails AI 做结构化输出验证
+
+---
+
+## 17. RAGFlow — 替代 SourceCache 的文档解析和检索
+
+### 17.1 基本信息
+
+| 项目 | 值 |
+|---|---|
+| 仓库 | https://github.com/infiniflow/ragflow |
+| 协议 | Apache 2.0 |
+| 技术栈 | Python + Elasticsearch + MinIO |
+| 部署 | Docker Compose |
+
+### 17.2 为什么需要（通过 tradeoff 的理由）
+
+daemon 要写人类水平的论文。论文需要：
+- 精确引用论文中的具体段落、表格、实验数据
+- 不能只靠搜索摘要（200 字）写论文
+
+RAGFlow 提供：
+- PDF 深度解析（布局分析、表格提取、公式保留、多栏阅读顺序）
+- 语义分块（按段落/章节切，不按字数切）
+- 向量检索（精准命中相关分块）
+
+**token tradeoff**：50 页论文 ≈ 25000 token。分块后检索 3 个相关块 ≈ 1500 token。**省 94%。**
+
+### 17.3 知识流程
+
+```
+scout → MCP search → URL + 摘要
+  ↓ 需要全文时
+下载 PDF → RAGFlow 解析/分块/存储
+  ↓
+scribe/sage → RAGFlow 检索 → 精确命中具体段落/表格
+```
+
+### 17.4 TTL 过期管理
+
+RAGFlow 不管 TTL。过期管理仍在 PG 层：
+
+```sql
+-- knowledge_cache 表增加 ragflow_doc_id 字段
+-- tend routine 清理过期条目时，同步调用 RAGFlow API 删除文档
+```
+
+source_tiers.toml TTL 策略不变：
+- Tier A（论文/官方文档）：90 天
+- Tier B（技术博客）：30 天
+- Tier C（搜索结果/新闻）：7 天
+
+---
+
+## 18. Firecrawl — 网页全文获取
+
+### 18.1 基本信息
+
+| 项目 | 值 |
+|---|---|
+| 仓库 | https://github.com/mendableai/firecrawl |
+| 协议 | AGPL-3.0 |
+| 功能 | 网页 → 干净 Markdown，支持 JS 渲染 |
+| 部署 | Docker 自部署 |
+
+### 18.2 为什么需要
+
+MCP search 返回搜索摘要（200 字）。但很多知识在网页全文里：
+- 技术文档的具体章节
+- 博客的代码示例
+- 教程的操作步骤
+
+网页原始 HTML 几万 token（导航栏、广告、侧边栏...）。Firecrawl 转成干净 Markdown：**省 80%+ token**。
+
+### 18.3 集成方式
+
+作为 MCP tool 暴露给 scout：
+- `firecrawl_scrape(url)` → 返回干净 Markdown
+- 结果可直接存入 RAGFlow 或 knowledge_cache
+
+---
+
+## 19. Semantic Scholar API — 学术搜索
+
+### 19.1 基本信息
+
+| 项目 | 值 |
+|---|---|
+| API | https://api.semanticscholar.org/ |
+| 费用 | 免费（有速率限制，可申请 API key 提升） |
+| 数据 | 2 亿+ 学术论文 |
+
+### 19.2 为什么需要
+
+通用搜索（Google/Bing MCP）搜学术论文效率低：
+- 混杂非学术结果
+- 没有引用关系
+- 没有 PDF 直链
+
+Semantic Scholar 提供：
+- 精准学术搜索
+- 论文引用/被引关系图
+- PDF 链接（可直接传给 RAGFlow 解析）
+- 论文摘要 + 关键信息结构化返回
+
+### 19.3 集成方式
+
+作为 MCP tool 暴露给 scout：
+- `semantic_scholar_search(query)` → 结构化论文列表
+- `semantic_scholar_paper(paper_id)` → 论文详情 + 引用关系
+- `semantic_scholar_citations(paper_id)` → 引用图谱
+
+---
+
+## 20. 更新后的完整架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        用户界面                                   │
+│  Plane 前端 + 自定义 Deed 实时面板（WebSocket）                    │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+┌───────────────────────────▼─────────────────────────────────────┐
+│                     Plane Django API                              │
+│  + 薄 FastAPI 胶水层                                              │
+└──────────┬────────────────────────────┬─────────────────────────┘
+           │                            │
+┌──────────▼──────────┐      ┌──────────▼──────────────────────┐
+│    PostgreSQL        │      │   Temporal Server                │
+│  + pgvector          │      │   Schedules + Workflows          │
+│  + LISTEN/NOTIFY     │      └──────────┬─────────────────────┘
+│  + knowledge_cache   │                 │
+│    (TTL 管理)        │      ┌──────────▼──────────────────────┐
+└──────────────────────┘      │   OpenClaw Agents                │
+                              │   7 agents × persistent session  │
+                              │   + NeMo Guardrails（嵌入）       │
+                              │   + Mem0（嵌入）                  │
+                              └──────────┬──────────────────────┘
+                                         │
+           ┌─────────────────────────────┼───────────────────┐
+           │                             │                   │
+┌──────────▼──────┐  ┌──────────────────▼───┐  ┌───────────▼──────┐
+│  RAGFlow         │  │  MinIO                │  │  Langfuse         │
+│  (文档解析+检索)  │  │  (文件存储)            │  │  (LLM 追踪)       │
+│  + Elasticsearch │  │  Plane/Langfuse 共用   │  │  + ClickHouse     │
+└─────────────────┘  └──────────────────────┘  └──────────────────┘
+
+MCP Tools（零 token 能力扩展）：
+  - Firecrawl           → 网页全文获取
+  - Semantic Scholar     → 学术搜索
+  - tree-sitter 代码索引 → 代码理解
+  - GitHub MCP server    → Git 操作
+  - Telegram OC channel  → 通知
+  - LaTeX / BibTeX       → 论文输出
+  - matplotlib / mermaid → 图表生成
+
+彻底删除的自写代码：
+  - retinue.py           → OC 原生 session
+  - InstinctEngine       → NeMo Guardrails
+  - SourceCache 自写 RAG → RAGFlow
+  - Voice 文件管理       → Mem0 procedural memory
+  - Preferences 文件     → Mem0 user memory
+  - Ledger JSON          → Langfuse + PG
+  - Rations              → OC 原生 + Langfuse
+  - herald.py            → OC Telegram channel
+  - cadence.py           → Temporal Schedules
+
+保留的自写代码（最小胶水层）：
+  - Plane ↔ Temporal ↔ OC 胶水
+  - Temporal workflow 定义（Slip → Deed 分解）
+  - PG knowledge_cache TTL 管理（一张表 + cron）
+  - instinct.md 内容（纳入 NeMo Colang 规则）
+```
+
+---
+
+## 21. 下一步
 
 1. **确认本方案**——尤其是 Writ/Deed 的适配策略
 2. **搭建 Plane 本地实例**——验证对象映射是否真的可行
 3. **设计 Plane ↔ Temporal 胶水层**——webhook handler + Deed 数据流向
 4. **归档旧前端**——`interfaces/portal/` → `interfaces/portal_archived/`
 5. **逐步迁移**——先 Plane + PG，再 Temporal Schedules，再 Langfuse + MinIO
+6. **第二轮集成**——Mem0 + NeMo Guardrails + RAGFlow + Firecrawl + Semantic Scholar + tree-sitter tools

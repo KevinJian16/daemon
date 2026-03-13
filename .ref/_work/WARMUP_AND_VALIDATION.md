@@ -50,21 +50,25 @@
 - [ ] MinIO 文件上传/下载正常
 
 ### 1.4 知识层（Phase 4 产出）
-- [ ] Instinct 硬规则可用
-- [ ] Voice 模板文件存在（identity.md, style files），内容待暖机填充
-- [ ] Preferences PG 表就绪
-- [ ] Ledger 统计层就绪
-- [ ] pgvector Lore 表就绪
-- [ ] SourceCache 表就绪 + source_tiers.toml 配置完成
-- [ ] sensitive_terms.json 配置完成
+- [ ] NeMo Guardrails 规则配置就绪（config/guardrails/ Colang 规则）
+- [ ] Persona 初始模板文件存在（warmup/about_me.md），内容待暖机填充
+- [ ] Mem0 服务可用，agent_id 隔离正常
+- [ ] pgvector knowledge_cache 表就绪
+- [ ] RAGFlow 服务运行正常
+- [ ] source_tiers.toml 配置完成
+- [ ] sensitive_terms.json 配置完成（NeMo input rail 依赖）
 
 ### 1.5 Agent 层（Phase 5 产出）
 - [ ] 7 个 OC agent workspace 配置正确
 - [ ] 每个 agent 可被 Temporal Activity 调用
 - [ ] envoy 可通过 OC Telegram channel 发送消息
 - [ ] envoy 可通过 GitHub MCP server 执行操作
-- [ ] scout 可通过搜索 MCP server 获取外部知识
+- [ ] scholar 可通过搜索 MCP server 获取外部知识
 - [ ] 每个 agent 的 MEMORY.md 模板就绪（内容待暖机填充）
+- [ ] 每个 agent 至少有 3-5 个核心 skill 草稿就绪（见 §9.5 准备流程）
+  - scholar 已搜索各 agent 领域最新最佳实践
+  - artificer 已将外部资料改写为 SKILL.md 格式
+  - 用户已审阅 skill 草稿方向正确
 
 ### 1.6 Python 环境
 - [ ] API 进程可启动（FastAPI）
@@ -89,26 +93,26 @@
 5. **偏好与禁忌**——什么样的输出你喜欢，什么你绝对不能接受
 6. **真实任务示例**——你日常会给 daemon 什么样的任务？举 3-5 个真实例子
 
-### Stage 1：Voice 标定（~20 分钟）
+### Stage 1：Persona 标定（~20 分钟）
 
-**目的**：让 daemon 的"声音"和用户一致。
+**目的**：让 daemon 的 Persona 与用户一致。
 
-1. **分析写作样本**——调用 LLM 一次性生成 voice profile：
-   - `psyche/voice/identity.md`：身份画像（注入所有 agent）
-   - `psyche/voice/common.md`：跨语言写作结构偏好
-   - `psyche/voice/zh.md`：中文风格
-   - `psyche/voice/en.md`：英文风格
-   - 参考旧方案 `REFACTOR_KNOWLEDGE_AND_WARMUP.md §22` 的 `bootstrap_voice()` 实现
+1. **分析写作样本**——调用 LLM 一次性生成 Persona，写入 Mem0：
+   - 身份画像（identity：职业、专业领域、做事方式）
+   - 跨语言写作结构偏好
+   - 中文风格特征
+   - 英文风格特征
+   - 以 `user_persona` agent_id 写入 Mem0，供所有 agent 检索
 
-2. **写入 Agent MEMORY.md**——每个 agent 注入：
-   - instinct 摘要
+2. **写入 Agent MEMORY.md**——每个 agent 注入（≤300 tokens）：
+   - Guardrails 核心规则摘要
    - identity 摘要
    - 任务偏好
    - scribe/envoy 额外加 style 摘要
    - counsel 额外加 planning hints
 
-3. **Voice 验证**——让 scribe 写一段短文，让 envoy 写一条对外消息，对比用户原始风格
-   - 不通过 → 调整 voice files → 重试
+3. **Persona 验证**——让 scribe 写一段短文，让 envoy 写一条对外消息，对比用户原始风格
+   - 不通过 → 调整 Mem0 persona → 重试
    - 通过 → 进入下一阶段
 
 ### Stage 2：链路逐通（~30 分钟）
@@ -121,18 +125,18 @@
 | # | 链路 | 验证方法 |
 |---|---|---|
 | L01 | 用户在 Plane 创建 Issue → webhook → daemon 收到 | 创建 Issue，检查 daemon 日志有 webhook 记录 |
-| L02 | daemon 触发 Temporal Workflow → Activity 执行 | 提交一个最简单的 Deed，检查 Temporal UI 有 workflow |
-| L03 | Activity 调用 OC agent → agent 返回结果 | 用 scout 做一次简单搜索，检查返回内容 |
-| L04 | Deed 状态写回 Plane | 检查 Plane Issue 的 comment/activity 有 Deed 记录 |
-| L05 | Deed settling → 用户收束 → deed_closed 事件 | 模拟收束，检查 PG 事件和 Writ 下游触发 |
+| L02 | daemon 触发 Temporal Workflow → Activity 执行 | 提交一个最简单的 Job，检查 Temporal UI 有 workflow |
+| L03 | Activity 调用 OC agent → agent 返回结果 | 用 scholar 做一次简单搜索，检查返回内容 |
+| L04 | Job 状态写回 Plane | 检查 Plane Issue 的 comment/activity 有 Job 记录 |
+| L05 | Job paused（requires_review）→ 用户 Temporal Signal → job_closed 事件 | 模拟 requires_review Signal，检查 PG 事件和下游 Task 触发 |
 
 #### 2.2 知识链路
 | # | 链路 | 验证方法 |
 |---|---|---|
-| L06 | scout 搜索 → SourceCache 写入 → 下次命中 | 搜索一个 query，检查 PG 有缓存记录，再搜同一 query 确认命中 |
-| L07 | Voice 注入 → agent 产出风格一致 | 给 scribe 同一指令跑两次，检查风格一致性 |
-| L08 | Instinct 拦截 → 违规操作被阻止 | 尝试触发一条 Instinct 规则，确认被拒绝 |
-| L09 | Ledger 统计 → Deed 完成后 skill_stats 更新 | 完成一个 Deed，检查 PG 统计表有记录 |
+| L06 | scholar 搜索 → Knowledge Base 写入 → 下次命中 | 搜索一个 query，检查 PG knowledge_cache 有缓存记录，再搜同一 query 确认命中 |
+| L07 | Persona 注入 → agent 产出风格一致 | 给 scribe 同一指令跑两次，检查风格一致性 |
+| L08 | Guardrails 拦截 → 违规操作被阻止 | 尝试触发一条 Guardrails 规则，确认被拒绝 |
+| L09 | Mem0 写入 → Job 完成后记忆条目可查 | 完成一个 Job，检查 Mem0 有对应记忆条目 |
 
 #### 2.3 外部出口链路
 | # | 链路 | 验证方法 |
@@ -140,13 +144,13 @@
 | L10 | envoy → OC Telegram channel → 用户收到消息 | 发一条测试消息，确认 Telegram 收到 |
 | L11 | envoy → GitHub MCP → repo 有变更 | 创建一个测试 issue 或 commit |
 | L12 | Offering → MinIO → 可下载 | 上传一个测试文件，通过 URL 下载验证 |
-| L13 | Deed 执行 → Langfuse 有完整 trace | 检查 Langfuse Dashboard 有 trace 且层级完整 |
+| L13 | Job 执行 → Langfuse 有完整 trace | 检查 Langfuse Dashboard 有 trace 且层级完整 |
 
 #### 2.4 调度链路
 | # | 链路 | 验证方法 |
 |---|---|---|
 | L14 | Temporal Schedule 触发 → Spine routine 执行 | 创建一个短间隔 Schedule，等一个周期，检查执行记录 |
-| L15 | Writ 依赖链 → 前序 closed 后触发后序 | 创建两个 Slip + Writ 关系，完成前序，检查后序自动触发 |
+| L15 | Task 依赖链 → 前序 Job closed 后触发后序 | 创建两个 Task（blocked_by 关系），完成前序 Job，检查后序自动触发 |
 
 #### 2.5 事件链路
 | # | 链路 | 验证方法 |
@@ -154,15 +158,17 @@
 | L16 | PG LISTEN/NOTIFY → 订阅方收到事件 | 在一个进程 NOTIFY，另一个进程确认收到 |
 | L17 | Plane webhook 签名验证 → 伪造请求被拒绝 | 发一个错误签名的 webhook，确认 403 |
 
-### Stage 3：测试任务套件（~2-3 小时）
+### Stage 3：测试任务套件 + Skill 校准（~2-3 小时）
 
-**目的**：通过真实复合场景验证产出质量达到"伪人"标准。
+**目的**：通过真实复合场景验证产出质量达到"伪人"标准；同时校准每个 agent 的 skill，直到 token 用量稳定、arbiter 通过率达标。
+
+**Skill 校准是 Stage 3 的核心工作量。** 每个任务执行后，通过 Langfuse 检查每个 Step：token 是否超标？步骤是否按 skill 执行？输出是否被 arbiter 接受？不达标的 Step 定位到具体 skill，修改后重跑同类任务，迭代到稳定。
 
 #### 3.1 任务设计原则
 
 - **真实场景**：不是合成测试，是用户实际会提交的任务
 - **复合性**：一个任务通常跨多个 agent、多个领域、多个外部出口
-- **覆盖面**：确保每个 agent 在多个任务中被调用，每个外部出口至少被使用一次
+- **覆盖面**：确保每个 agent 在多个任务中被调用，每个 skill 至少被触发一次
 - **领域多样**：技术、健康、写作、数据分析、项目管理……
 - **对外发布**：任务产出不是存在系统内，而是发布到外部平台
 
@@ -173,7 +179,7 @@
 | 维度 | 覆盖项 |
 |---|---|
 | **领域** | 用户的专业领域 × 至少 3 个不同领域 |
-| **Agent 组合** | 单 agent、双 agent 协作、全链路（counsel→scout→artificer→scribe→envoy） |
+| **Agent 组合** | 单 agent、双 agent 协作、全链路（counsel→scholar→artificer→scribe→envoy） |
 | **触发方式** | 手动、定时、前序链 |
 | **产出类型** | 代码、文档、数据分析报告、对外发布内容、通知/邮件 |
 | **外部出口** | GitHub（commit/PR）、Telegram、其他用户平台 |
@@ -183,7 +189,7 @@
 
 **示例 A：跨域研究 + 发布**
 - 用户意图：「调研 X 领域最新进展，写一份报告，发布到 Y 平台」
-- 涉及 agent：counsel(规划) → scout(搜索) → sage(分析) → scribe(撰写) → envoy(发布)
+- 涉及 agent：counsel(规划) → scholar(搜索) → scholar(分析) → scribe(撰写) → envoy(发布)
 - 验证点：搜索质量、分析深度、文风一致性、发布格式正确
 
 **示例 B：代码任务 + review + 提交**
@@ -193,13 +199,13 @@
 
 **示例 C：长期跟踪任务**
 - 用户意图：「制定 X 计划，发布到 Y 平台，每周更新」
-- 涉及 agent：counsel(规划) → scout(数据) → scribe(撰写) → envoy(发布)
+- 涉及 agent：counsel(规划) → scholar(数据) → scribe(撰写) → envoy(发布)
 - 触发：首次手动，后续定时（Temporal Schedule）
 - 验证点：定时触发准确、每次更新内容连贯、外部平台内容格式一致
 
 **示例 D：并发 + 依赖链**
-- 在一个 Folio 中创建多个 Slip + Writ 依赖
-- 同时触发多个不阻塞的 Slip
+- 在一个 Project 中创建多个 Task（blocked_by 依赖）
+- 同时触发多个不阻塞的 Task
 - 验证：排队行为正确、依赖顺序严格、并发不互相干扰
 
 #### 3.4 评估方法
@@ -209,14 +215,14 @@
 | 维度 | 标准 | 方法 |
 |---|---|---|
 | **伪人度** | 外部接收方无法区分是 AI 还是人 | 逐条审查对外输出的措辞、格式、细节 |
-| **风格一致性** | 与用户写作风格匹配 | 对比 Voice profile 和实际产出 |
-| **内容准确性** | 事实正确、逻辑通顺、无幻觉 | 交叉验证关键事实（用 scout 二次搜索） |
+| **风格一致性** | 与用户写作风格匹配 | 对比 Mem0 Persona 和实际产出 |
+| **内容准确性** | 事实正确、逻辑通顺、无幻觉 | 交叉验证关键事实（用 scholar 二次搜索） |
 | **格式正确性** | 发布到目标平台的内容格式无误 | 检查实际发布结果 |
 | **完整性** | 任务要求的所有部分都完成了 | 对照原始 Brief 逐项检查 |
-| **及时性** | 执行耗时在合理范围内 | 记录 Deed 启动到完成的时间 |
+| **及时性** | 执行耗时在合理范围内 | 记录 Job 启动到完成的时间 |
 
 评估不合格时的处理：
-1. 定位问题源头（Voice？agent prompt？DAG 设计？模型能力？搜索质量？）
+1. 定位问题源头（Persona？agent prompt？DAG 设计？模型能力？搜索质量？）
 2. 调整对应参数
 3. 重新执行相同或类似任务
 4. 再次评估
@@ -227,16 +233,16 @@
 
 | # | 状态 | 模拟方法 | 预期行为 |
 |---|---|---|---|
-| S01 | **并发满载** | 同时提交 N 个 Deed（N > agent 池容量） | 排队有序、不丢任务、不死锁 |
-| S02 | **Agent 超时** | 给 agent 一个需要很长时间的任务 | TTL 触发 custody 回收，Deed 转 failed，通知用户 |
+| S01 | **并发参数校准** | 逐步提高并发 Job 数，观察 LLM rate limit / 机器负载边界 | 确定 `maxChildrenPerAgent` / `maxConcurrent` 最佳值并固化到 `openclaw.json`；排队有序、不丢任务、不死锁 |
+| S02 | **Agent 超时** | 给 agent 一个需要很长时间的任务 | runTimeoutSeconds 触发，Job 转 failed，envoy 通知用户 |
 | S03 | **Agent 产出不合格** | 故意给一个模糊指令，arbiter 应该拒绝 | arbiter 评分低 → 触发 rework 而非直接交付 |
-| S04 | **rework 循环** | 连续 rework 同一 Deed | rework 次数有上限（Instinct），超限转 failed |
-| S05 | **外部 API 不可用** | 临时关闭 Telegram bot / GitHub token 失效 | envoy 报错但不崩溃，Deed 记录失败原因，系统继续运行 |
+| S04 | **rework 循环** | 连续 rework 同一 Job | rework 次数有上限（Guardrails），超限转 failed |
+| S05 | **外部 API 不可用** | 临时关闭 Telegram bot / GitHub token 失效 | envoy 报错但不崩溃，Job 记录失败原因，系统继续运行 |
 | S06 | **数据库压力** | 大量并发读写 PG | 无死锁、无数据丢失、响应时间可接受 |
 | S07 | **Temporal Worker 重启** | 杀掉 Worker 进程再启动 | 进行中的 workflow 恢复执行，不丢失进度 |
-| S08 | **Plane webhook 延迟** | 模拟 webhook 延迟到达 | 系统幂等处理，不重复创建 Deed |
+| S08 | **Plane webhook 延迟** | 模拟 webhook 延迟到达 | 系统幂等处理，不重复创建 Job |
 | S09 | **定时任务积压** | 暂停 Worker 一段时间再恢复 | Temporal Schedule catchup 补执行，不漏 |
-| S10 | **SourceCache 过期** | 手动标记缓存过期 | 下次搜索重新 fetch，不返回旧数据 |
+| S10 | **Knowledge Base 缓存过期** | 手动标记缓存过期 | 下次搜索重新 fetch，不返回旧数据 |
 
 ### Stage 5：收敛判定
 
@@ -290,8 +296,8 @@ Stage 0: 信息采集
   │ 向用户收集：身份、写作样本、偏好、平台、真实任务示例
   │ 存入 warmup/ 目录
   ▼
-Stage 1: Voice 标定
-  │ LLM 分析样本 → 生成 voice files
+Stage 1: Persona 标定
+  │ LLM 分析样本 → 写入 Mem0 persona
   │ 写入 agent MEMORY.md
   │ scribe/envoy 试写 → 对比 → 不通过则调整重试
   ▼
@@ -348,8 +354,8 @@ warmup/
 python scripts/warmup.py preflight        # 验证 §1 前置条件
 
 # Stage 1
-python scripts/warmup.py voice-init       # 分析样本，生成 voice files
-python scripts/warmup.py voice-verify     # scribe/envoy 试写，评估风格
+python scripts/warmup.py persona-init     # 分析样本，写入 Mem0 persona
+python scripts/warmup.py persona-verify   # scribe/envoy 试写，评估风格
 
 # Stage 2
 python scripts/warmup.py link-test        # 逐条链路验证
@@ -365,25 +371,29 @@ python scripts/warmup.py stress-test      # 系统状态测试
 python scripts/warmup.py report           # 生成暖机报告
 ```
 
-Stage 3 不能自动化——因为 Opus 需要根据每个任务的结果决定下一步做什么（调整 Voice？改 agent 配置？重新设计任务？）。这是暖机中最核心、最耗时的部分。
+Stage 3 不能自动化——因为 Opus 需要根据每个任务的结果决定下一步做什么（调整 Persona？改 agent 配置？重新设计任务？）。这是暖机中最核心、最耗时的部分。
 
 ---
 
 ## §5 废弃术语确认
 
-暖机文档中不再使用以下旧术语（待总纲确认后正式废弃）：
+暖机文档中不再使用以下旧术语：
 
 | 旧术语 | 状态 | 替代 |
 |---|---|---|
 | errand / charge / endeavor | **废弃** | 不再按复杂度分级任务 |
-| glance / study / scrutiny | **待确认** | 深度分级是否保留 |
+| glance / study / scrutiny | **废弃** | 不再按深度分级知识检索 |
+| Folio / Slip / Deed / Move | **废弃** | Project / Task / Job / Step |
+| Writ | **废弃** | Task blocked_by 依赖（Plane IssueRelation） |
+| Psyche / Instinct / Voice / Preferences | **废弃** | Guardrails / Persona（Mem0）|
+| Ledger / Lore / SourceCache | **废弃** | Langfuse / Knowledge Base（RAGFlow + pgvector） |
 | Ether | **废弃** | PG LISTEN/NOTIFY |
 | Herald | **废弃** | envoy + OC channel |
 | Cadence | **废弃** | Temporal Schedules |
 | Trail | **废弃** | Langfuse |
 | Portal | **废弃** | Plane 前端 |
 | Console | **废弃** | Plane 管理界面 |
-| Vault | **待确认** | MinIO（Vault 作为概念名是否保留？） |
+| Vault | **废弃** | MinIO |
 
 ---
 
@@ -391,6 +401,6 @@ Stage 3 不能自动化——因为 Opus 需要根据每个任务的结果决定
 
 1. **暖机期间不接受真实任务**——暖机产出可能发布到外部平台（测试账号或专门的测试环境）
 2. **暖机产出可以删除**——Stage 3 的测试任务发布到外部后，如果不合格可以删除/撤回
-3. **LLM 成本**——Stage 1 Voice 初始化约 1 次 LLM 调用。Stage 3 每个测试任务消耗正常 Deed 的 token。预计总暖机成本 ≈ 10-15 个正常 Deed 的 token 量
+3. **LLM 成本**——Stage 1 Persona 初始化约 1 次 LLM 调用。Stage 3 每个测试任务消耗正常 Job 的 token。预计总暖机成本 ≈ 10-15 个正常 Job 的 token 量
 4. **暖机可中断恢复**——每个 Stage 的结果持久化，中断后可从断点继续
-5. **暖机结果是系统状态的一部分**——Voice files、agent MEMORY.md、Preferences 都是暖机的产出，暖机后它们成为系统的永久配置
+5. **暖机结果是系统状态的一部分**——Mem0 persona、agent MEMORY.md 都是暖机的产出，暖机后它们成为系统的永久配置
