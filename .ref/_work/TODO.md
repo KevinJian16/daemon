@@ -262,12 +262,13 @@
     - ops_learn: 需要的话保留（但知识层重构后可能删）
   - 自适应调度：保留逻辑，通过 `handle.update()` 修改 Schedule spec
 
-- [ ] **3.3** Herald → envoy + MCP
+- [ ] **3.3** Herald → envoy（OC 原生 channel + MCP）
   - 删除 `services/herald.py`（~200 行）
   - 删除 `temporal/activities_herald.py`
   - 删除 `interfaces/telegram/adapter.py` 中的 Herald 依赖
-  - 通知发送改为：在 Move 中指派 envoy agent，envoy 通过 MCP server 调用 Telegram API
-  - MCP server 配置写入 `config/mcp_servers.json`（当前为空 `{"servers": {}}`）
+  - **Telegram 通知**：envoy 直接用 OC 原生 Telegram channel（announce 机制），不需要 MCP server
+  - **GitHub 操作**：envoy 通过 MCP server（`@modelcontextprotocol/server-github`）
+  - **原则**：OC 原生支持的出口用 OC channel，不支持的才用 MCP server
 
 - [ ] **3.4** Trail → Langfuse
   - 在 Worker 进程启动时初始化 Langfuse client
@@ -354,32 +355,18 @@ counsel, scout, sage, artificer, arbiter, scribe, envoy
   - 每个 agent 的 skills 配置正确
   - **注意**：openclaw/ 不在 git 里（含 API key），但必须检查
 
-- [ ] **5.2** MCP servers 配置
-  - 编辑 `config/mcp_servers.json`（当前为空）
-  - 添加：
-    ```json
-    {
-      "servers": {
-        "github": {
-          "command": "npx",
-          "args": ["-y", "@modelcontextprotocol/server-github"],
-          "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" }
-        },
-        "telegram": {
-          "command": "...",
-          "args": ["..."],
-          "env": { "TELEGRAM_BOT_TOKEN": "${TELEGRAM_BOT_TOKEN}" }
-        }
-      }
-    }
-    ```
-  - Telegram MCP server：找社区方案或自己写薄包装（<100 行）
-  - 验证 `runtime/mcp_dispatch.py` 能正确加载和调用
+- [ ] **5.2** envoy 出口配置
+  - **Telegram**：通过 OC 原生 Telegram channel（announce），不需要 MCP server
+    - 验证 OC Telegram channel 配置正确、envoy 有权 announce
+  - **GitHub**：通过 MCP server
+    - 编辑 `config/mcp_servers.json`（当前为空），添加 `@modelcontextprotocol/server-github`
+    - 验证 `runtime/mcp_dispatch.py` 能正确加载和调用
+  - **其他出口**：按需加 MCP server（OC 原生不支持的才用 MCP）
 
 - [ ] **5.3** envoy 端到端验证
+  - envoy 通过 OC Telegram channel 发送一条测试通知
   - envoy 通过 GitHub MCP server 创建一个测试 issue
-  - envoy 通过 Telegram MCP server 发送一条测试消息
-  - 确认 MCP tool call → 外部 API → 结果返回完整链路
+  - 确认两条链路都通畅
 
 - [ ] **5.4** Agent psyche 注入
   - 每个 agent 的 MEMORY.md 内容（~25-30 行）：instinct 摘要 + identity 摘要 + 任务偏好
@@ -389,65 +376,20 @@ counsel, scout, sage, artificer, arbiter, scribe, envoy
 
 ---
 
-## Phase 6：暖机流程
+## Phase 6：暖机 = 系统标定
 
-**目标**：`scripts/warmup.py`，从零到可用的一键初始化。
+**完整方案**：`.ref/_work/WARMUP_AND_VALIDATION.md`（已完成）
 
-- [ ] **6.1** 服务连通性检查
-  - PG: `SELECT 1` + `SELECT * FROM pg_extension WHERE extname='vector'`
-  - Redis: `PING`
-  - MinIO: `list_buckets()`
-  - Temporal: `client.get_system_info()`
-  - Plane: `GET /api/v1/users/me/`
-  - Langfuse: health check endpoint
+**暖机不是初始化，是图灵测试级标定。** 目标：daemon 所有对外输出达到"伪人"水准。
 
-- [ ] **6.2** 初始化数据
-  - PG: 执行 migration（创建 deeds, writ_order, skill_stats 等表）
-  - MinIO: 创建 `offerings` bucket
-  - Plane: 如果 Workspace 不存在则创建，如果默认 Project 不存在则创建
-  - Temporal: 注册所有 Spine routine Schedules
+由 Opus（用户分身）全程主导，5 个 Stage：
+1. **信息采集**：收集用户身份/写作样本/偏好/平台/任务示例（~15min）
+2. **Voice 标定**：LLM 分析样本 → voice profile → agent MEMORY.md → 试写验证（~20min）
+3. **链路逐通**：17 条数据链路逐条验证（~30min）
+4. **测试任务套件**：8-15 个真实复合场景，迭代到连续 5 个通过（~2-3h）
+5. **系统状态测试**：10 个异常场景（并发/超时/故障恢复/积压...）（~30min）
 
-- [ ] **6.3** Agent 暖机
-  - 每个 OC agent 执行一次 `/health` 或空 prompt 验证连通
-  - 验证模型策略：确认每个 agent 调用的模型正确
-
-- [ ] **6.4** 诊断测试 `tests/test_diagnostics.py`
-  - 不是单元测试，是系统级诊断
-  - 检查所有外部服务连通
-  - 检查 Plane 对象映射正确
-  - 检查 MCP server 可调用
-  - 检查 Temporal Schedule 已注册
-
----
-
-## Phase 7：端到端验证
-
-**目标**：全链路跑通，确认系统可用于实际工作。
-
-- [ ] **7.1** 场景 A：手动 Slip 执行
-  - 在 Plane 创建 Issue（Slip）→ Webhook 触发 → counsel 生成 DAG → agents 执行 Moves → Deed 完成 → 用户在 Plane 收束
-  - 验证：Deed 状态变更在 Plane 可见，Langfuse 有完整 trace
-
-- [ ] **7.2** 场景 B：Folio + Writ 依赖链
-  - 创建 Folio（Project）+ 多个 Slip + Writ 依赖 → 按序执行
-  - 验证：前序 Deed 未 closed 时，后序 Slip 不触发
-
-- [ ] **7.3** 场景 C：定时触发
-  - 创建一个 timer 类型 Slip → Temporal Schedule 注册 → 到时间自动执行
-  - 验证：Schedule 在 Temporal UI 可见，触发正确
-
-- [ ] **7.4** 场景 D：envoy 对外出口
-  - 一个 Deed 的 Move 指派 envoy → envoy 调 GitHub MCP push 代码 + 调 Telegram MCP 发通知
-  - 验证：GitHub 有 commit，Telegram 收到消息
-
-- [ ] **7.5** 场景 E：可观测性
-  - Langfuse Dashboard 可见：workflow → activity → agent session → LLM generation
-  - Token 消耗、延迟、成本自动统计
-
-- [ ] **7.6** 性能基线
-  - 记录各场景端到端耗时
-  - 确认 PG LISTEN/NOTIFY 延迟 < 100ms
-  - 确认 Plane API 响应 < 500ms
+收敛标准：**伪人度** — 连续 5 个不同类型任务的对外产出与用户本人无法区分。
 
 ---
 
@@ -474,7 +416,7 @@ counsel, scout, sage, artificer, arbiter, scribe, envoy
 ### 执行顺序
 - **Phase 0 → 1 → 2 → 3**：严格顺序，每步依赖前一步
 - **Phase 4 和 5**：可并行，不依赖 Phase 3 的完成
-- **Phase 6 → 7**：顺序执行
+- **Phase 6**：暖机+诊断，单独文档，Phase 0-5 全部完成后执行
 
 ### 双层系统
 - 每改一处 Python 代码，检查 `openclaw/workspace/*/TOOLS.md` 和 `openclaw/openclaw.json` 是否需要同步
@@ -483,7 +425,7 @@ counsel, scout, sage, artificer, arbiter, scribe, envoy
 ### 测试
 - 每个 Phase 完成后跑 `pytest tests/`
 - Phase 2-3 期间旧测试会大面积失败——这是预期的，边改边修
-- Phase 7 的诊断测试是最终验证
+- Phase 6 的诊断测试是最终验证（数百个检查点，详见暖机文档）
 
 ### 许可证
 - Plane: AGPL-3.0（自用无限制，修改源码对外服务须开源）
