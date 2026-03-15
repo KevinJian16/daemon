@@ -2,188 +2,75 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --portal-bg: #f5f5f0;
-  --portal-shell: #ecebe4;
-  --portal-shell-hover: #e5e2d8;
-  --portal-shell-active: #ddd9ce;
-  --portal-surface: #ffffff;
-  --portal-surface-soft: #f0efe8;
-  --portal-user: #ddd9ce;
-  --portal-line: rgba(0, 0, 0, 0.08);
-  --portal-line-strong: rgba(0, 0, 0, 0.14);
-  --portal-text: #1a1a18;
-  --portal-muted: #6b6a68;
-  --portal-soft: #9a9893;
-  --portal-accent: #ae5630;
-  --portal-accent-strong: #c4633a;
-}
-
-html,
-body,
-#root {
-  height: 100%;
-}
-
-body {
-  margin: 0;
-  background: var(--portal-bg);
-  color: var(--portal-text);
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
-  font-size: 15px;
-  line-height: 1.5;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-}
-
-* {
-  box-sizing: border-box;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(0, 0, 0, 0.12) transparent;
-}
-
-*::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-
-*::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-*::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.12);
-  background-clip: padding-box;
-}
-
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-button,
-input,
-textarea {
-  font: inherit;
-}
-
-.portal-serif {
-  font-family:
-    "Iowan Old Style",
-    "Palatino Linotype",
-    "Book Antiqua",
-    Georgia,
-    ui-serif,
-    serif;
-}
-
-.portal-markdown {
-  color: var(--portal-text);
-  font-family:
-    "Iowan Old Style",
-    "Palatino Linotype",
-    "Book Antiqua",
-    Georgia,
-    ui-serif,
-    serif;
-  font-size: 1.02rem;
-  line-height: 1.72rem;
-}
-
-.portal-markdown p {
-  margin: 0;
-}
-
-.portal-markdown p + p {
-  margin-top: 0.875rem;
-}
-
-.portal-markdown ul,
-.portal-markdown ol {
-  margin: 0.875rem 0 0;
-  padding-left: 1.25rem;
-}
-
-.portal-markdown li + li {
-  margin-top: 0.35rem;
-}
-
-.portal-markdown pre {
-  overflow-x: auto;
-  margin: 0.875rem 0 0;
-  border: 1px solid var(--portal-line);
-  border-radius: 1rem;
-  background: #f0efe8;
-  padding: 1rem;
-  font-size: 0.875rem;
-  line-height: 1.4rem;
-}
-
-.portal-markdown code {
-  border-radius: 0.4rem;
-  background: rgba(0, 0, 0, 0.05);
-  padding: 0.12rem 0.35rem;
-  font-family:
-    ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    Monaco,
-    Consolas,
-    "Liberation Mono",
-    monospace;
-  font-size: 0.86em;
-}
-
-.portal-markdown pre code {
-  background: transparent;
-  padding: 0;
-}
-
-@keyframes portal-flow-dash {
-  from {
-    stroke-dashoffset: 0;
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #333 transparent;
   }
 
-  to {
-    stroke-dashoffset: -44;
+  ::selection {
+    background: rgba(99, 102, 241, 0.3);
   }
 }
 
-@keyframes portal-flow-node-breathe {
-  0%,
-  100% {
-    transform: translateZ(0) scale(1);
-    box-shadow:
-      0 1.5px 0 rgba(255, 255, 255, 0.28) inset,
-      0 -1px 0 rgba(120, 53, 25, 0.18) inset,
-      0 18px 34px rgba(174, 86, 48, 0.22),
-      0 6px 12px rgba(41, 41, 41, 0.08);
+@layer components {
+  .scene-pill {
+    @apply px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-150
+           cursor-pointer select-none;
   }
 
-  50% {
-    transform: translateZ(0) scale(1.018);
-    box-shadow:
-      0 1.5px 0 rgba(255, 255, 255, 0.3) inset,
-      0 -1px 0 rgba(120, 53, 25, 0.2) inset,
-      0 22px 40px rgba(174, 86, 48, 0.28),
-      0 8px 14px rgba(41, 41, 41, 0.1);
+  .scene-pill-active {
+    @apply text-white shadow-lg;
+  }
+
+  .scene-pill-inactive {
+    @apply text-gray-400 hover:text-gray-200 bg-surface-2 hover:bg-surface-3;
+  }
+
+  .msg-bubble {
+    @apply max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed;
+  }
+
+  .msg-user {
+    @apply bg-accent text-white ml-auto rounded-br-md;
+  }
+
+  .msg-assistant {
+    @apply bg-surface-2 text-gray-100 mr-auto rounded-bl-md;
+  }
+
+  .msg-system {
+    @apply bg-surface-1 text-gray-400 mx-auto text-xs italic border border-surface-3;
   }
 }
 
-.portal-flow-stroke {
-  animation: portal-flow-dash 1.35s linear infinite;
+/* Markdown-like formatting inside messages */
+.msg-bubble p + p {
+  margin-top: 0.5em;
 }
 
-.portal-flow-node {
-  animation: portal-flow-node-breathe 1.8s ease-in-out infinite;
-  transform-origin: center;
-  will-change: transform, box-shadow;
+.msg-bubble code {
+  @apply bg-black/30 px-1 py-0.5 rounded text-xs font-mono;
 }
+
+.msg-bubble pre {
+  @apply bg-black/40 rounded-lg p-3 my-2 overflow-x-auto text-xs;
+}
+
+.msg-bubble pre code {
+  @apply bg-transparent p-0;
+}
+
+/* Typing indicator */
+@keyframes blink {
+  0%, 80%, 100% { opacity: 0.2; }
+  40% { opacity: 1; }
+}
+
+.typing-dot {
+  @apply inline-block w-1.5 h-1.5 rounded-full bg-gray-400 mx-0.5;
+  animation: blink 1.4s infinite;
+}
+
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }

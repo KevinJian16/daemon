@@ -1,6 +1,8 @@
 # daemon 系统重构方案：知识层 + 自检 + 暖机
 
-> **状态**：草案，待认知对齐后写入 .ref/ 正式文档
+> ⚠ 本方案已被开源替代方案取代，仅供参考。见 `.ref/_work/TODO.md`
+
+> **状态**：已过期（草案，从未正式采用）
 > **日期**：2026-03-11
 > **范围**：Psyche 重设计、Spine Routines 裁剪、Deed 生命周期简化、自检脚本、暖机流程
 > **前置依赖**：执行模型重构（已完成）、Session/Memory 重构方案（.ref/_work/REFACTOR_SESSION_MEMORY.md，被本方案取代）

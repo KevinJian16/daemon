@@ -1,218 +1,93 @@
-const JSON_HEADERS = {
-  "Content-Type": "application/json",
-};
+/**
+ * Daemon API client — talks to FastAPI backend via Vite proxy.
+ *
+ * All HTTP goes through /api → http://127.0.0.1:8100
+ * WebSocket goes through /ws → ws://127.0.0.1:8100
+ */
 
-function friendlyError(raw) {
-  const text = String(raw || "");
-  if (!text) return "暂时无法完成这次请求。";
-  if (text.includes("404")) return "对象不存在，或者路由还没接上。";
-  if (text.includes("message_required")) return "你还没有写下要补充的内容。";
-  if (text.includes("slip_not_found") || text.includes("folio_not_found") || text.includes("deed_not_found")) {
-    return "对象不存在，或者路由还没接上。";
+// In dev mode (Vite), /api gets proxied to the daemon API.
+// In production (served by FastAPI at /portal/), no prefix needed.
+const API = import.meta.env.DEV ? "/api" : "";
+
+async function request(method, path, body) {
+  const opts = {
+    method,
+    headers: { "Content-Type": "application/json" },
+  };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(`${API}${path}`, opts);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`${res.status}: ${text.slice(0, 200)}`);
   }
-  if (text.includes("slip_has_no_design")) return "这张签札还没有可供再行的结构。";
-  if (text.includes("invalid_stance_target")) return "这个对象动作目前还不支持。";
-  if (text.includes("cadence_schedule_required")) return "要启用时钟，先给出一个有效时间。";
-  if (text.includes("temporal_unavailable")) return "行事引擎暂时不可用，请稍后再试。";
-  if (/(traceback|exception|stack|sqlite|json|errno|workflow|temporal)/i.test(text)) {
-    return "后端报错了，但错误信息还不适合直接暴露在页面上。";
-  }
-  return text.replace(/^Error:\s*/i, "").replace(/^"|"$/g, "").trim() || "暂时无法完成这次请求。";
+  return res.json();
 }
 
-async function request(path, options = {}) {
-  const response = await fetch(path, options);
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(friendlyError(text || response.statusText));
-  }
-  const contentType = response.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    return response.json();
-  }
-  return response.text();
+// ── Scene Chat ────────────────────────────────────────────────────────────
+
+export async function sendMessage(scene, content, metadata = null) {
+  return request("POST", `/scenes/${scene}/chat`, { content, metadata });
 }
 
-export function getSidebar() {
-  return request("/portal-api/sidebar");
+export async function getPanel(scene) {
+  return request("GET", `/scenes/${scene}/panel`);
 }
 
-export function getSlip(slug) {
-  return request(`/portal-api/slips/${encodeURIComponent(slug)}`);
+// ── Jobs & Tasks ──────────────────────────────────────────────────────────
+
+export async function listJobs(status = "", limit = 20) {
+  const qs = new URLSearchParams();
+  if (status) qs.set("status", status);
+  if (limit !== 20) qs.set("limit", String(limit));
+  const q = qs.toString();
+  return request("GET", `/jobs${q ? `?${q}` : ""}`);
 }
 
-export function getSlipMessages(slug) {
-  return request(`/portal-api/slips/${encodeURIComponent(slug)}/messages`);
+export async function getTask(taskId) {
+  return request("GET", `/tasks/${taskId}`);
 }
 
-export function getSlipResultFiles(slug) {
-  return request(`/portal-api/slips/${encodeURIComponent(slug)}/result/files`);
+export async function getTaskActivity(taskId, limit = 50) {
+  return request("GET", `/tasks/${taskId}/activity?limit=${limit}`);
 }
 
-export function getSlipWritNeighbors(slug) {
-  return request(`/portal-api/slips/${encodeURIComponent(slug)}/writ-neighbors`);
+// ── System ────────────────────────────────────────────────────────────────
+
+export async function getStatus() {
+  return request("GET", "/status");
 }
 
-export function sendSlipMessage(slug, text) {
-  return request(`/portal-api/slips/${encodeURIComponent(slug)}/message`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ text }),
-  });
+export async function getHealth() {
+  return request("GET", "/health");
 }
 
-export function rerunSlip(slug) {
-  return request(`/portal-api/slips/${encodeURIComponent(slug)}/rerun`, {
-    method: "POST",
-  });
-}
+// ── WebSocket ─────────────────────────────────────────────────────────────
 
-export function copySlip(slug) {
-  return request(`/portal-api/slips/${encodeURIComponent(slug)}/copy`, {
-    method: "POST",
-  });
-}
+export function connectStream(scene, { onReply, onAction, onError, onClose }) {
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsPrefix = import.meta.env.DEV ? "/ws" : "";
+  const url = `${proto}//${window.location.host}${wsPrefix}/scenes/${scene}/chat/stream`;
+  const ws = new WebSocket(url);
 
-export function takeOutSlip(slug) {
-  return request(`/portal-api/slips/${encodeURIComponent(slug)}/take-out`, {
-    method: "POST",
-  });
-}
+  ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.type === "reply" && onReply) onReply(msg);
+      else if (msg.type === "action" && onAction) onAction(msg);
+      else if (msg.type === "error" && onError) onError(msg.error);
+    } catch {
+      // ignore non-JSON frames
+    }
+  };
 
-export function updateSlipStance(slug, target) {
-  return request(`/portal-api/slips/${encodeURIComponent(slug)}/stance`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ target }),
-  });
-}
+  ws.onclose = () => onClose?.();
+  ws.onerror = () => onError?.("WebSocket connection error");
 
-export function setSlipCadence(slug, schedule, enabled = true) {
-  return request(`/portal-api/slips/${encodeURIComponent(slug)}/cadence`, {
-    method: "PUT",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ schedule, enabled }),
-  });
-}
-
-export function deleteSlipCadence(slug) {
-  return request(`/portal-api/slips/${encodeURIComponent(slug)}/cadence`, {
-    method: "DELETE",
-  });
-}
-
-export function getFolio(slug) {
-  return request(`/portal-api/folios/${encodeURIComponent(slug)}`);
-}
-
-export function reorderFolio(slug, orderedSlugs) {
-  return request(`/portal-api/folios/${encodeURIComponent(slug)}/reorder`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ ordered_slugs: orderedSlugs }),
-  });
-}
-
-export function reorderFolioByPair(slug, sourceSlug, targetSlug) {
-  return request(`/portal-api/folios/${encodeURIComponent(slug)}/reorder`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ source_slug: sourceSlug, target_slug: targetSlug }),
-  });
-}
-
-export function adoptSlipToFolio(folioSlug, slipSlug) {
-  return request(`/portal-api/folios/${encodeURIComponent(folioSlug)}/adopt`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ slip_slug: slipSlug }),
-  });
-}
-
-export function createFolioFromSlips(sourceSlug, targetSlug) {
-  return request("/portal-api/folios/from-slips", {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ source_slug: sourceSlug, target_slug: targetSlug }),
-  });
-}
-
-export function getDeed(deedId) {
-  return request(`/deeds/${encodeURIComponent(deedId)}`);
-}
-
-export function getDeedMessages(deedId) {
-  return request(`/deeds/${encodeURIComponent(deedId)}/messages`);
-}
-
-export function sendDeedMessage(deedId, text) {
-  return request(`/deeds/${encodeURIComponent(deedId)}/message`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ text }),
-  });
-}
-
-export function pauseDeed(deedId) {
-  return request(`/deeds/${encodeURIComponent(deedId)}/pause`, {
-    method: "POST",
-  });
-}
-
-export function resumeDeed(deedId) {
-  return request(`/deeds/${encodeURIComponent(deedId)}/resume`, {
-    method: "POST",
-  });
-}
-
-export function appendDeedRequirement(deedId, text) {
-  return request(`/deeds/${encodeURIComponent(deedId)}/append`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ text }),
-  });
-}
-
-export function getDeedOfferingFiles(deedId) {
-  return request(`/offerings/${encodeURIComponent(deedId)}/files`);
-}
-
-export function getDrafts() {
-  return request("/drafts");
-}
-
-export function getDraft(draftId) {
-  return request(`/drafts/${encodeURIComponent(draftId)}`);
-}
-
-export function updateDraft(draftId, payload) {
-  return request(`/drafts/${encodeURIComponent(draftId)}`, {
-    method: "PUT",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(payload),
-  });
-}
-
-export function crystallizeDraft(draftId, payload) {
-  return request(`/drafts/${encodeURIComponent(draftId)}/crystallize`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(payload),
-  });
-}
-
-export function createVoiceSession(payload = {}) {
-  return request("/voice/session", {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(payload),
-  });
-}
-
-export function sendVoiceMessage(sessionId, payload) {
-  return request(`/voice/${encodeURIComponent(sessionId)}`, {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(payload),
-  });
+  return {
+    send: (content) => ws.send(JSON.stringify({ content })),
+    close: () => ws.close(),
+    get readyState() {
+      return ws.readyState;
+    },
+  };
 }

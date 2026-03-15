@@ -1,4 +1,7 @@
-"""Temporal client wrapper — thin facade over temporalio SDK."""
+"""Temporal client wrapper — thin facade over temporalio SDK.
+
+Reference: SYSTEM_DESIGN.md §3.1, §6.1
+"""
 from __future__ import annotations
 
 import asyncio
@@ -12,23 +15,28 @@ from temporalio.common import RetryPolicy
 class TemporalClient:
     """Thin facade over temporalio.client.Client for workflow submission and querying."""
 
-    def __init__(self, client: Client, queue: str) -> None:
+    def __init__(self, client: Client, queue: str = "daemon-queue") -> None:
         self._client = client
         self._queue = queue
 
     @classmethod
-    async def connect(cls, host: str = "127.0.0.1", port: int = 7233, namespace: str = "default", queue: str = "daemon-queue") -> "TemporalClient":
+    async def connect(
+        cls,
+        host: str = "127.0.0.1",
+        port: int = 7233,
+        namespace: str = "default",
+        queue: str = "daemon-queue",
+    ) -> "TemporalClient":
         client = await Client.connect(f"{host}:{port}", namespace=namespace)
         return cls(client, queue)
 
-    async def submit(
+    async def start_job_workflow(
         self,
         workflow_id: str,
         plan: dict,
-        deed_root: str,
-        workflow_name: str = "GraphWillWorkflow",
+        workflow_name: str = "JobWorkflow",
     ) -> str:
-        """Submit a workflow and return the Temporal run_id.
+        """Submit a JobWorkflow and return the Temporal run_id.
 
         Temporal dev server may report transient shard/timeout errors right after
         startup; retry a few times before surfacing a hard failure.
@@ -36,9 +44,11 @@ class TemporalClient:
         last_err: Exception | None = None
         for attempt in range(4):
             try:
+                from temporal.workflows import JobInput
+                inp = JobInput(plan=plan, job_id=plan.get("job_id", ""))
                 handle: WorkflowHandle = await self._client.start_workflow(
                     workflow_name,
-                    args=[{"plan": plan, "deed_root": deed_root}],
+                    inp,
                     id=workflow_id,
                     task_queue=self._queue,
                 )

@@ -133,6 +133,84 @@ class OpenClawAdapter:
             logger.warning("session_status check failed for %s: %s", session_key, exc)
             return {"abortedLastRun": False, "contextTokens": 0, "totalTokens": 0, "error": str(exc)[:100]}
 
+    def spawn_session(
+        self,
+        agent_id: str,
+        task: str,
+        *,
+        label: str = "",
+        timeout_s: int = 300,
+        cleanup: str = "delete",
+    ) -> dict:
+        """Spawn an isolated session for an agent (L2 step execution).
+
+        Uses sessions_spawn (non-blocking) then polls session history for completion.
+        This is the correct mechanism for 1 Step = 1 Session.
+
+        Returns dict with keys: status, reply, runId, childSessionKey.
+        """
+        args: dict[str, Any] = {
+            "task": task,
+            "agentId": agent_id,
+            "cleanup": cleanup,
+        }
+        if label:
+            args["label"] = label
+        if timeout_s > 0:
+            args["runTimeoutSeconds"] = timeout_s
+
+        result = self._invoke("sessions_spawn", args, timeout=timeout_s + 30)
+        details = self._extract_details(result)
+
+        run_id = str(details.get("runId") or result.get("runId") or "")
+        child_key = str(details.get("childSessionKey") or result.get("childSessionKey") or "")
+
+        if not run_id:
+            raise OpenClawError(
+                f"sessions_spawn returned no runId. "
+                f"details={json.dumps(details, default=str)[:200]}, "
+                f"result_keys={list(result.keys()) if isinstance(result, dict) else type(result).__name__}"
+            )
+
+        # Poll for completion
+        deadline = time.time() + timeout_s
+        poll_interval = 2.0
+
+        while time.time() < deadline:
+            time.sleep(poll_interval)
+            try:
+                history = self.history(child_key, limit=1)
+                if history:
+                    last = history[-1]
+                    if last.get("role") == "assistant" and last.get("content"):
+                        return {
+                            "status": "ok",
+                            "reply": last["content"],
+                            "runId": run_id,
+                            "childSessionKey": child_key,
+                        }
+            except Exception:
+                pass
+            try:
+                status_info = self.session_status(child_key)
+                if status_info.get("abortedLastRun"):
+                    return {
+                        "status": "error",
+                        "error": "session aborted",
+                        "runId": run_id,
+                        "childSessionKey": child_key,
+                    }
+            except Exception:
+                pass
+            poll_interval = min(poll_interval * 1.5, 10.0)
+
+        return {
+            "status": "timeout",
+            "error": f"session spawn timed out after {timeout_s}s",
+            "runId": run_id,
+            "childSessionKey": child_key,
+        }
+
     def destroy_session(self, agent_id: str) -> None:
         """Destroy all sessions for a pool instance by removing session JSONL files.
 
@@ -201,35 +279,6 @@ class OpenClawAdapter:
             return "\n".join(parts).strip()
         return ""
 
-    # ── Snapshot relay ────────────────────────────────────────────────────────
-
-    def write_snapshot(self, agent: str, filename: str, content: Any) -> None:
-        """Write a Psyche snapshot file into an Agent's memory directory."""
-        mem_dir = self._home / "workspace" / agent / "memory"
-        mem_dir.mkdir(parents=True, exist_ok=True)
-        path = mem_dir / filename
-        if isinstance(content, (dict, list)):
-            path.write_text(json.dumps(content, ensure_ascii=False, indent=2))
-        else:
-            path.write_text(str(content))
-
-    def read_agent_output(self, deed_path: Path, filename: str) -> Any:
-        """Read a file from an Agent's deed output directory."""
-        target = deed_path / filename
-        if not target.exists():
-            return None
-        raw = target.read_text()
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return raw
-
-    def list_deeds(self) -> list[Path]:
-        """List openclaw execution directories (openclaw/runs/) sorted by recency."""
-        runs_dir = self._home / "runs"
-        if not runs_dir.exists():
-            return []
-        return sorted(runs_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
 
     def cleanup_all_sessions(self) -> int:
         """Remove all session JSONL files across all agents.

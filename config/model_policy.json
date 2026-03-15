@@ -1,18 +1,20 @@
 {
-  "_comment": "Model routing policy — maps agents to model aliases. Single source of truth consumed by Cortex and OpenClaw.",
-  "_version": "2.0.0",
-  "_updated": "2026-03-08",
+  "_comment": "Model routing policy — maps agents to model aliases. Consumed by OpenClaw agent sessions.",
+  "_version": "3.0.0",
+  "_updated": "2026-03-15",
   "default_alias": "fast",
   "agent_model_map": {
-    "_comment": "Authoritative per-agent OpenClaw model assignment. Mirrors openclaw.json agent overrides.",
-    "counsel": "fast",
-    "scout": "fast",
-    "sage": "analysis",
-    "artificer": "fast",
-    "arbiter": "review",
-    "scribe": "glm",
-    "envoy": "fast",
-    "opencode": "qwen"
+    "_comment": "Per-agent model assignment. Mirrors openclaw.json agent overrides.",
+    "copilot": "fast",
+    "mentor": "fast",
+    "coach": "fast",
+    "operator": "fast",
+    "researcher": "fast",
+    "engineer": "fast",
+    "writer": "creative",
+    "reviewer": "review",
+    "publisher": "fast",
+    "admin": "fast"
   },
   "budget_limits": {
     "minimax_tokens_per_day": 20000000,

@@ -1,8 +1,0 @@
-[daily_limits]
-minimax_tokens = 20000000
-qwen_tokens = 10000000
-zhipu_tokens = 5000000
-deepseek_tokens = 5000000
-concurrent_deeds = 10
-
-[current_usage]

@@ -1,30 +1,58 @@
 # Daemon Troubleshooting Guide
 
-## Watchdog Alerts
+## Service Management (launchd)
 
-### API process not running
-- Check: `pgrep -f "uvicorn.*services.api"`
-- Fix: `cd $DAEMON_HOME && python -m uvicorn services.api:create_app --factory --host 0.0.0.0 --port 8000`
+### Check all services
+```bash
+launchctl list | grep daemon
+```
 
-### Temporal worker not running
-- Check: `pgrep -f "python.*temporal.*worker"`
-- Fix: `cd $DAEMON_HOME && python temporal/worker.py`
+### Restart a service
+```bash
+launchctl kickstart -k gui/$(id -u)/ai.kevinjian.daemon.api
+launchctl kickstart -k gui/$(id -u)/ai.kevinjian.daemon.worker
+launchctl kickstart -k gui/$(id -u)/ai.kevinjian.daemon.openclaw.gateway
+launchctl kickstart -k gui/$(id -u)/ai.kevinjian.daemon.telegram.adapter
+```
 
-### API not responding
-- Check logs: `tail -50 $DAEMON_HOME/state/api.log`
-- Common cause: port conflict, missing .env vars
+### API not responding (port 8100)
+- Check: `curl -s http://127.0.0.1:8100/health`
+- Logs: `tail -50 $DAEMON_HOME/state/service_logs/api.err.log`
+- Common cause: PG not running, .env missing
 
-### Pulse routine stale
-- Check cadence: `curl -s http://127.0.0.1:8000/console/schedules | python3 -m json.tool`
-- Check spine status: `cat $DAEMON_HOME/state/spine_status.json`
+### Worker not processing Jobs
+- Check: Temporal UI at http://127.0.0.1:8080
+- Logs: `tail -50 $DAEMON_HOME/state/service_logs/worker.err.log`
+- Common cause: OC Gateway down, Temporal not running
+
+### OC Gateway not responding (port 18790)
+- Check: `curl -s http://127.0.0.1:18790/`
+- Logs: `tail -50 $DAEMON_HOME/state/service_logs/openclaw_gateway.err.log`
+- Common cause: openclaw.json syntax error, port conflict
+
+## Docker Services
+
+### Check all containers
+```bash
+docker ps --format "table {{.Names}}\t{{.Status}}" | grep daemon
+```
+
+### Restart all Docker services
+```bash
+cd $DAEMON_HOME && docker compose restart
+```
+
+### PG not accessible
+- Check: `docker exec daemon-postgres-1 pg_isready`
+- Fix: `docker compose restart postgres`
 
 ## Manual Recovery
-1. Stop all: `pkill -f "uvicorn.*services.api"; pkill -f "python.*temporal.*worker"`
-2. Re-bootstrap: `cd $DAEMON_HOME && python bootstrap.py --force`
-3. Restart: start API + Worker processes
+1. Restart Docker: `cd $DAEMON_HOME && docker compose restart`
+2. Restart launchd services (all 4)
+3. Check: `curl -s http://127.0.0.1:8100/status | python3 -m json.tool`
 
 ## Log Locations
-- API: stdout / systemd journal
-- Worker: stdout / systemd journal
-- Watchdog: `$DAEMON_HOME/alerts/watchdog.log`
-- Spine: `$DAEMON_HOME/state/spine_log.jsonl`
+- API: `$DAEMON_HOME/state/service_logs/api.{out,err}.log`
+- Worker: `$DAEMON_HOME/state/service_logs/worker.{out,err}.log`
+- OC Gateway: `$DAEMON_HOME/state/service_logs/openclaw_gateway.{out,err}.log`
+- Telegram: `$DAEMON_HOME/state/service_logs/telegram_adapter.{out,err}.log`

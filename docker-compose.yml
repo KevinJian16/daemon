@@ -1,0 +1,403 @@
+# Daemon Infrastructure — Docker Compose
+# All services for daemon: Plane + Langfuse + Temporal + shared infra
+# Reference: SYSTEM_DESIGN.md §6, TODO.md Phase 1
+
+services:
+  # ============================================================
+  # Shared Infrastructure
+  # ============================================================
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-daemon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-daemon}
+      POSTGRES_DB: ${POSTGRES_DB:-daemon}
+      PGDATA: /var/lib/postgresql/data
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-databases.sql:/docker-entrypoint-initdb.d/01-init-databases.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-daemon}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: valkey/valkey:7.2-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO bucket initialization
+  minio-init:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin};
+      mc mb --ignore-existing local/uploads;
+      mc mb --ignore-existing local/artifacts;
+      mc mb --ignore-existing local/langfuse;
+      exit 0;
+      "
+
+  # ============================================================
+  # Plane (Project Management Backend)
+  # ============================================================
+
+  # Plane runs migrations on first boot via migrator service
+  plane-migrator:
+    image: artifacts.plane.so/makeplane/plane-backend:stable
+    restart: "no"
+    environment: &plane-env
+      DATABASE_URL: postgresql://${POSTGRES_USER:-daemon}:${POSTGRES_PASSWORD:-daemon}@postgres:5432/plane
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_HOST: plane-mq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-plane}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-plane}
+      RABBITMQ_VHOST: plane
+      AMQP_URL: amqp://${RABBITMQ_USER:-plane}:${RABBITMQ_PASSWORD:-plane}@plane-mq:5672/plane
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      AWS_S3_ENDPOINT_URL: http://minio:9000
+      AWS_S3_BUCKET_NAME: uploads
+      USE_MINIO: "1"
+      SECRET_KEY: ${PLANE_SECRET_KEY:-super-secret-key-change-me}
+      CORS_ALLOWED_ORIGINS: http://localhost:3000
+      CSRF_TRUSTED_ORIGINS: http://localhost:3000
+      WEB_URL: http://localhost:3000
+      ADMIN_BASE_URL: http://localhost:3000/god-mode/
+      GUNICORN_WORKERS: "1"
+      ENABLE_MAGIC_LINK_LOGIN: "0"
+      ENABLE_EMAIL_PASSWORD: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      plane-mq:
+        condition: service_healthy
+    command: ./bin/docker-entrypoint-migrator.sh
+
+  plane-api:
+    image: artifacts.plane.so/makeplane/plane-backend:stable
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    environment:
+      <<: *plane-env
+    volumes:
+      - ./scripts/plane-api-entrypoint.sh:/code/plane-api-entrypoint.sh:ro
+      - ./config/plane-patches/redirection_path.py:/code/plane/authentication/utils/redirection_path.py:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      plane-mq:
+        condition: service_healthy
+      plane-migrator:
+        condition: service_completed_successfully
+    entrypoint: ["/code/plane-api-entrypoint.sh"]
+    command: ["./bin/docker-entrypoint-api.sh"]
+
+  plane-worker:
+    image: artifacts.plane.so/makeplane/plane-backend:stable
+    restart: unless-stopped
+    environment:
+      <<: *plane-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      plane-mq:
+        condition: service_healthy
+      plane-migrator:
+        condition: service_completed_successfully
+    command: ./bin/docker-entrypoint-worker.sh
+
+  plane-beat:
+    image: artifacts.plane.so/makeplane/plane-backend:stable
+    restart: unless-stopped
+    environment:
+      <<: *plane-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      plane-mq:
+        condition: service_healthy
+      plane-migrator:
+        condition: service_completed_successfully
+    command: ./bin/docker-entrypoint-beat.sh
+
+  plane-frontend:
+    image: artifacts.plane.so/makeplane/plane-frontend:stable
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./config/plane-nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - plane-api
+
+  plane-space:
+    image: artifacts.plane.so/makeplane/plane-space:stable
+    restart: unless-stopped
+    depends_on:
+      - plane-api
+      - plane-frontend
+
+  plane-admin:
+    image: artifacts.plane.so/makeplane/plane-admin:stable
+    restart: unless-stopped
+    depends_on:
+      - plane-api
+
+  plane-live:
+    image: artifacts.plane.so/makeplane/plane-live:stable
+    restart: unless-stopped
+    environment:
+      API_BASE_URL: http://plane-api:8000
+      LIVE_SERVER_SECRET_KEY: ${PLANE_SECRET_KEY:-super-secret-key-change-me}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - plane-api
+      - redis
+
+  plane-mq:
+    image: rabbitmq:3.13-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-plane}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-plane}
+      RABBITMQ_DEFAULT_VHOST: plane
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # Langfuse (LLM Observability)
+  # ============================================================
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+      - "9009:9000"  # TCP native protocol (host 9009 to avoid MinIO conflict)
+    environment:
+      CLICKHOUSE_DB: langfuse
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-langfuse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-langfuse}
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  langfuse-web:
+    image: langfuse/langfuse:3
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment: &langfuse-env
+      DATABASE_URL: postgresql://${POSTGRES_USER:-daemon}:${POSTGRES_PASSWORD:-daemon}@postgres:5432/langfuse
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-langfuse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-langfuse}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: ""
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-langfuse-secret-change-me}
+      NEXTAUTH_URL: http://localhost:3001
+      SALT: ${LANGFUSE_SALT:-langfuse-salt-change-me}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+      # Auto-provision daemon project on first boot
+      LANGFUSE_INIT_ORG_ID: daemon-org
+      LANGFUSE_INIT_ORG_NAME: Daemon
+      LANGFUSE_INIT_PROJECT_ID: daemon-project
+      LANGFUSE_INIT_PROJECT_NAME: daemon
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-daemon-dev}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-daemon-dev}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_EMAIL:-admin@daemon.local}
+      LANGFUSE_INIT_USER_NAME: admin
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_PASSWORD:-daemon-admin}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    restart: unless-stopped
+    environment:
+      <<: *langfuse-env
+      # Worker doesn't need NEXTAUTH or init vars
+      NEXTAUTH_SECRET: ""
+      NEXTAUTH_URL: ""
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+  # ============================================================
+  # Firecrawl (Web Scraping → Clean Markdown)
+  # NOTE: ghcr.io image requires auth; using Firecrawl cloud API
+  # via MCP server (mcp_servers/firecrawl_scrape.py) instead.
+  # To self-host: build from https://github.com/mendableai/firecrawl
+  # ============================================================
+
+  # ============================================================
+  # RAGFlow (Document RAG Pipeline)
+  # ============================================================
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    restart: unless-stopped
+    ports:
+      - "9200:9200"
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  ragflow:
+    image: infiniflow/ragflow:v0.15.1-slim
+    platform: linux/amd64
+    restart: unless-stopped
+    ports:
+      - "9380:9380"
+      - "8380:80"
+    environment:
+      MYSQL_HOST: ""
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-daemon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-daemon}
+      POSTGRES_DBNAME: ragflow
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      ES_HOST: elasticsearch
+      ES_PORT: "9200"
+      MINIO_HOST: minio
+      MINIO_PORT: "9000"
+      MINIO_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    volumes:
+      - ragflow_data:/ragflow/data
+
+  # ============================================================
+  # Temporal (Workflow Orchestration)
+  # ============================================================
+
+  temporal:
+    image: temporalio/auto-setup:latest
+    restart: unless-stopped
+    ports:
+      - "7233:7233"
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-daemon}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-daemon}
+      POSTGRES_SEEDS: postgres
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./config/temporal-dynamicconfig:/etc/temporal/config/dynamicconfig
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:8080
+    depends_on:
+      - temporal
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  clickhouse_data:
+  rabbitmq_data:
+  elasticsearch_data:
+  ragflow_data:

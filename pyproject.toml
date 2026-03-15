@@ -16,6 +16,17 @@ dependencies = [
     "python-multipart>=0.0.9",
     "websockets>=13",
     "mcp>=1.0",
+    "asyncpg>=0.30",
+    "minio>=7.2",
+    "langfuse>=2.50",
+    "mem0ai>=0.1",
+    "nemoguardrails>=0.10",
+    "alembic>=1.13",
+    "pydantic>=2.0",
+    "tree-sitter>=0.23",
+    "tree-sitter-python>=0.23",
+    "tree-sitter-javascript>=0.23",
+    "tree-sitter-typescript>=0.23",
 ]
 
 [project.optional-dependencies]
@@ -31,4 +42,4 @@ testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["daemon*", "psyche*", "spine*", "runtime*", "temporal*", "services*"]
+include = ["runtime*", "temporal*", "services*", "config*", "alerts*", "interfaces*", "mcp_servers*"]

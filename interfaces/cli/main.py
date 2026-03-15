@@ -1,4 +1,9 @@
-"""Daemon CLI — command-line interface to the Daemon API."""
+"""Daemon CLI — command-line interface to the Daemon API.
+
+New architecture (7th draft): 4 L1 scenes, Jobs/Steps, no Spine/Psyche/Ledger.
+
+Reference: SYSTEM_DESIGN.md §4.9
+"""
 from __future__ import annotations
 
 import json
@@ -9,7 +14,7 @@ from typing import Any
 
 import httpx
 
-API_URL = os.environ.get("DAEMON_API_URL", "http://127.0.0.1:8000")
+API_URL = os.environ.get("DAEMON_API_URL", "http://127.0.0.1:8100")
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -26,18 +31,12 @@ def _post(path: str, body: dict | None = None) -> Any:
     return r.json()
 
 
-def _put(path: str, body: dict) -> Any:
-    r = httpx.put(f"{API_URL}{path}", json=body, timeout=30)
-    r.raise_for_status()
-    return r.json()
-
-
 # ── Formatting ────────────────────────────────────────────────────────────────
 
 def _fmt_status(s: str) -> str:
     colors = {
-        "ok": "\033[32m", "running": "\033[34m", "settling": "\033[33m",
-        "closed": "\033[32m", "failed": "\033[31m", "degraded": "\033[33m",
+        "ok": "\033[32m", "running": "\033[34m", "completed": "\033[32m",
+        "closed": "\033[32m", "failed": "\033[31m", "paused": "\033[33m",
         "GREEN": "\033[32m", "YELLOW": "\033[33m", "RED": "\033[31m",
     }
     reset = "\033[0m"
@@ -45,6 +44,8 @@ def _fmt_status(s: str) -> str:
 
 
 def _table(rows: list[list[str]], headers: list[str]) -> None:
+    if not rows:
+        return
     widths = [max(len(str(r[i])) for r in [headers] + rows) for i in range(len(headers))]
     sep = "  "
     print(sep.join(h.ljust(w) for h, w in zip(headers, widths)))
@@ -65,340 +66,75 @@ Daemon CLI
 Usage: daemon <command> [options]
 
 Commands:
-  health                      Show system health and Ward status
-  submit <plan.json>          Submit a Deed plan from file
-  deeds [--deed-status STATUS] List Deeds
-  deed <deed_id>              Show Deed details
-  offerings [--limit N]       List recent Offerings
-  chat                        Start interactive Voice session
-  spine status                Show Spine routine status
-  spine trigger <routine>     Manually trigger a Spine routine
-  psyche config               Show preferences + rations
-  psyche voice                Show voice profile
-  ledger stats                Show deed/skill/agent statistics
-  ledger templates            Show DAG/Folio templates
-  ration get <name>           Show a ration
-  ration set <name>           Set a ration limit
-  trails [--routine R]        Show recent trails
+  status                      Show system status
+  health                      Health check
+  chat <scene> <message>      Send a message to an L1 scene
+  panel <scene>               Show scene panel data
+
+Scenes: copilot, mentor, coach, operator
 
 Examples:
+  daemon status
   daemon health
-  daemon submit plan.json
-  daemon deeds --deed-status running
-  daemon deed deed_20260304_a1b2c3
-  daemon offerings --limit 10
-  daemon chat
-  daemon spine trigger pulse
-  daemon ration get openai
+  daemon chat copilot "帮我看看今天的任务"
+  daemon panel copilot
 """.strip())
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
+def cmd_status(args: list[str]) -> None:
+    del args
+    d = _get("/status")
+    print(f"Status: {_fmt_status(d.get('status', 'unknown'))}")
+    print(f"Started: {d.get('started_utc', '?')}")
+    scenes = d.get("scenes", [])
+    print(f"Scenes: {', '.join(scenes)}")
+    for key in ["session_manager", "store", "event_bus", "plane_client"]:
+        val = d.get(key)
+        if val is not None:
+            icon = "✓" if val else "✗"
+            print(f"  {key}: {icon}")
+
+
 def cmd_health(args: list[str]) -> None:
     del args
     d = _get("/health")
-    ward = d.get("ward", "?")
-    print(f"Ward: {_fmt_status(ward)}")
-    print(f"API:  ok")
-
-
-def cmd_submit(args: list[str]) -> None:
-    if not args:
-        _die("Usage: daemon submit <plan.json>")
-    path = args[0]
-    try:
-        with open(path) as f:
-            plan = json.load(f)
-    except FileNotFoundError:
-        _die(f"File not found: {path}")
-    except json.JSONDecodeError as e:
-        _die(f"Invalid JSON: {e}")
-
-    result = _post("/submit", plan)
-    if result.get("ok"):
-        print(f"✓ Submitted: {result.get('deed_id')}")
-        if result.get("deed_sub_status") == "queued":
-            print("  (queued — Ward is not GREEN)")
-    else:
-        _die(result.get("error") or "submission failed")
-
-
-def cmd_deeds(args: list[str]) -> None:
-    deed_status = ""
-    limit = 50
-    i = 0
-    while i < len(args):
-        if args[i] == "--deed-status" and i + 1 < len(args):
-            deed_status = args[i + 1]; i += 2
-        elif args[i] == "--limit" and i + 1 < len(args):
-            limit = int(args[i + 1]); i += 2
-        else:
-            i += 1
-
-    url = f"/deeds?limit={limit}"
-    if deed_status:
-        url += f"&deed_status={deed_status}"
-    deeds = _get(url)
-    if not deeds:
-        print("No deeds found.")
-        return
-    rows = [
-        [t.get("deed_id", ""), t.get("complexity", ""), t.get("title", "")[:40],
-         _fmt_status(t.get("deed_status", "")), str(t.get("priority", ""))]
-        for t in reversed(deeds)
-    ]
-    _table(rows, ["Deed ID", "Complexity", "Title", "Status", "Pri"])
-
-
-def cmd_deed(args: list[str]) -> None:
-    if not args:
-        _die("Usage: daemon deed <deed_id>")
-    deed = _get(f"/deeds/{args[0]}")
-    for k, v in deed.items():
-        print(f"  {k}: {v}")
-
-
-def cmd_offerings(args: list[str]) -> None:
-    limit = 20
-    i = 0
-    while i < len(args):
-        if args[i] == "--limit" and i + 1 < len(args):
-            limit = int(args[i + 1]); i += 2
-        else:
-            i += 1
-
-    items = _get(f"/offerings?limit={limit}")
-    if not items:
-        print("No offerings found.")
-        return
-    rows = [
-        [o.get("deed_id", ""), o.get("title", "")[:50],
-         o.get("complexity", ""), str(o.get("delivered_utc") or "")[:19]]
-        for o in items
-    ]
-    _table(rows, ["Deed ID", "Title", "Complexity", "Delivered"])
+    ok = d.get("ok", False)
+    print(f"Health: {'ok' if ok else 'not ok'}")
+    print(f"Time: {d.get('ts', '?')}")
 
 
 def cmd_chat(args: list[str]) -> None:
-    """Interactive Voice session with the Counsel agent."""
-    del args
-    try:
-        d = _post("/voice/session")
-    except Exception as e:
-        _die(f"Cannot create session: {e}")
-
-    sid = d["session_id"]
-    print(f"Voice session: {sid}")
-    print("Type your message and press Enter. Empty line to quit.\n")
-
-    while True:
-        try:
-            msg = input("You: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print("\nExiting chat.")
-            break
-        if not msg:
-            break
-
-        try:
-            result = _post(f"/voice/{sid}", {"message": msg})
-            content = result.get("content") or "(no response)"
-            print(f"\nCounsel: {content}\n")
-
-            plan = result.get("plan")
-            if plan:
-                print(f"\033[33m[Design detected]\033[0m")
-                print(json.dumps(plan, ensure_ascii=False, indent=2))
-                ans = input("Submit this Design? [y/N] ").strip().lower()
-                if ans == "y":
-                    sub = _post("/submit", plan)
-                    if sub.get("ok"):
-                        print(f"✓ Submitted: {sub.get('deed_id')}\n")
-                    else:
-                        print(f"✗ Submit failed: {sub.get('error')}\n")
-        except Exception as e:
-            print(f"\033[31mError:\033[0m {e}\n")
-
-
-def cmd_spine(args: list[str]) -> None:
-    if not args:
-        _die("Usage: daemon spine <status|trigger> [routine]")
-    sub = args[0]
-    if sub == "status":
-        routines = _get("/console/spine/status")
-        rows = [
-            [r.get("routine", ""), r.get("mode", ""), r.get("schedule", ""),
-             (r.get("last_run_utc") or "never")[:19]]
-            for r in routines
-        ]
-        _table(rows, ["Routine", "Mode", "Schedule", "Last Run"])
-    elif sub == "trigger":
-        if len(args) < 2:
-            _die("Usage: daemon spine trigger <routine>")
-        name = args[1]
-        result = _post(f"/console/spine/{name}/trigger")
-        if result.get("ok"):
-            print(f"✓ Triggered: {name}")
-            if result.get("result"):
-                print(json.dumps(result["result"], indent=2))
-        else:
-            _die(result.get("error") or "trigger failed")
-    else:
-        _die(f"Unknown spine subcommand: {sub}")
-
-
-def cmd_psyche(args: list[str]) -> None:
-    if not args:
-        _die("Usage: daemon psyche <config|voice>")
-    sub = args[0]
-    if sub == "config":
-        snap = _get("/console/psyche/config")
-        prefs = snap.get("preferences", {})
-        rations_data = snap.get("rations", {})
-        print("=== Preferences ===")
-        for section, values in prefs.items():
-            if isinstance(values, dict):
-                for k, v in values.items():
-                    print(f"  {section}.{k} = {v}")
-            else:
-                print(f"  {section} = {values}")
-        print("\n=== Rations ===")
-        limits = rations_data.get("daily_limits", {})
-        usage = rations_data.get("current_usage", {})
-        rows = [
-            [k, f"{v:,}", f"{usage.get(k, 0):,}"]
-            for k, v in limits.items()
-        ]
-        if rows:
-            _table(rows, ["Resource", "Daily Limit", "Used Today"])
-    elif sub == "voice":
-        data = _get("/console/psyche/voice")
-        for name in ("identity.md", "common.md", "zh.md", "en.md"):
-            content = data.get(name, "")
-            print(f"── {name} ──")
-            print(content[:500] if content else "(empty)")
-            print()
-        overlays = data.get("overlays", {})
-        if overlays:
-            print("── Overlays ──")
-            for fname, content in overlays.items():
-                print(f"  {fname}: {len(content)} chars")
-    else:
-        _die(f"Unknown psyche subcommand: {sub}. Use: config, voice")
-
-
-def cmd_ledger(args: list[str]) -> None:
-    if not args:
-        _die("Usage: daemon ledger <stats|templates>")
-    sub = args[0]
-    if sub == "stats":
-        data = _get("/console/ledger/stats")
-        hints = data.get("global_hints", {})
-        print(f"DAG templates: {hints.get('dag_template_count', 0)}")
-        print(f"Folio templates: {hints.get('folio_template_count', 0)}")
-        agents = data.get("agent_summary", [])
-        if agents:
-            print("\n=== Agent Stats ===")
-            rows = [
-                [a.get("agent_role", ""), str(a.get("invocations", 0)),
-                 f"{a.get('success_rate', 0)*100:.1f}%",
-                 f"{a.get('avg_tokens', 0):.0f}"]
-                for a in agents
-            ]
-            _table(rows, ["Agent", "Invocations", "Success", "Avg Tokens"])
-        reviews = data.get("skills_needing_review", [])
-        if reviews:
-            print("\n=== Skills Needing Review ===")
-            for s in reviews:
-                print(f"  {s.get('skill_name', '')}: {s.get('reject_rate', 0)*100:.0f}% reject rate ({s.get('invocations', 0)} calls)")
-    elif sub == "templates":
-        data = _get("/console/ledger/templates")
-        print(f"DAG templates: {data.get('dag_template_count', 0)}")
-        print(f"Folio templates: {data.get('folio_template_count', 0)}")
-        top = data.get("top_dag_templates", [])
-        if top:
-            print("\n=== Top DAG Templates ===")
-            rows = [
-                [t.get("template_id", "")[:12],
-                 t.get("objective_text", "")[:40],
-                 str(t.get("times_validated", 0)),
-                 f"{t.get('avg_tokens', 0):.0f}"]
-                for t in top
-            ]
-            _table(rows, ["ID", "Objective", "Validated", "Avg Tokens"])
-    else:
-        _die(f"Unknown ledger subcommand: {sub}. Use: stats, templates")
-
-
-def cmd_ration(args: list[str]) -> None:
     if len(args) < 2:
-        _die("Usage: daemon ration <get|set> <name>")
-    sub, name = args[0], args[1]
-    if sub == "get":
-        d = _get(f"/console/rations/{name}")
-        print(json.dumps(d, indent=2, ensure_ascii=False))
-    elif sub == "set":
-        print(f"Enter a numeric daily limit for '{name}' (then Ctrl+D):")
-        raw = sys.stdin.read()
-        try:
-            daily_limit = float(str(raw).strip())
-        except Exception:
-            _die("Daily limit must be numeric")
-        result = _put(f"/console/rations/{name}", {"daily_limit": daily_limit})
-        print(f"✓ Ration '{name}' updated" if result.get("ok") else f"✗ {result}")
-    else:
-        _die(f"Unknown ration subcommand: {sub}")
+        _die("Usage: daemon chat <scene> <message>")
+    scene = args[0]
+    message = " ".join(args[1:])
+    result = _post(f"/scenes/{scene}/chat", {"content": message})
+    reply = result.get("reply") or result.get("content") or "(no response)"
+    print(f"\n{scene}: {reply}\n")
+    actions = result.get("actions")
+    if actions:
+        print("Actions:")
+        for a in actions:
+            print(f"  - {a.get('type', '?')}: {a.get('summary', '')}")
 
 
-def cmd_trails(args: list[str]) -> None:
-    routine = ""
-    status = ""
-    limit = 20
-    i = 0
-    while i < len(args):
-        if args[i] == "--routine" and i + 1 < len(args):
-            routine = args[i + 1]; i += 2
-        elif args[i] == "--status" and i + 1 < len(args):
-            status = args[i + 1]; i += 2
-        elif args[i] == "--limit" and i + 1 < len(args):
-            limit = int(args[i + 1]); i += 2
-        else:
-            i += 1
-
-    url = f"/console/trails?limit={limit}"
-    if routine:
-        url += f"&routine={routine}"
-    if status:
-        url += f"&status={status}"
-    trails = _get(url)
-    if not trails:
-        print("No trails found.")
-        return
-    rows = [
-        [t.get("trail_id", "")[:16], t.get("routine", ""),
-         _fmt_status(t.get("status", "")),
-         "yes" if t.get("degraded") else "—",
-         str(t.get("elapsed_s", ""))]
-        for t in trails
-    ]
-    _table(rows, ["Trail ID", "Routine", "Status", "Degraded", "Elapsed(s)"])
+def cmd_panel(args: list[str]) -> None:
+    if not args:
+        _die("Usage: daemon panel <scene>")
+    scene = args[0]
+    d = _get(f"/scenes/{scene}/panel")
+    print(json.dumps(d, indent=2, ensure_ascii=False))
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 COMMANDS = {
+    "status": (cmd_status, 0),
     "health": (cmd_health, 0),
-    "submit": (cmd_submit, 1),
-    "deeds": (cmd_deeds, 0),
-    "deed": (cmd_deed, 1),
-    "offerings": (cmd_offerings, 0),
-    "chat": (cmd_chat, 0),
-    "spine": (cmd_spine, 1),
-    "psyche": (cmd_psyche, 1),
-    "ledger": (cmd_ledger, 1),
-    "ration": (cmd_ration, 2),
-    "trails": (cmd_trails, 0),
+    "chat": (cmd_chat, 2),
+    "panel": (cmd_panel, 1),
 }
 
 

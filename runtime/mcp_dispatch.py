@@ -31,7 +31,10 @@ class MCPDispatcher:
         return bool(self._server_configs)
 
     async def call_tool(self, tool_name: str, tool_args: dict, timeout_s: float = 60) -> dict:
-        """Call a tool on the appropriate MCP server. Connects lazily on first use."""
+        """Call a tool on the appropriate MCP server.
+
+        Connects lazily on first use. Reconnects once on connection failure.
+        """
         if not self._discovered:
             await self._discover_all()
 
@@ -39,14 +42,26 @@ class MCPDispatcher:
         if not server_name:
             raise ValueError(f"No MCP server registered for tool '{tool_name}'")
 
-        conn = self._connections.get(server_name)
-        if not conn or not conn.session:
-            raise RuntimeError(f"MCP server '{server_name}' not connected")
+        for attempt in range(2):
+            conn = self._connections.get(server_name)
+            if not conn or not conn.session:
+                if attempt == 0:
+                    await self._reconnect_server(server_name)
+                    continue
+                raise RuntimeError(f"MCP server '{server_name}' not connected")
 
-        result = await asyncio.wait_for(
-            conn.session.call_tool(tool_name, arguments=tool_args),
-            timeout=timeout_s,
-        )
+            try:
+                result = await asyncio.wait_for(
+                    conn.session.call_tool(tool_name, arguments=tool_args),
+                    timeout=timeout_s,
+                )
+                break
+            except (ConnectionError, OSError, asyncio.TimeoutError) as exc:
+                if attempt == 0:
+                    logger.warning("MCP server '%s' call failed, reconnecting: %s", server_name, exc)
+                    await self._reconnect_server(server_name)
+                    continue
+                raise
 
         if result.isError:
             texts = [c.text for c in (result.content or []) if hasattr(c, "text")]
@@ -58,6 +73,31 @@ class MCPDispatcher:
                 output_parts.append(block.text)
 
         return {"output": "\n".join(output_parts), "tool": tool_name}
+
+    async def _reconnect_server(self, server_name: str) -> None:
+        """Close and reconnect a single MCP server, re-discover its tools."""
+        old_conn = self._connections.pop(server_name, None)
+        if old_conn:
+            try:
+                await old_conn.close()
+            except Exception:
+                pass
+        # Remove stale tool routes for this server
+        self._tool_routes = {t: s for t, s in self._tool_routes.items() if s != server_name}
+
+        cfg = self._server_configs.get(server_name)
+        if not cfg:
+            return
+        try:
+            conn = _ServerConnection(server_name, cfg)
+            await conn.connect()
+            self._connections[server_name] = conn
+            tools_resp = await conn.session.list_tools()
+            for tool in tools_resp.tools:
+                self._tool_routes[tool.name] = server_name
+            logger.info("MCP server '%s' reconnected: %d tools", server_name, len(tools_resp.tools))
+        except Exception as exc:
+            logger.warning("MCP server '%s' reconnect failed: %s", server_name, exc)
 
     async def _discover_all(self) -> None:
         """Connect to all configured servers and build the tool→server routing table."""

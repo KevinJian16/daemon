@@ -3,31 +3,26 @@ export default {
   content: ["./index.html", "./src/**/*.{js,jsx}"],
   theme: {
     extend: {
-      fontFamily: {
-        sans: [
-          "ui-sans-serif",
-          "system-ui",
-          "-apple-system",
-          "BlinkMacSystemFont",
-          "\"Segoe UI\"",
-          "sans-serif"
-        ],
-        serif: [
-          "\"Iowan Old Style\"",
-          "\"Palatino Linotype\"",
-          "\"Book Antiqua\"",
-          "Georgia",
-          "ui-serif",
-          "serif"
-        ]
+      colors: {
+        surface: {
+          0: "#0a0a0f",
+          1: "#12121a",
+          2: "#1a1a25",
+          3: "#222230",
+        },
+        accent: {
+          DEFAULT: "#6366f1",
+          hover: "#818cf8",
+          muted: "#4f46e5",
+        },
+        scene: {
+          copilot: "#6366f1",
+          mentor: "#f59e0b",
+          coach: "#10b981",
+          operator: "#ef4444",
+        },
       },
-      boxShadow: {
-        claude:
-          "0 0.25rem 1.25rem rgba(0,0,0,0.035),0 0 0 0.5px rgba(0,0,0,0.08)",
-        "claude-strong":
-          "0 0.25rem 1.25rem rgba(0,0,0,0.075),0 0 0 0.5px rgba(0,0,0,0.15)"
-      }
-    }
+    },
   },
-  plugins: []
+  plugins: [],
 };

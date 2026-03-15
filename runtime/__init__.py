@@ -6,24 +6,20 @@ time, so utility commands like state reset can run with minimal environment.
 
 from __future__ import annotations
 
-__all__ = ["Cortex", "OpenClawAdapter", "Ether", "TemporalClient"]
+__all__ = ["OpenClawAdapter", "TemporalClient", "MCPDispatcher"]
 
 
 def __getattr__(name: str):
-    if name == "Cortex":
-        from .cortex import Cortex
-
-        return Cortex
     if name == "OpenClawAdapter":
         from .openclaw import OpenClawAdapter
 
         return OpenClawAdapter
-    if name == "Ether":
-        from .ether import Ether
-
-        return Ether
     if name == "TemporalClient":
         from .temporal import TemporalClient
 
         return TemporalClient
+    if name == "MCPDispatcher":
+        from .mcp_dispatch import MCPDispatcher
+
+        return MCPDispatcher
     raise AttributeError(name)

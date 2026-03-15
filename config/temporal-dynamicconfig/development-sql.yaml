@@ -1,0 +1,14 @@
+# Temporal dynamic config for daemon development
+# Reference: https://docs.temporal.io/references/dynamic-configuration
+
+system.forceSearchAttributesCacheRefreshOnRead:
+  - value: true
+    constraints: {}
+
+limit.maxIDLength:
+  - value: 255
+    constraints: {}
+
+history.maximumSignalNameLength:
+  - value: 255
+    constraints: {}

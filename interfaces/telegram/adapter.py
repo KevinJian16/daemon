@@ -1,8 +1,11 @@
-"""Telegram Adapter — notification-only bridge for Daemon.
+"""Telegram Adapter — per-scene notification bridge for Daemon.
 
-Three notifications: deed_started, deed_settling, deed_failed.
-One command: /status.
+4 independent bots (one per scene: copilot/mentor/coach/operator).
+Events: job_started, job_completed, job_failed.
+Command: /status.
 Everything else is silently ignored.
+
+Reference: SYSTEM_DESIGN.md §5.4, TODO.md Phase 5.4
 """
 from __future__ import annotations
 
@@ -28,12 +31,27 @@ from daemon_env import load_daemon_env
 logger = logging.getLogger(__name__)
 load_daemon_env(ROOT)
 
+# Per-scene bot tokens (4 independent bots)
+BOT_TOKENS: dict[str, str] = {
+    "copilot": os.environ.get("TELEGRAM_BOT_TOKEN_COPILOT", ""),
+    "mentor": os.environ.get("TELEGRAM_BOT_TOKEN_MENTOR", ""),
+    "coach": os.environ.get("TELEGRAM_BOT_TOKEN_COACH", ""),
+    "operator": os.environ.get("TELEGRAM_BOT_TOKEN_OPERATOR", ""),
+}
+# Fallback: single token for backwards compat
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-DAEMON_API = os.environ.get("DAEMON_API_URL", "http://127.0.0.1:8000")
+DAEMON_API = os.environ.get("DAEMON_API_URL", "http://127.0.0.1:8100")
 TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "").strip()
 TELEGRAM_ADAPTER_HOST = str(os.environ.get("TELEGRAM_ADAPTER_HOST", "127.0.0.1") or "127.0.0.1").strip()
 
-SUPPORTED_EVENTS = {"deed_started", "deed_settling", "deed_failed"}
+SUPPORTED_EVENTS = {"job_started", "job_completed", "job_failed"}
+
+
+def _resolve_bot_token(scene: str = "") -> str:
+    """Resolve bot token for a scene. Falls back to single BOT_TOKEN."""
+    if scene and BOT_TOKENS.get(scene):
+        return BOT_TOKENS[scene]
+    return BOT_TOKEN
 
 app = FastAPI(title="Daemon Telegram Adapter")
 
@@ -68,14 +86,15 @@ def _log_telegram_event(event: str, payload: dict[str, Any]) -> None:
         logger.warning("Failed to write telegram telemetry: %s", exc)
 
 
-def _tg_api(method: str, payload: dict) -> dict:
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+def _tg_api(method: str, payload: dict, *, token: str = "") -> dict:
+    bot_token = token or BOT_TOKEN
+    url = f"https://api.telegram.org/bot{bot_token}/{method}"
     r = httpx.post(url, json=payload, timeout=20)
     r.raise_for_status()
     return r.json()
 
 
-def _send_message(chat_id: int, text: str, parse_mode: str = "") -> None:
+def _send_message(chat_id: int, text: str, parse_mode: str = "", *, scene: str = "") -> None:
     limit = 3900
     chunks: list[str] = []
     msg = str(text or "")
@@ -89,7 +108,7 @@ def _send_message(chat_id: int, text: str, parse_mode: str = "") -> None:
             payload: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
             if parse_mode:
                 payload["parse_mode"] = parse_mode
-            _tg_api("sendMessage", payload)
+            _tg_api("sendMessage", payload, token=_resolve_bot_token(scene))
         except Exception as exc:
             logger.warning("Telegram sendMessage failed: %s", exc)
 
@@ -120,27 +139,27 @@ def _daemon_request(method: str, path: str, payload: dict[str, Any] | None = Non
     return True, data
 
 
-def _active_deeds() -> list[dict[str, Any]]:
-    ok, data = _daemon_request("GET", "/deeds?phase=running&limit=20")
+def _active_jobs() -> list[dict[str, Any]]:
+    ok, data = _daemon_request("GET", "/jobs?status=running&limit=20")
     if not ok or not isinstance(data, list):
         return []
     return [
         row for row in data
-        if str(row.get("deed_status") or "").lower() in {"running"}
+        if str(row.get("status") or "").lower() == "running"
     ]
 
 
 def _status_text() -> str:
-    ok, status_payload = _daemon_request("GET", "/system/status")
+    ok, status_payload = _daemon_request("GET", "/status")
     system_status = str((status_payload or {}).get("status") or "unknown") if ok else "unreachable"
-    active = _active_deeds()
+    active = _active_jobs()
     lines = [f"系统状态：{system_status}"]
     if not active:
         lines.append("当前没有运行中的任务。")
         return "\n".join(lines)
     lines.append("当前任务：")
     for idx, row in enumerate(active[:6], start=1):
-        title = str(row.get("deed_title") or row.get("title") or row.get("objective") or row.get("deed_id") or "任务")
+        title = str(row.get("title") or row.get("job_id") or "任务")
         lines.append(f"{idx}. {title}")
     return "\n".join(lines)
 
@@ -158,29 +177,56 @@ def _extract_message(update: dict[str, Any]) -> tuple[int, str] | None:
         return None
 
 
-def _deed_title(payload: dict[str, Any]) -> str:
-    return str(payload.get("deed_title") or payload.get("title") or "任务")
+def _task_title(payload: dict[str, Any]) -> str:
+    return str(payload.get("title") or payload.get("task_title") or "任务")
 
 
 def _notify_text(event: str, payload: dict[str, Any]) -> str | None:
-    title = _deed_title(payload)
+    title = _task_title(payload)
 
-    if event == "deed_started":
+    if event == "job_started":
         return f'已开始 · "{title}"'
 
-    if event == "deed_settling":
+    if event == "job_completed":
         summary = str(payload.get("summary") or "").strip()
-        portal_link = str(payload.get("portal_link") or "").strip()
-        parts = [f'做好了。\n\n{summary}' if summary else f'做好了 · "{title}"']
-        if portal_link:
-            parts.append(f'\n\n完整结果：{portal_link}')
-        return "".join(parts)
+        return f'做好了。\n\n{summary}' if summary else f'做好了 · "{title}"'
 
-    if event == "deed_failed":
-        error = str(payload.get("error") or payload.get("last_error") or "未知错误")
+    if event == "job_failed":
+        error = str(payload.get("error") or "未知错误")
         return f'失败 · "{title}" · {error[:160]}'
 
     return None
+
+
+# Per-user scene selection (in-memory, defaults to copilot)
+_user_scenes: dict[int, str] = {}
+
+
+def _get_user_scene(chat_id: int) -> str:
+    return _user_scenes.get(chat_id, "copilot")
+
+
+def _set_user_scene(chat_id: int, scene: str) -> None:
+    _user_scenes[chat_id] = scene
+
+
+async def _forward_to_scene(scene: str, text: str, chat_id: int) -> str:
+    """Forward a user message to the daemon scene chat API and return the reply."""
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{DAEMON_API.rstrip('/')}/scenes/{scene}/chat",
+                json={"content": text},
+            )
+            if resp.status_code >= 400:
+                return f"（错误 {resp.status_code}）"
+            data = resp.json()
+            return str(data.get("reply") or data.get("text") or data.get("content") or "")
+    except httpx.TimeoutException:
+        return "（请求超时，任务可能仍在执行中）"
+    except Exception as exc:
+        logger.warning("Forward to scene %s failed: %s", scene, exc)
+        return f"（连接失败: {str(exc)[:100]}）"
 
 
 @app.post("/notify")
@@ -204,7 +250,9 @@ async def notify(request: Request):
         _log_telegram_event(f"notify_ignored_{event}", {"event": event})
         return JSONResponse({"ok": True, "ignored": True, "reason": "unsupported_event"})
 
-    if not BOT_TOKEN:
+    scene = str(payload.get("scene") or data.get("scene") or "").strip()
+    token = _resolve_bot_token(scene)
+    if not token:
         return JSONResponse({"ok": False, "error": "bot_token_missing"})
 
     try:
@@ -216,7 +264,7 @@ async def notify(request: Request):
     if not msg:
         return JSONResponse({"ok": True, "ignored": True, "reason": "no_message"})
 
-    _send_message(chat_id, msg)
+    _send_message(chat_id, msg, scene=scene)
     _log_telegram_event(f"notify_{event}", {"event": event, "payload_keys": list(payload.keys())})
     return JSONResponse({"ok": True, "event": event})
 
@@ -248,19 +296,40 @@ async def webhook(request: Request):
         _send_message(chat_id, _status_text())
         return JSONResponse({"ok": True, "handled": True, "command": "status"})
 
-    _log_telegram_event("webhook_ignored", {"update_id": update_id, "chat_id": chat_id, "reason": "unsupported_message"})
-    return JSONResponse({"ok": True, "ignored": True})
+    if text.startswith("/scene "):
+        # /scene copilot — switch default scene
+        parts = text.split(maxsplit=1)
+        scene_name = parts[1].strip().lower() if len(parts) > 1 else ""
+        if scene_name in ("copilot", "mentor", "coach", "operator"):
+            _set_user_scene(chat_id, scene_name)
+            _send_message(chat_id, f"已切换到 {scene_name} 场景。")
+        else:
+            _send_message(chat_id, "可用场景: copilot / mentor / coach / operator")
+        return JSONResponse({"ok": True, "handled": True, "command": "scene"})
+
+    # Forward user message to daemon scene chat API
+    scene = _get_user_scene(chat_id)
+    reply = await _forward_to_scene(scene, text, chat_id)
+    if reply:
+        _send_message(chat_id, reply, scene=scene)
+        _log_telegram_event("webhook_chat", {"update_id": update_id, "scene": scene, "reply_len": len(reply)})
+    else:
+        _send_message(chat_id, "（无回复）", scene=scene)
+        _log_telegram_event("webhook_chat_empty", {"update_id": update_id, "scene": scene})
+
+    return JSONResponse({"ok": True, "handled": True, "scene": scene})
 
 
 @app.get("/health")
 def health():
     return {
         "ok": True,
-        "bot": bool(BOT_TOKEN),
+        "bots": {scene: bool(token) for scene, token in BOT_TOKENS.items()},
+        "fallback_bot": bool(BOT_TOKEN),
         "daemon_api": DAEMON_API,
         "webhook_secret_configured": bool(TELEGRAM_WEBHOOK_SECRET),
         "bind_host": TELEGRAM_ADAPTER_HOST,
-        "mode": "notify_only",
+        "mode": "notify_and_chat",
     }
 
 

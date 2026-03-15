@@ -1,18 +1,23 @@
 {
-  "version": 1,
-  "canonical_agents": ["counsel", "scout", "sage", "artificer", "arbiter", "scribe", "envoy"],
+  "version": 2,
+  "canonical_agents": {
+    "l1": ["copilot", "mentor", "coach", "operator"],
+    "l2": ["researcher", "engineer", "writer", "reviewer", "publisher", "admin"]
+  },
   "temporal": {
     "namespace": "default",
     "queue": "daemon-queue"
   },
   "agent_concurrency_defaults": {
-    "scout": 8,
-    "sage": 4,
-    "arbiter": 2,
-    "scribe": 2,
-    "envoy": 1,
-    "spine": 2,
-    "counsel": 1,
-    "artificer": 2
+    "researcher": 8,
+    "engineer": 4,
+    "writer": 2,
+    "reviewer": 2,
+    "publisher": 1,
+    "admin": 2,
+    "copilot": 1,
+    "mentor": 1,
+    "coach": 1,
+    "operator": 1
   }
 }

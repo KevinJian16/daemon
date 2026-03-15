@@ -1,3 +1,51 @@
 {
-  "servers": {}
+  "servers": {
+    "brave-search": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@anthropic-ai/mcp-server-brave-search"],
+      "env": {
+        "BRAVE_API_KEY": "${BRAVE_API_KEY}"
+      }
+    },
+    "filesystem": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@anthropic-ai/mcp-server-filesystem", "/Users/kevinjian/daemon/state", "/Users/kevinjian/daemon/backups"]
+    },
+    "semantic-scholar": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/semantic_scholar.py"],
+      "env": {
+        "S2_API_KEY": "${S2_API_KEY}"
+      }
+    },
+    "code-functions": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/code_functions.py"]
+    },
+    "firecrawl": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/firecrawl_scrape.py"],
+      "env": {
+        "FIRECRAWL_URL": "http://127.0.0.1:3002"
+      }
+    },
+    "github": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
+    "paper-tools": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/paper_tools.py"]
+    }
+  }
 }

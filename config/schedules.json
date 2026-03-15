@@ -1,0 +1,23 @@
+{
+  "_doc": "Temporal Schedule definitions. admin weekly health check verifies these exist.",
+  "schedules": [
+    {
+      "id": "daemon-maintenance",
+      "workflow": "MaintenanceWorkflow",
+      "cron": "0 */6 * * *",
+      "description": "Periodic cleanup: expired knowledge, stale events, PG vacuum (every 6h)"
+    },
+    {
+      "id": "daemon-weekly-health",
+      "workflow": "HealthCheckWorkflow",
+      "cron": "0 9 * * 1",
+      "description": "Weekly health check: infrastructure + quality + frontier scan (Monday 9am)"
+    },
+    {
+      "id": "daemon-daily-backup",
+      "workflow": "BackupWorkflow",
+      "cron": "0 3 * * *",
+      "description": "Daily PG + MinIO incremental backup (3am)"
+    }
+  ]
+}

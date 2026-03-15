@@ -1,13 +1,13 @@
 {
-  "_comment": "Model registry — canonical model definitions used by both Cortex and OpenClaw via model_policy_snapshot.",
-  "_version": "1.2.0",
-  "_updated": "2026-03-05",
+  "_comment": "Model registry — canonical model definitions used by OpenClaw agent sessions.",
+  "_version": "2.0.0",
+  "_updated": "2026-03-15",
   "models": [
     {
       "alias": "fast",
       "provider": "minimax",
       "model_id": "MiniMax-M2.5",
-      "description": "High-frequency workhorse: counsel/scout/artificer/envoy orchestration, voice, intake, relay, judge, record, tend, pulse",
+      "description": "High-frequency workhorse: L1 scenes (copilot/mentor/coach/operator), L2 execution (researcher/engineer/publisher/admin). 1M context.",
       "context_window": 1000000,
       "supports_temperature": true
     },
@@ -15,7 +15,7 @@
       "alias": "analysis",
       "provider": "deepseek",
       "model_id": "deepseek-reasoner",
-      "description": "Deep reasoning: sage agent — witness, learn, distill, focus, clst_research_report. Note: 65K context, no temperature.",
+      "description": "Deep reasoning: researcher (deep analysis), L1 (complex planning). Note: 65K context, no temperature.",
       "context_window": 65536,
       "supports_temperature": false
     },
@@ -23,15 +23,15 @@
       "alias": "review",
       "provider": "qwen",
       "model_id": "qwen-max",
-      "description": "Quality gate and rubric scoring: arbiter agent — quality_gate_hard, review_mentor_rubric. Strong structured output, bilingual.",
+      "description": "Quality gate: reviewer agent — fact_check, code_review, quality_audit. Strong structured output, bilingual.",
       "context_window": 32768,
       "supports_temperature": true
     },
     {
-      "alias": "glm",
+      "alias": "creative",
       "provider": "zhipu",
       "model_id": "glm-z1-flash",
-      "description": "Bilingual rendering: scribe agent — formal writing, zh/en split, clst_knowledge_synthesis. 128K context.",
+      "description": "Creative writing: writer agent — tech_blog, academic_paper, documentation, data_visualization. 128K context, bilingual.",
       "context_window": 128000,
       "supports_temperature": true
     },
@@ -39,7 +39,7 @@
       "alias": "qwen",
       "provider": "qwen",
       "model_id": "qwen-max",
-      "description": "Dev/coding runs: opencode subprocess (clst_dev_project). Same model as review alias.",
+      "description": "Dev/coding: engineer agent alternative. Same model as review alias.",
       "context_window": 32768,
       "supports_temperature": true
     },
@@ -47,7 +47,7 @@
       "alias": "fallback",
       "provider": "minimax",
       "model_id": "MiniMax-M2.5",
-      "description": "Fallback when primary provider unavailable",
+      "description": "Fallback when primary provider unavailable.",
       "context_window": 1000000,
       "supports_temperature": true
     },
@@ -55,7 +55,7 @@
       "alias": "embedding",
       "provider": "zhipu",
       "model_id": "embedding-3",
-      "description": "Text embedding for Lore similarity search and Memory semantic retrieval. 1024 dimensions, bilingual zh/en.",
+      "description": "Text embedding for Mem0 semantic retrieval. 1024 dimensions, bilingual zh/en.",
       "context_window": 8192,
       "supports_temperature": false
     }

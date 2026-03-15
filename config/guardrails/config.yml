@@ -1,0 +1,33 @@
+# NeMo Guardrails configuration for daemon
+# Replaces psyche/instinct.py InstinctEngine
+# Reference: SYSTEM_DESIGN.md §4.2, §5.2, §10
+
+models: []
+# No LLM model configured — daemon guardrails are pattern-based (zero token).
+# All rails use deterministic pattern matching, not LLM intent detection.
+
+rails:
+  input:
+    flows:
+      - check instruction override
+      - check harmful request
+      - check sensitive data leak
+      - check token budget
+
+  output:
+    flows:
+      - check output safety
+      - check forbidden markers
+      - check source tier compliance
+      - check internal external mixing
+
+  config:
+    # Lowest possible latency — pattern matching only
+    lowest_temperature: 0.0
+
+# Custom actions for validation logic
+actions_server_url: null
+
+# Import custom actions
+import_paths:
+  - config/guardrails

@@ -1,0 +1,167 @@
+{
+  "description": "Warmup Stage 3 test task suite — baseline tasks for Skill calibration",
+  "reference": "SYSTEM_DESIGN.md §7.3 Stage 3",
+  "convergence_criteria": "5 consecutive tasks pass reviewer with minimal edits",
+  "tasks": [
+    {
+      "id": "T01",
+      "scene": "copilot",
+      "title": "Single-agent research task",
+      "description": "Search for the latest papers on LLM agent architectures published in 2024-2025",
+      "expected_route": "direct",
+      "agents": ["researcher"],
+      "skills_tested": ["academic_search"],
+      "input": "Find the top 5 most cited papers on LLM agent architectures from 2024-2025, with citation counts and key contributions",
+      "acceptance_criteria": [
+        "Returns 5 papers with title, authors, year, citations",
+        "Papers are from 2024-2025",
+        "Sorted by citation count",
+        "Source tier is A (academic)"
+      ]
+    },
+    {
+      "id": "T02",
+      "scene": "copilot",
+      "title": "Two-agent pipeline: research → write",
+      "description": "Research a topic then write a summary",
+      "expected_route": "task",
+      "agents": ["researcher", "writer"],
+      "skills_tested": ["web_research", "tech_blog"],
+      "input": "Research the current state of MCP (Model Context Protocol) and write a technical blog post about it",
+      "acceptance_criteria": [
+        "Research covers MCP spec, adoption, use cases",
+        "Blog post follows tech_blog skill structure",
+        "Content is accurate and well-structured",
+        "Word count 500-1500"
+      ]
+    },
+    {
+      "id": "T03",
+      "scene": "copilot",
+      "title": "Three-agent pipeline: research → write → review",
+      "description": "Full pipeline with quality gate",
+      "expected_route": "task",
+      "agents": ["researcher", "writer", "reviewer"],
+      "skills_tested": ["literature_review", "academic_paper", "quality_audit"],
+      "input": "Write a literature review section on Retrieval-Augmented Generation (RAG) approaches, covering at least 5 recent papers",
+      "acceptance_criteria": [
+        "Covers at least 5 papers",
+        "Each citation has proper reference",
+        "Reviewer passes with no major issues",
+        "Academic writing style"
+      ]
+    },
+    {
+      "id": "T04",
+      "scene": "copilot",
+      "title": "Code analysis task",
+      "description": "Use tree-sitter to analyze codebase structure",
+      "expected_route": "direct",
+      "agents": ["engineer"],
+      "skills_tested": ["code_review"],
+      "input": "Analyze the code structure of daemon's temporal/ directory. List all functions, their line counts, and identify the 3 largest files",
+      "acceptance_criteria": [
+        "Lists all Python files in temporal/",
+        "Extracts function names and line ranges",
+        "Correctly identifies largest files",
+        "Uses code_structure/code_functions MCP tools"
+      ]
+    },
+    {
+      "id": "T05",
+      "scene": "mentor",
+      "title": "Learning task with source evaluation",
+      "description": "Find and evaluate learning resources",
+      "expected_route": "task",
+      "agents": ["researcher", "reviewer"],
+      "skills_tested": ["web_research", "source_evaluation", "fact_check"],
+      "input": "Find the best resources for learning Temporal.io workflow orchestration. Evaluate each source's credibility and recommend a learning path",
+      "acceptance_criteria": [
+        "At least 5 resources found",
+        "Each resource has tier classification (A/B/C)",
+        "Learning path is sequenced logically",
+        "Reviewer verifies source quality"
+      ]
+    },
+    {
+      "id": "T06",
+      "scene": "coach",
+      "title": "Life management planning task",
+      "description": "Create a structured plan from a life goal",
+      "expected_route": "task",
+      "agents": ["researcher", "writer"],
+      "skills_tested": ["web_research", "documentation"],
+      "input": "Help me create a weekly exercise and nutrition plan for improving energy levels. Research evidence-based approaches first",
+      "acceptance_criteria": [
+        "Research cites evidence-based sources",
+        "Plan is structured by day/week",
+        "Practical and actionable",
+        "Matches user's preference style"
+      ]
+    },
+    {
+      "id": "T07",
+      "scene": "operator",
+      "title": "System diagnostic task",
+      "description": "Run system health check and produce report",
+      "expected_route": "direct",
+      "agents": ["admin"],
+      "skills_tested": ["health_check"],
+      "input": "Run a full system diagnostic and report the health status of all daemon services",
+      "acceptance_criteria": [
+        "Checks all Docker containers",
+        "Checks API/Worker/OC Gateway",
+        "Reports GREEN/YELLOW/RED status",
+        "Actionable recommendations for any failures"
+      ]
+    },
+    {
+      "id": "T08",
+      "scene": "copilot",
+      "title": "Full chain: research → engineer → reviewer → publisher",
+      "description": "Complete workflow from research to external delivery",
+      "expected_route": "project",
+      "agents": ["researcher", "engineer", "reviewer", "publisher"],
+      "skills_tested": ["academic_search", "implementation", "code_review", "github_publish"],
+      "input": "Research best practices for Python project structure in 2025, then create a reference example project layout, review it, and create a GitHub issue documenting the findings",
+      "acceptance_criteria": [
+        "Research covers modern Python project patterns",
+        "Project layout is practical and complete",
+        "Code review passes",
+        "GitHub issue is created with proper formatting"
+      ]
+    },
+    {
+      "id": "T09",
+      "scene": "copilot",
+      "title": "Chart generation task",
+      "description": "Create a data visualization",
+      "expected_route": "task",
+      "agents": ["researcher", "writer"],
+      "skills_tested": ["web_research", "documentation"],
+      "input": "Create a comparison chart of the top 5 vector databases (Qdrant, Milvus, Pinecone, Weaviate, ChromaDB) comparing: performance, scalability, ease of use, and pricing",
+      "acceptance_criteria": [
+        "Data is accurate and current",
+        "Chart is generated as PNG",
+        "Comparison covers all 4 dimensions",
+        "Sources are cited"
+      ]
+    },
+    {
+      "id": "T10",
+      "scene": "copilot",
+      "title": "Documentation generation",
+      "description": "Generate API documentation from code",
+      "expected_route": "task",
+      "agents": ["engineer", "writer", "reviewer"],
+      "skills_tested": ["implementation", "documentation", "quality_audit"],
+      "input": "Generate API documentation for daemon's scene endpoints (POST /scenes/{scene}/chat, GET /scenes/{scene}/panel) by reading the source code",
+      "acceptance_criteria": [
+        "Covers all scene endpoints",
+        "Request/response format documented",
+        "Code examples included",
+        "Reviewer validates accuracy against actual code"
+      ]
+    }
+  ]
+}
