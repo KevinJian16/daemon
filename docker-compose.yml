@@ -31,10 +31,11 @@ services:
     restart: unless-stopped
     ports:
       - "6379:6379"
+    command: valkey-server --requirepass ${REDIS_PASSWORD:-daemon-redis}
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
+      test: ["CMD", "valkey-cli", "-a", "${REDIS_PASSWORD:-daemon-redis}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -82,7 +83,7 @@ services:
     restart: "no"
     environment: &plane-env
       DATABASE_URL: postgresql://${POSTGRES_USER:-daemon}:${POSTGRES_PASSWORD:-daemon}@postgres:5432/plane
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:-daemon-redis}@redis:6379/0
       RABBITMQ_HOST: plane-mq
       RABBITMQ_PORT: "5672"
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-plane}
@@ -194,7 +195,7 @@ services:
     environment:
       API_BASE_URL: http://plane-api:8000
       LIVE_SERVER_SECRET_KEY: ${PLANE_SECRET_KEY:-super-secret-key-change-me}
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:-daemon-redis}@redis:6379/0
     depends_on:
       - plane-api
       - redis
@@ -250,7 +251,7 @@ services:
       CLICKHOUSE_CLUSTER_ENABLED: "false"
       REDIS_HOST: redis
       REDIS_PORT: "6379"
-      REDIS_AUTH: ""
+      REDIS_AUTH: ${REDIS_PASSWORD:-daemon-redis}
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-langfuse-secret-change-me}
       NEXTAUTH_URL: http://localhost:3001
       SALT: ${LANGFUSE_SALT:-langfuse-salt-change-me}
@@ -336,6 +337,7 @@ services:
       - "9380:9380"
       - "8380:80"
     environment:
+      DB_TYPE: postgres
       MYSQL_HOST: ""
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
@@ -359,6 +361,7 @@ services:
         condition: service_healthy
     volumes:
       - ragflow_data:/ragflow/data
+      - ./config/ragflow/service_conf.yaml:/ragflow/conf/service_conf.yaml:ro
 
   # ============================================================
   # Temporal (Workflow Orchestration)

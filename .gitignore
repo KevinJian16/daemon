@@ -17,7 +17,12 @@ htmlcov/
 .DS_Store
 node_modules
 interfaces/portal/compiled/
-openclaw/
+# openclaw — 只跟踪 workspace/ 下我们写的内容
+openclaw/*
+!openclaw/workspace/
+openclaw/workspace/.git/
+openclaw/workspace/*/.openclaw/
+openclaw/workspace/*/memory/
 warmup/results/
 backups/
 tmp/

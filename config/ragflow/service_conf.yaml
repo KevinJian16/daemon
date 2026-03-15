@@ -1,0 +1,21 @@
+ragflow:
+  host: 0.0.0.0
+  http_port: 9380
+postgres:
+  name: 'ragflow'
+  user: 'daemon'
+  password: 'daemon'
+  host: 'postgres'
+  port: 5432
+  max_connections: 100
+  stale_timeout: 30
+minio:
+  user: 'minioadmin'
+  password: 'minioadmin'
+  host: 'minio:9000'
+es:
+  hosts: 'http://elasticsearch:9200'
+redis:
+  db: 1
+  password: 'daemon-redis'
+  host: 'redis:6379'
