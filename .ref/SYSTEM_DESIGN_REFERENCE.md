@@ -76,7 +76,7 @@ Python 调用入口：`services/llm_local.py`（chat / generate / embed / health
 |---|---|---|---|
 | 单次检索上限 | 5 条 | §5.5 | 暖机后可调 |
 | 记忆清理阈值 | 90 天未触发 | §1.7 | 标记候选，用户确认后删除 |
-| agent_id 枚举 | copilot / mentor / coach / operator / researcher / engineer / writer / reviewer / publisher / admin / user_persona | §1.4, G-2-043 | 4 L1 + 6 L2 + user_persona 供全局检索 |
+| agent_id 枚举 | copilot / instructor / navigator / autopilot / researcher / engineer / writer / reviewer / publisher / admin / user_persona | §1.4, G-2-043 | 4 L1 + 6 L2 + user_persona 供全局检索 |
 
 ### B.4 Plane 回写参数
 
@@ -319,7 +319,7 @@ L1 场景对话的完整消息记录（4 层压缩的第 1 层）。
 ```sql
 CREATE TABLE conversation_messages (
     message_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    scene           TEXT NOT NULL,                  -- copilot / mentor / coach / operator
+    scene           TEXT NOT NULL,                  -- copilot / instructor / navigator / autopilot
     role            TEXT NOT NULL,                  -- user / assistant / system
     content         TEXT NOT NULL,
     token_count     INTEGER,
@@ -436,9 +436,9 @@ CREATE INDEX idx_info_sub_type ON info_subscriptions(source_type) WHERE enabled 
     "task_id": "uuid",
     "job_id": "uuid",
     "type": "user_message | agent_result | job_boundary | step_status | action_record",
-    "scene": "copilot | mentor | coach | operator",
+    "scene": "copilot | instructor | navigator | autopilot",
     "content": "...",
-    "actor": "user | copilot | mentor | coach | operator | researcher | ...",
+    "actor": "user | copilot | instructor | navigator | autopilot | researcher | ...",
     "timestamp": "ISO 8601",
     "metadata": {}
 }
@@ -466,7 +466,7 @@ WebSocket / SSE 对话流消息格式（§4.9）。客户端根据 `type` 字段
 ```json
 {
     "id": "uuid",
-    "scene": "copilot | mentor | coach | operator",
+    "scene": "copilot | instructor | navigator | autopilot",
     "type": "text | panel_update | native_open | artifact_show | status_update | notification",
     "content": "...",
     "metadata": {}
@@ -691,7 +691,7 @@ GAPS.md 共 870 条实施细节 Gap（G-1 至 G-13）。以下标注各组在七
 | DD-78 | 2026-03-17 | 桌面客户端 Electron→Tauri + 原生应用调起（§4.2, §6.10.2） | Tauri（系统 WKWebView，~10MB）替代 Electron（~200MB）。外部内容不再内嵌（BrowserView/阅读器/Monaco 全部取消），改用系统浏览器/VS Code/Preview.app 原生调起。消息协议 browser_navigate/editor_open/vscode_launch 统一为 native_open | FINAL |
 | DD-79 | 2026-03-17 | 多平台策略：macOS + iOS + Telegram（§4.10, §6.10.3） | 不做 Web 端/PWA/远程浏览器访问。macOS Tauri = 完整主控台；iOS Tauri = Artifact 只读查看器（类 Steam app）；Telegram = 信箱+对讲机（daemon→用户通知，用户→daemon 快捷回复）。单向同步：Telegram→本地（本地对话不推送到 Telegram） | FINAL |
 | DD-80 | 2026-03-17 | 取消自动分屏，窗口布局交给 Stage Manager（§4.2） | 自动分屏（macos-control MCP 编排窗口位置）与 macOS Stage Manager 冲突：多个 scene 同时打开不同应用时分屏逻辑不清晰。daemon 只负责 open 目标应用/文件，窗口布局由用户通过 Stage Manager 自行管理。macos-control MCP 从"窗口编排"降级为"应用调起"（仅 open 命令） | FINAL |
-| DD-81 | 2026-03-17 | Obsidian vault 作为用户知识图谱（§5.7.1） | Markdown 产出（报告/文章/笔记）写入 Obsidian vault（Google Drive），二进制文件留 MinIO。只放用户产出（researcher/writer/engineer/mentor），不放系统产出（admin/operator → state/background_reports/）。MCP: @bitbonsai/mcpvault（文件系统直接操作）。Zotero Integration 插件联动论文标注 | FINAL |
+| DD-81 | 2026-03-17 | Obsidian vault 作为用户知识图谱（§5.7.1） | Markdown 产出（报告/文章/笔记）写入 Obsidian vault（Google Drive），二进制文件留 MinIO。只放用户产出（researcher/writer/engineer/instructor），不放系统产出（admin/autopilot → state/background_reports/）。MCP: @bitbonsai/mcpvault（文件系统直接操作）。Zotero Integration 插件联动论文标注 | FINAL |
 | DD-82 | 2026-03-17 | Graph-native Skill 存储：openclaw-graph（§9.2.1.1） | Skill Graph 从平面 SKILL_GRAPH.md 迁移到 Neo4j 图数据库。参考 alphaonedev/openclaw-graph。动机：平面文件全量加载 token 浪费（25K→660 bytes）、SKILL_GRAPH.md 不可扩展（100+ skill）、activation rate 问题。Skill/SkillCluster 节点 + IN_CLUSTER/RELATED_TO 边 + Cypher 按需查询。Neo4j 加入 Docker Compose | FINAL |
 
 ---

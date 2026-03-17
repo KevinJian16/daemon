@@ -10,28 +10,28 @@ description: >-
 
 # Academic Search
 
-## 适用场景
-需要查找学术论文、引用数据、或特定领域的研究成果。
+## When to Activate
+When the goal requires finding academic papers, citation data, or domain-specific research results.
 
-## 输入
-- `query`: 搜索关键词或研究问题
-- `max_results`: 返回数量上限（默认 10）
+## Input
+- `query`: Search keywords or research question
+- `max_results`: Maximum number of results to return (default 10)
 
-## 执行步骤
-1. 用 `semantic_scholar_search` 按 query 检索论文列表
-2. 对高相关结果调 `semantic_scholar_paper` 获取摘要、年份、引用数
-3. 按引用数 + 年份排序，筛选 top 结果
-4. 如需补充，用 `semantic_scholar_citations` 或 `semantic_scholar_references` 扩展
+## Execution Steps
+1. Use `semantic_scholar_search` to retrieve a paper list by query
+2. For highly relevant results, call `semantic_scholar_paper` to get abstract, year, citation count
+3. Sort by citation count + year, filter top results
+4. If more coverage needed, use `semantic_scholar_citations` or `semantic_scholar_references` to expand
 
-## 质量标准
-- 每条结果必须包含：标题、作者、年份、引用数、摘要
-- 优先返回 peer-reviewed、高引用论文
-- 结果按相关性排序，注明检索词
+## Quality Standards
+- Every result must include: title, authors, year, citation count, abstract
+- Prioritize peer-reviewed, high-citation papers
+- Results sorted by relevance, with search terms noted
 
-## 常见失败模式
-- 关键词过宽导致噪声多 → 加限定词、用 AND 组合
-- 只看第一页结果 → 至少检查前 20 条再筛选
-- 忽略近期低引用但高相关的论文 → 按年份分层看
+## Common Failure Modes
+- Keywords too broad causing noise → add qualifiers, use AND combinations
+- Only checking first page of results → inspect at least top 20 before filtering
+- Ignoring recent low-citation but highly relevant papers → stratify by year
 
-## 输出格式
-Markdown 表格：`| # | 标题 | 作者 | 年份 | 引用数 | 摘要（一句话） |`
+## Output Format
+Markdown table: `| # | Title | Authors | Year | Citations | Abstract (one sentence) |`

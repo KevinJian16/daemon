@@ -11,28 +11,28 @@ description: >-
 
 # Source Evaluation
 
-## 适用场景
-需要评估信息来源的可信度和质量，用于决定是否采纳。
+## When to Activate
+When source credibility and quality must be assessed to decide whether to adopt their claims.
 
-## 输入
-- `sources`: 待评估的 URL 列表或论文 ID 列表
-- `claim`: 需要验证的具体论断（可选）
+## Input
+- `sources`: List of URLs or paper IDs to evaluate
+- `claim`: Specific assertion to verify (optional)
 
-## 执行步骤
-1. 对论文：用 `semantic_scholar_paper` 获取引用数、期刊、作者 h-index
-2. 对网页：用 `firecrawl_scrape` 抓取全文，检查作者资质和引用
-3. 用 `brave_search` 交叉检索同一论断的其他来源
-4. 对每个来源打分并给出采纳建议
+## Execution Steps
+1. For papers: use `semantic_scholar_paper` to get citation count, journal, author h-index
+2. For web pages: use `firecrawl_scrape` to fetch full text, check author credentials and citations
+3. Use `brave_search` to cross-reference the same claim from other sources
+4. Score each source and provide adoption recommendation
 
-## 质量标准
-- 每个来源评估维度：权威性、时效性、同行评审、利益冲突
-- 有 claim 时必须判定：支持 / 反对 / 不充分
-- 评分必须附理由，不可只给分数
+## Quality Standards
+- Each source evaluated on: authority, recency, peer review status, conflict of interest
+- When a claim is provided, must determine: supports / contradicts / insufficient
+- Scores must include justification, not just a number
 
-## 常见失败模式
-- 以引用数为唯一指标 → 综合考虑期刊级别和领域差异
-- 忽略利益冲突 → 检查作者机构和资助来源
-- 把预印本当已发表 → 明确标注审稿状态
+## Common Failure Modes
+- Using citation count as sole indicator → consider journal tier and field differences
+- Ignoring conflict of interest → check author affiliation and funding sources
+- Treating preprints as published → explicitly label review status
 
-## 输出格式
-每来源一行：`| 来源 | 权威性 | 时效性 | 审稿状态 | 评分(1-5) | 采纳建议 | 理由 |`
+## Output Format
+One row per source: `| Source | Authority | Recency | Review Status | Score (1-5) | Adoption Recommendation | Rationale |`

@@ -10,25 +10,25 @@ description: >-
 
 # Telegram Notify
 
-## 适用场景
-通过 OC 原生 Telegram channel 发送格式化通知。
+## When to Activate
+When sending formatted notifications through the OC native Telegram channel.
 
-## 输入
-通知类型（info/warning/error）+ 消息内容 + 可选附件。
+## Input
+Notification type (info/warning/error) + message content + optional attachments.
 
-## 执行步骤
-1. 根据通知类型选择模板和标记前缀
-2. 格式化消息为 Telegram MarkdownV2
-3. 转义特殊字符（`.` `_` `(` `)` 等）
-4. 通过 Telegram MCP 发送到指定 channel
+## Execution Steps
+1. Select template and prefix marker based on notification type
+2. Format message as Telegram MarkdownV2
+3. Escape special characters (`.` `_` `(` `)` etc.)
+4. Send to designated channel via Telegram MCP
 
-## 质量标准
-- 消息长度不超过 4096 字符，超长需拆分
-- 特殊字符必须正确转义
+## Quality Standards
+- Message length must not exceed 4096 characters; split if longer
+- Special characters must be properly escaped
 
-## 常见失败模式
-- MarkdownV2 转义遗漏导致发送失败
-- 消息过长未拆分被 API 拒绝
+## Common Failure Modes
+- Missing MarkdownV2 escaping causes send failure
+- Message too long without splitting, rejected by API
 
-## 输出格式
-发送成功返回 message_id，失败返回错误原因。
+## Output Format
+On success, return message_id. On failure, return error reason.

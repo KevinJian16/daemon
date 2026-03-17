@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd plist: start daemon on login (§6.10.1).
+
+  Install:
+    cp config/com.daemon.startup.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.daemon.startup.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.daemon.startup.plist
+    rm ~/Library/LaunchAgents/com.daemon.startup.plist
+
+  Logs:
+    ~/Library/Logs/daemon/startup.log
+    ~/Library/Logs/daemon/startup-error.log
+-->
+<plist version="1.0">
+<dict>
+    <!-- Service label — must match the filename -->
+    <key>Label</key>
+    <string>com.daemon.startup</string>
+
+    <!-- Command: docker compose up -d in the daemon directory -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/docker</string>
+        <string>compose</string>
+        <string>up</string>
+        <string>-d</string>
+    </array>
+
+    <!-- Working directory: daemon project root -->
+    <key>WorkingDirectory</key>
+    <string>/Users/kevinjian/daemon</string>
+
+    <!-- Start at login -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Do not restart automatically (compose is idempotent; user controls lifecycle) -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <!-- Standard output log -->
+    <key>StandardOutPath</key>
+    <string>/Users/kevinjian/Library/Logs/daemon/startup.log</string>
+
+    <!-- Standard error log -->
+    <key>StandardErrorPath</key>
+    <string>/Users/kevinjian/Library/Logs/daemon/startup-error.log</string>
+
+    <!-- Environment: ensure PATH includes Docker CLI locations -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>DAEMON_HOME</key>
+        <string>/Users/kevinjian/daemon</string>
+    </dict>
+</dict>
+</plist>

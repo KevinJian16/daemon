@@ -132,7 +132,7 @@ daemon 的 researcher 应该监控会议截稿日期：
 
 | 实验室成员有的 | daemon 替代方案 |
 |---|---|
-| 导师反馈 | reviewer agent 模拟审稿 + mentor 引导 |
+| 导师反馈 | reviewer agent 模拟审稿 + instructor 引导 |
 | 论文阅读组 | researcher 每周推送 2-3 篇推荐论文 + 要点摘要 |
 | 内审 | reviewer agent + 外部征求反馈（ML Collective） |
 | arXiv 背书 | researcher 帮找 endorser（查 arXiv 论文页面） |
@@ -164,7 +164,7 @@ Idea → MVP Build（2-6 周）→ Launch → Community → Maintenance
 
 ### 2.2 Code Review 方法论
 
-**三遍法**（daemon mentor 教用户学会 review）：
+**三遍法**（daemon instructor 教用户学会 review）：
 
 | 遍数 | 时间 | 看什么 |
 |---|---|---|
@@ -242,10 +242,10 @@ Idea → MVP Build（2-6 周）→ Launch → Community → Maintenance
 | intervals.icu | 训练负荷分析（CTL/ATL/TSB）+ 计划制定 |
 | Google Calendar | 运动计划和工作安排联动 |
 
-coach agent 职责：
+navigator agent 职责：
 - 读取运动数据（Strava/intervals.icu MCP）
 - 生成周计划执行率
-- 推送策略与运动计划联动（interview §3："推送策略应与 coach 管理的运动计划联动"）
+- 推送策略与运动计划联动（interview §3："推送策略应与 navigator 管理的运动计划联动"）
 
 ### 3.3 每日/每周/每月 Review
 
@@ -266,7 +266,7 @@ coach agent 职责：
 | 用户输入不限语言 | L1 接受中文，输出英文 |
 | 不懂就问 | 用中文解释具体概念，不整篇翻译 |
 | 所有对外产出从第一天起全英文 | publisher 强制 |
-| 英文写作经 LanguageTool 检查 | mentor 场景，每次输出后 LanguageTool MCP 检查 + 解释错误模式 |
+| 英文写作经 LanguageTool 检查 | instructor 场景，每次输出后 LanguageTool MCP 检查 + 解释错误模式 |
 
 ---
 
@@ -296,7 +296,7 @@ coach agent 职责：
 
 | 存储 | 存什么 | 谁写 | 谁读 |
 |---|---|---|---|
-| Obsidian vault | Markdown 产出、文献笔记、知识笔记 | researcher/writer/engineer/mentor + 用户 | 用户 + researcher（MCP 搜索）|
+| Obsidian vault | Markdown 产出、文献笔记、知识笔记 | researcher/writer/engineer/instructor + 用户 | 用户 + researcher（MCP 搜索）|
 | Zotero | 论文 PDF + 元数据 + 标注 | 用户 + researcher | 用户 + Obsidian 插件自动导入 |
 | Mem0 | agent 记忆（用户偏好、规划经验） | daemon 自动（distillation） | daemon agents |
 | RAGFlow | 长文档语义检索 | researcher/engineer | researcher |
@@ -311,13 +311,13 @@ coach agent 职责：
 | 触发条件 | 动作 | 场景 |
 |---|---|---|
 | Engineer build 周期结束 | 提醒做 literature mapping | copilot |
-| 接近 CFP deadline（T-8 周） | 提醒启动论文写作 | copilot/mentor |
-| 新论文发表后 | 推送到 Telegram + 存入 Zotero | operator/researcher |
-| 每天固定时间 | 日报推送 | operator |
-| 每周 | 推荐 2-3 篇论文 + 运动周报 + 项目进度 | mentor/coach/copilot |
-| 写完英文产出 | LanguageTool 检查 + mentor 解释错误 | mentor |
+| 接近 CFP deadline（T-8 周） | 提醒启动论文写作 | copilot/instructor |
+| 新论文发表后 | 推送到 Telegram + 存入 Zotero | autopilot/researcher |
+| 每天固定时间 | 日报推送 | autopilot |
+| 每周 | 推荐 2-3 篇论文 + 运动周报 + 项目进度 | instructor/navigator/copilot |
+| 写完英文产出 | LanguageTool 检查 + instructor 解释错误 | instructor |
 | 完成一个 build + write | 提醒更新 GitHub profile + 写博客 | copilot |
-| 代码 PR 提交 | mentor 引导用户做 code review（教学目的） | mentor |
+| 代码 PR 提交 | instructor 引导用户做 code review（教学目的） | instructor |
 
 ---
 

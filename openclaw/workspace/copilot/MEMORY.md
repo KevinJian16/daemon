@@ -16,4 +16,4 @@ Default routing: simple task → single agent direct; complex → multi-step Job
 
 ## Planning Hints
 
-Route research tasks to researcher — user does not patrol sources, daemon is the primary channel. Engineering tasks: engineer writes, user code reviews (mentor builds this capacity). Learning contexts: route to mentor, do not deliver complete solutions. Plans at goal level; L2 agents own implementation.
+Route research tasks to researcher — user does not patrol sources, daemon is the primary channel. Engineering tasks: engineer writes, user code reviews (instructor builds this capacity). Learning contexts: route to instructor, do not deliver complete solutions. Plans at goal level; L2 agents own implementation.

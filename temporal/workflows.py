@@ -38,6 +38,7 @@ class JobWorkflow:
 
     def __init__(self) -> None:
         self._pause_requested: bool = False
+        self._confirmation_result: dict | None = None
 
     @workflow.signal(name="pause_execution")
     def pause_execution(self, payload: dict | None = None) -> None:
@@ -48,6 +49,16 @@ class JobWorkflow:
     def resume_execution(self, payload: dict | None = None) -> None:
         _ = payload
         self._pause_requested = False
+
+    @workflow.signal(name="confirmation_received")
+    def confirmation_received(self, payload: dict | None = None) -> None:
+        """User confirmed a pending_confirmation step (§3.5, D.2)."""
+        self._confirmation_result = {"confirmed": True, **(payload or {})}
+
+    @workflow.signal(name="confirmation_rejected")
+    def confirmation_rejected(self, payload: dict | None = None) -> None:
+        """User rejected a pending_confirmation step (§3.5, D.2)."""
+        self._confirmation_result = {"confirmed": False, **(payload or {})}
 
     @workflow.run
     async def run(self, inp: JobInput) -> dict:
@@ -119,15 +130,49 @@ class JobWorkflow:
             await _mark_failure("cycle detected in DAG")
             raise ApplicationError("cycle detected in DAG", non_retryable=True)
 
+        # §3.6.2 Re-run minimize redo scope: if this is a re-run, skip already-completed steps.
+        # The plan carries a "rerun_job_id" field referencing the previous Job; the activity
+        # annotates steps with _skip_rerun=True for those whose prior outputs are still valid.
+        rerun_job_id = str(plan.get("rerun_job_id") or "").strip()
+        if rerun_job_id:
+            try:
+                plan = await workflow.execute_activity(
+                    "activity_minimize_redo_scope",
+                    args=[rerun_job_id, plan],
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(maximum_attempts=1),
+                )
+                # Rebuild step_list and maps since plan steps may have been annotated
+                steps = plan.get("steps") or steps
+                step_list = [{**st, "id": self._step_id(st, i)} for i, st in enumerate(steps)]
+                step_by_id = {st["id"]: st for st in step_list}
+                id_list = [st["id"] for st in step_list]
+            except Exception as exc:
+                workflow.logger.warning(
+                    "minimize_redo_scope failed for rerun_job_id %s: %s", rerun_job_id, exc,
+                )
+
+        # Pre-skip steps annotated by minimize_redo_scope (_skip_rerun=True)
+        pre_skipped: set[str] = {
+            st["id"] for st in step_list if st.get("_skip_rerun")
+        }
+
         # Mark job as running
         await self._mark_job_status(job_id, "running", "executing")
 
         # DAG execution loop
         results_by_id: dict[str, dict] = {}
+        # Pre-populate results for skipped steps so downstream dependents can proceed
+        for sid in pre_skipped:
+            results_by_id[sid] = {
+                "status": "skipped",
+                "step_id": sid,
+                "skipped_reason": "prior run completed — minimize redo scope §3.6.2",
+            }
         running: dict[str, workflow.ActivityHandle] = {}
-        completed: set[str] = set()
+        completed: set[str] = set(pre_skipped)
         errors: list[dict] = []
-        pending = set(step_by_id.keys())
+        pending = set(step_by_id.keys()) - pre_skipped
         pause_state_marked = False
 
         try:
@@ -203,11 +248,136 @@ class JobWorkflow:
                             "step_id": sid,
                             "error": str(e)[:400],
                         }
-                        errors.append(res)
-                    # Check if activity returned a failure result
+                        # ── §3.8 L1 failure judgment after retry exhaustion ──
+                        step_info = step_by_id.get(sid, {})
+                        try:
+                            judgment = await workflow.execute_activity(
+                                "activity_l1_failure_judgment",
+                                args=[job_id, step_info, str(e)[:300]],
+                                start_to_close_timeout=timedelta(seconds=45),
+                                retry_policy=RetryPolicy(maximum_attempts=1),
+                            )
+                            decision = str(judgment.get("decision") or "terminate").lower()
+                            workflow.logger.info(
+                                "L1 failure judgment for step %s: %s (reason: %s)",
+                                sid, decision, judgment.get("reason", ""),
+                            )
+                        except Exception as jexc:
+                            workflow.logger.warning(
+                                "L1 failure judgment call failed for step %s: %s", sid, jexc,
+                            )
+                            decision = "terminate"
+
+                        if decision == "skip":
+                            res["status"] = "skipped"
+                            res["skipped_reason"] = "L1 judgment: skip"
+                            results_by_id[sid] = res
+                            completed.add(sid)
+                            continue
+                        elif decision == "replace":
+                            # Replace requested: mark failed with flag for replan gate
+                            res["status"] = "failed"
+                            res["replace_requested"] = True
+                            errors.append(res)
+                        else:
+                            # terminate
+                            errors.append(res)
+
+                    # Check if activity returned a failure result (non-exception path)
                     if isinstance(res, dict) and res.get("status") in ("failed", "error"):
                         if res not in errors:
                             errors.append(res)
+
+                    # ── §3.8.1 Reviewer trigger (3 tiers) ──────────────────
+                    # Tier 1: NeMo output rail applied in activity (no workflow action needed).
+                    # Tier 2/3: step result has requires_review=True (set by _apply_reviewer_trigger).
+                    # Pause and wait for human confirmation.
+                    #
+                    # §10.34 compliance note: requires_review is NON-BLOCKING for the user.
+                    # Temporal signals (confirmation_received / confirmation_rejected) are
+                    # delivered asynchronously from the user's conversation, so the user can
+                    # continue interacting with daemon while this workflow step awaits.
+                    # Only the *workflow execution* is paused; the user's session is unaffected.
+                    if (
+                        isinstance(res, dict)
+                        and res.get("status") == "completed"
+                        and res.get("requires_review")
+                    ):
+                        review_tier = str(res.get("review_tier") or "flagged")
+                        workflow.logger.info(
+                            "Reviewer triggered for step %s (tier=%s)", sid, review_tier,
+                        )
+                        await self._mark_job_status(job_id, "running", "paused")
+                        self._confirmation_result = None
+                        confirm_timeout = int(
+                            step_by_id.get(sid, {}).get("confirmation_timeout_s")
+                            or plan.get("confirmation_timeout_s")
+                            or 86400  # 24h default
+                        )
+                        try:
+                            await workflow.wait_condition(
+                                lambda: self._confirmation_result is not None,
+                                timeout=timedelta(seconds=confirm_timeout),
+                            )
+                        except asyncio.TimeoutError:
+                            pass
+
+                        if self._confirmation_result and self._confirmation_result.get("confirmed"):
+                            await self._mark_job_status(job_id, "running", "executing")
+                        else:
+                            reason = "timeout" if not self._confirmation_result else "rejected"
+                            res = {
+                                "status": "failed",
+                                "step_id": sid,
+                                "step_index": res.get("step_index", 0),
+                                "agent_id": res.get("agent_id", ""),
+                                "error": f"Reviewer {reason} for step {sid} (tier={review_tier})",
+                            }
+                            errors.append(res)
+                            await self._mark_job_status(job_id, "running", "executing")
+
+                    # ── plan-level requires_review: wait for confirmation (§3.5, D.2) ──
+                    # Only triggered if the step plan has requires_review=True but the
+                    # reviewer-tier check above did NOT already handle it.
+                    # §10.34 compliance note: same as above — the Temporal signal
+                    # mechanism means the user's conversation is non-blocking; only
+                    # the workflow execution step is paused awaiting their signal.
+                    st = step_by_id.get(sid, {})
+                    if (
+                        st.get("requires_review")
+                        and not res.get("requires_review")
+                        and isinstance(res, dict)
+                        and res.get("status") == "completed"
+                    ):
+                        await self._mark_job_status(job_id, "running", "paused")
+                        self._confirmation_result = None
+                        confirm_timeout = int(
+                            st.get("confirmation_timeout_s")
+                            or plan.get("confirmation_timeout_s")
+                            or 86400  # 24h default
+                        )
+                        try:
+                            await workflow.wait_condition(
+                                lambda: self._confirmation_result is not None,
+                                timeout=timedelta(seconds=confirm_timeout),
+                            )
+                        except asyncio.TimeoutError:
+                            pass
+
+                        if self._confirmation_result and self._confirmation_result.get("confirmed"):
+                            await self._mark_job_status(job_id, "running", "executing")
+                        else:
+                            reason = "timeout" if not self._confirmation_result else "rejected"
+                            res = {
+                                "status": "failed",
+                                "step_id": sid,
+                                "step_index": res.get("step_index", 0),
+                                "agent_id": res.get("agent_id", ""),
+                                "error": f"Confirmation {reason} for step {sid}",
+                            }
+                            errors.append(res)
+                            await self._mark_job_status(job_id, "running", "executing")
+
                     results_by_id[sid] = res
                     completed.add(sid)
 
@@ -233,6 +403,7 @@ class JobWorkflow:
 
         if errors:
             await _mark_failure(f"{len(errors)} step(s) failed")
+            await self._plane_writeback(job_id, "failed")
             raise ApplicationError(
                 f"{len(errors)} step(s) failed", non_retryable=True
             )
@@ -240,12 +411,68 @@ class JobWorkflow:
         # Job completed successfully
         await self._mark_job_status(job_id, "closed", "completed")
 
-        return {
+        job_result = {
             "ok": True,
             "job_id": job_id,
             "step_results": ordered,
             "completed_utc": workflow.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+
+        # ── Plane writeback (§6.6, D.5) ─────────────────────────────
+        await self._plane_writeback(job_id, "completed")
+
+        # ── Post-Job learning (§8.1-8.2) ─────────────────────────────
+        try:
+            await workflow.execute_activity(
+                "activity_post_job_learn",
+                args=[job_id, job_result],
+                start_to_close_timeout=timedelta(seconds=60),
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+        except Exception as exc:
+            workflow.logger.warning(
+                "Post-Job learning failed for job %s: %s", job_id, exc,
+            )
+
+        # ── Persona taste update (§5.4) ───────────────────────────────
+        try:
+            await workflow.execute_activity(
+                "activity_persona_taste_update",
+                args=[job_id, job_result],
+                start_to_close_timeout=timedelta(seconds=60),
+                retry_policy=RetryPolicy(maximum_attempts=1),
+            )
+        except Exception as exc:
+            workflow.logger.warning(
+                "Persona taste update failed for job %s: %s", job_id, exc,
+            )
+
+        # ── Replan Gate + Chain Trigger (§3.9, §3.10) ────────────────
+        try:
+            gate_result = await workflow.execute_activity(
+                "activity_replan_gate",
+                args=[job_id, job_result],
+                start_to_close_timeout=timedelta(seconds=120),
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+            action = gate_result.get("action", "continue")
+
+            if action == "continue":
+                # Trigger downstream chain Tasks
+                await self._trigger_chain(job_id)
+            elif action == "replan":
+                workflow.logger.info(
+                    "Replan gate: replanning for job %s — %s",
+                    job_id, gate_result.get("reason", ""),
+                )
+                # Replan diff applied by the activity; chain continues from new plan
+                await self._trigger_chain(job_id)
+        except Exception as exc:
+            workflow.logger.warning("Replan gate failed for job %s: %s", job_id, exc)
+            # On gate failure, still trigger chain (fail-open)
+            await self._trigger_chain(job_id)
+
+        return job_result
 
     # -- Helpers -------------------------------------------------------------------
 
@@ -297,14 +524,67 @@ class JobWorkflow:
             retry_policy=retry,
         )
 
+    # Per-type step timeouts (§3.4, Appendix B.1)
+    _STEP_TYPE_TIMEOUTS: dict[str, int] = {
+        "search": 60,
+        "writing": 180,
+        "review": 90,
+    }
+    _DEFAULT_STEP_TIMEOUT: int = 120
+
     def _timeouts(self, plan: dict, st: dict) -> tuple[timedelta, timedelta]:
         step_override = int(st.get("timeout_s") or 0)
-        default = int(plan.get("default_step_timeout_s") or 600)
-        start_to_close_s = step_override or default
+        if step_override:
+            start_to_close_s = step_override
+        else:
+            # Per-type timeout (§3.4, Appendix B.1)
+            step_type = str(st.get("type") or st.get("step_type") or "").lower()
+            if step_type in self._STEP_TYPE_TIMEOUTS:
+                start_to_close_s = self._STEP_TYPE_TIMEOUTS[step_type]
+            elif plan.get("default_step_timeout_s"):
+                start_to_close_s = int(plan["default_step_timeout_s"])
+            else:
+                start_to_close_s = self._DEFAULT_STEP_TIMEOUT
         return (
             timedelta(seconds=start_to_close_s),
             timedelta(seconds=start_to_close_s + 30),
         )
+
+    async def _plane_writeback(
+        self, job_id: str, sub_status: str,
+    ) -> None:
+        """Write Job status back to Plane Issue (§6.6, D.5)."""
+        try:
+            await workflow.execute_activity(
+                "activity_plane_writeback",
+                args=[job_id, sub_status],
+                start_to_close_timeout=timedelta(seconds=60),
+                retry_policy=RetryPolicy(
+                    maximum_attempts=5,
+                    initial_interval=timedelta(seconds=2),
+                    backoff_coefficient=2.0,
+                    maximum_interval=timedelta(seconds=60),
+                ),
+            )
+        except Exception as exc:
+            workflow.logger.warning(
+                "Plane writeback failed for job %s (will be compensated): %s",
+                job_id, exc,
+            )
+
+    async def _trigger_chain(self, job_id: str) -> None:
+        """Trigger downstream chain Tasks after successful Job close (§3.10)."""
+        try:
+            await workflow.execute_activity(
+                "activity_trigger_chain",
+                args=[job_id],
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+        except Exception as exc:
+            workflow.logger.warning(
+                "Chain trigger failed for job %s: %s", job_id, exc,
+            )
 
     async def _mark_job_status(
         self,

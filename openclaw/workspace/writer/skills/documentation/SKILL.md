@@ -11,38 +11,38 @@ description: >-
 
 # Documentation
 
-## 适用场景
-需要编写结构化文档：API 文档、用户指南、技术文档、结构化计划（健身/学习/项目计划）、操作手册等。
+## When to Activate
+When writing structured documentation: API references, user guides, technical docs, structured plans (fitness/study/project plans), operational manuals, etc.
 
-## 输入
-- `subject`: 文档对象（模块、API、功能、主题）
-- `doc_type`: 类型（quickstart / reference / guide / plan / manual）
-- `source_files`: 相关源码路径（可选，仅技术文档）
-- `research_input`: 上游 researcher 提供的资料（可选）
+## Input
+- `subject`: Documentation target (module, API, feature, topic)
+- `doc_type`: Type (quickstart / reference / guide / plan / manual)
+- `source_files`: Related source code paths (optional, technical docs only)
+- `research_input`: Materials from upstream researcher (optional)
 
-## 执行步骤
-1. 确定文档类型和目标读者
-2. 若有源码路径，读取源码提取接口和行为
-3. 若有上游研究资料，提取关键信息并标注来源
-4. 按文档类型选定结构模板：
-   - reference/quickstart: 标题→概述→用法→参数表→示例→FAQ
-   - guide: 标题→前置条件→分步操作→常见问题
-   - plan: 标题→目标→时间表（按天/周/阶段）→具体步骤→注意事项→参考来源
-   - manual: 标题→概述→操作流程→故障排除
-5. 撰写内容，引用上游资料时保留来源标注
-6. 写入文件并返回路径
+## Execution Steps
+1. Determine document type and target audience
+2. If source code paths provided, read source to extract interfaces and behavior
+3. If upstream research materials provided, extract key information and annotate sources
+4. Select structure template by document type:
+   - reference/quickstart: title → overview → usage → parameter table → examples → FAQ
+   - guide: title → prerequisites → step-by-step instructions → common issues
+   - plan: title → goals → timeline (by day/week/phase) → specific steps → notes → reference sources
+   - manual: title → overview → procedures → troubleshooting
+5. Write content, preserving source annotations when citing upstream materials
+6. Write to file and return path
 
-## 质量标准
-- 技术文档：示例代码与当前代码版本匹配，参数表完整
-- 结构化计划：有明确时间线（天/周/阶段），每一步可直接执行
-- 所有类型：30 秒内能找到任意一个要点
-- 引用上游研究时保留来源 URL
+## Quality Standards
+- Technical docs: code examples match current code version, parameter tables complete
+- Structured plans: explicit timelines (day/week/phase), each step directly actionable
+- All types: any key point findable within 30 seconds
+- Upstream research citations preserve source URLs
 
-## 常见失败模式
-- 示例过时与实际接口不符
-- 计划类文档缺少具体时间安排或可操作步骤
-- 结构混乱，参考和教程混杂
-- 丢失上游来源信息
+## Common Failure Modes
+- Outdated examples that don't match actual interfaces
+- Plan documents missing concrete timelines or actionable steps
+- Disorganized structure mixing reference and tutorial content
+- Losing upstream source information
 
-## 输出格式
-Markdown 文件，按 doc_type 自适应分层结构。
+## Output Format
+Markdown file with hierarchical structure adapted to doc_type.

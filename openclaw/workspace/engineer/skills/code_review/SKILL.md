@@ -10,27 +10,27 @@ description: >-
 
 # Code Review
 
-## 适用场景
-收到代码变更需要审查时触发。
+## When to Activate
+When code changes are received that require review.
 
-## 输入
-- 待审查的文件路径列表或 diff
+## Input
+- List of file paths or diffs to review
 
-## 执行步骤
-1. 用 `code_structure` 获取变更文件的函数/类结构
-2. 用 `read_file` 逐文件阅读变更内容
-3. 用 `code_imports` 检查依赖变更是否合理
-4. 用 `code_functions` 检查被调用方签名是否匹配
-5. 记录问题，按严重程度分类（阻塞/建议/nit）
+## Execution Steps
+1. Use `code_structure` to get function/class structure of changed files
+2. Use `read_file` to read change content file by file
+3. Use `code_imports` to check whether dependency changes are reasonable
+4. Use `code_functions` to check whether callee signatures match
+5. Record issues, categorize by severity (blocker / suggestion / nit)
 
-## 质量标准
-- 每个问题必须引用具体文件和行号
-- 阻塞项必须说明原因和修复方向
-- 不遗漏公共 API 签名变更
+## Quality Standards
+- Every issue must reference a specific file and line number
+- Blockers must explain the reason and fix direction
+- Do not miss public API signature changes
 
-## 常见失败模式
-- 只看表面格式，不验证调用链一致性
-- 忽略边界条件和错误处理路径
+## Common Failure Modes
+- Only checking surface formatting without verifying call chain consistency
+- Ignoring boundary conditions and error handling paths
 
-## 输出格式
-按文件分组的问题列表，每条含：文件路径、行号、严重程度、描述、建议修复。
+## Output Format
+Issue list grouped by file, each containing: file path, line number, severity, description, suggested fix.

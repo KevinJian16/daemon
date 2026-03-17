@@ -90,7 +90,7 @@ def create_app() -> FastAPI:
         return {
             "status": "running",
             "started_utc": app.state.started_utc,
-            "scenes": ["copilot", "mentor", "coach", "operator"],
+            "scenes": ["copilot", "instructor", "navigator", "autopilot"],
             "session_manager": app.state.session_manager is not None,
             "store": app.state.store is not None,
             "event_bus": app.state.event_bus is not None,
@@ -652,7 +652,7 @@ CREATE TABLE IF NOT EXISTS job_artifacts (
 -- conversation_messages: L1 scene chat raw messages (layer 1)
 CREATE TABLE IF NOT EXISTS conversation_messages (
     message_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    scene         TEXT NOT NULL CHECK (scene IN ('copilot', 'mentor', 'coach', 'operator')),
+    scene         TEXT NOT NULL CHECK (scene IN ('copilot', 'instructor', 'navigator', 'autopilot')),
     role          TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
     content       TEXT NOT NULL,
     token_count   INTEGER,
@@ -663,7 +663,7 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 -- conversation_digests: L1 compressed summaries (layer 2)
 CREATE TABLE IF NOT EXISTS conversation_digests (
     digest_id     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    scene         TEXT NOT NULL CHECK (scene IN ('copilot', 'mentor', 'coach', 'operator')),
+    scene         TEXT NOT NULL CHECK (scene IN ('copilot', 'instructor', 'navigator', 'autopilot')),
     time_range_start TIMESTAMPTZ NOT NULL,
     time_range_end   TIMESTAMPTZ NOT NULL,
     summary       TEXT NOT NULL,
@@ -676,7 +676,7 @@ CREATE TABLE IF NOT EXISTS conversation_digests (
 -- conversation_decisions: L1 key decisions (layer 3)
 CREATE TABLE IF NOT EXISTS conversation_decisions (
     decision_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    scene         TEXT NOT NULL CHECK (scene IN ('copilot', 'mentor', 'coach', 'operator')),
+    scene         TEXT NOT NULL CHECK (scene IN ('copilot', 'instructor', 'navigator', 'autopilot')),
     decision_type TEXT NOT NULL,
     content       TEXT NOT NULL,
     context_summary TEXT,

@@ -14,6 +14,8 @@ System diagnostics, health checks, self-healing, warmup orchestration (Stage 3+)
 - **health_check**: System-wide health diagnosis
 - **skill_audit**: Evaluate and improve SKILL.md via Langfuse metrics
 - **incident_response**: Diagnose and recover from system failures
+- **frontier_iteration**: Evaluate and integrate updates to AI models, infrastructure, or open-source tools (phased: assess, sandbox, rollout)
+- **health_check_3layer**: Three-layer health check (infrastructure + service quality + output fidelity) with self-heal
 
 ## Execution Model
 - 1 Step = 1 Session (independent)

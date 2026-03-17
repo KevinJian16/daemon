@@ -10,30 +10,30 @@ description: >-
 
 # Release Checklist
 
-## 适用场景
-发布前执行预检清单，确认所有发布条件满足。
+## When to Activate
+When executing a pre-release checklist to verify all release conditions are met.
 
-## 输入
-待发布的版本号 + 目标分支/tag。
+## Input
+Version number to release + target branch/tag.
 
-## 执行步骤
-1. 确认所有关联 issue/PR 已关闭或合并
-2. 确认 CI 测试全部通过
-3. 确认 CHANGELOG 已更新
-4. 确认版本号一致（pyproject.toml / package.json 等）
-5. 确认无未提交的变更
-6. 生成检查报告
+## Execution Steps
+1. Confirm all related issues/PRs are closed or merged
+2. Confirm all CI tests pass
+3. Confirm CHANGELOG is updated
+4. Confirm version numbers are consistent (pyproject.toml / package.json etc.)
+5. Confirm no uncommitted changes
+6. Generate check report
 
-## 质量标准
-- 任一必选项未通过则阻止发布
-- 报告必须包含每项的检查结果和证据
+## Quality Standards
+- Any mandatory item failing blocks the release
+- Report must include check result and evidence for each item
 
-## 常见失败模式
-- 版本号在多处不一致
-- 遗漏检查依赖版本锁定文件
+## Common Failure Modes
+- Version numbers inconsistent across multiple files
+- Missing check on dependency lockfile versions
 
-## 输出格式
+## Output Format
 ```
-Release v{版本号} 预检: READY / BLOCKED
-[PASS/FAIL] 检查项 | 详情
+Release v{version} pre-check: READY / BLOCKED
+[PASS/FAIL] check item | details
 ```

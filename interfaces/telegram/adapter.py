@@ -1,6 +1,6 @@
 """Telegram Adapter — per-scene notification bridge for Daemon.
 
-4 independent bots (one per scene: copilot/mentor/coach/operator).
+4 independent bots (one per scene: copilot/instructor/navigator/autopilot).
 Events: job_started, job_completed, job_failed.
 Command: /status.
 Everything else is silently ignored.
@@ -34,9 +34,9 @@ load_daemon_env(ROOT)
 # Per-scene bot tokens (4 independent bots)
 BOT_TOKENS: dict[str, str] = {
     "copilot": os.environ.get("TELEGRAM_BOT_TOKEN_COPILOT", ""),
-    "mentor": os.environ.get("TELEGRAM_BOT_TOKEN_MENTOR", ""),
-    "coach": os.environ.get("TELEGRAM_BOT_TOKEN_COACH", ""),
-    "operator": os.environ.get("TELEGRAM_BOT_TOKEN_OPERATOR", ""),
+    "instructor": os.environ.get("TELEGRAM_BOT_TOKEN_INSTRUCTOR", ""),
+    "navigator": os.environ.get("TELEGRAM_BOT_TOKEN_NAVIGATOR", ""),
+    "autopilot": os.environ.get("TELEGRAM_BOT_TOKEN_AUTOPILOT", ""),
 }
 # Fallback: single token for backwards compat
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -211,17 +211,50 @@ def _set_user_scene(chat_id: int, scene: str) -> None:
 
 
 async def _forward_to_scene(scene: str, text: str, chat_id: int) -> str:
-    """Forward a user message to the daemon scene chat API and return the reply."""
+    """Forward a user message to the daemon scene chat API and return the reply.
+
+    §4.10 Telegram ↔ desktop sync: messages are routed through session_manager
+    and stored in PG (conversation_messages) with source="telegram", so they
+    appear in the desktop client's conversation view. The daemon API's
+    /scenes/{scene}/chat endpoint handles PG persistence via SessionManager.
+    """
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
                 f"{DAEMON_API.rstrip('/')}/scenes/{scene}/chat",
-                json={"content": text},
+                json={
+                    "content": text,
+                    "metadata": {
+                        "source": "telegram",
+                        "telegram_chat_id": chat_id,
+                    },
+                },
             )
             if resp.status_code >= 400:
                 return f"（错误 {resp.status_code}）"
             data = resp.json()
-            return str(data.get("reply") or data.get("text") or data.get("content") or "")
+            reply = str(data.get("reply") or data.get("text") or data.get("content") or "")
+
+            # Publish sync event so desktop client receives Telegram messages in real-time
+            try:
+                await client.post(
+                    f"{DAEMON_API.rstrip('/')}/events/publish",
+                    json={
+                        "event_type": "telegram_message",
+                        "payload": {
+                            "scene": scene,
+                            "telegram_chat_id": chat_id,
+                            "user_text": text[:500],
+                            "reply_text": reply[:500],
+                        },
+                    },
+                    timeout=5,
+                )
+            except Exception:
+                # Sync event is best-effort; don't fail the Telegram response
+                pass
+
+            return reply
     except httpx.TimeoutException:
         return "（请求超时，任务可能仍在执行中）"
     except Exception as exc:
@@ -300,11 +333,11 @@ async def webhook(request: Request):
         # /scene copilot — switch default scene
         parts = text.split(maxsplit=1)
         scene_name = parts[1].strip().lower() if len(parts) > 1 else ""
-        if scene_name in ("copilot", "mentor", "coach", "operator"):
+        if scene_name in ("copilot", "instructor", "navigator", "autopilot"):
             _set_user_scene(chat_id, scene_name)
             _send_message(chat_id, f"已切换到 {scene_name} 场景。")
         else:
-            _send_message(chat_id, "可用场景: copilot / mentor / coach / operator")
+            _send_message(chat_id, "可用场景: copilot / instructor / navigator / autopilot")
         return JSONResponse({"ok": True, "handled": True, "command": "scene"})
 
     # Forward user message to daemon scene chat API

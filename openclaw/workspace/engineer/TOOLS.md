@@ -16,6 +16,7 @@ Coding, debugging, refactoring, technical implementation.
 - **debug_locate**: Root cause analysis and fix workflow
 - **refactor**: Safe refactoring with test verification
 - **implementation**: Feature implementation from spec to tests
+- **cc_codex_handoff**: Prepare and execute Claude Code / Codex subprocess for code-intensive steps
 
 ## Execution Model
 - 1 Step = 1 Session (independent)

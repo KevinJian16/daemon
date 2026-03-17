@@ -101,14 +101,44 @@ def filter_sensitive_outbound(query: str) -> str:
     return result
 
 
+def _nemo_check(text: str, kind: str = "output") -> list[str]:
+    """Run NeMo Guardrails runtime if available. Returns list of warnings.
+
+    This is an optional second layer on top of pattern-based validation.
+    If NeMo is not installed or fails, returns empty list (fail-open).
+    """
+    from config.guardrails import get_rails
+    rails = get_rails()
+    if not rails:
+        return []
+    try:
+        import asyncio
+        if kind == "input":
+            result = asyncio.get_event_loop().run_until_complete(
+                rails.generate_async(messages=[{"role": "user", "content": text}])
+            )
+        else:
+            result = asyncio.get_event_loop().run_until_complete(
+                rails.generate_async(messages=[{"role": "assistant", "content": text}])
+            )
+        # NeMo returns a response — if it contains refusal markers, flag it
+        response_text = str(result.get("content", "") if isinstance(result, dict) else result)
+        if "I cannot" in response_text or "blocked" in response_text.lower():
+            return [f"NeMo guardrails flagged {kind}: {response_text[:200]}"]
+    except Exception as exc:
+        logger.debug("NeMo %s check failed (non-fatal): %s", kind, exc)
+    return []
+
+
 def validate_output(text: str) -> tuple[str, list[str]]:
     """Run all output validation checks. Returns (cleaned_text, warnings).
 
+    Two-layer: pattern-based (zero token) + NeMo runtime (if available).
     This is the main entry point called by the daemon activity execution pipeline.
-    Zero LLM tokens — all pattern-based.
     """
     warnings: list[str] = []
 
+    # Layer 1: Pattern-based (zero token)
     # 1. Remove forbidden markers
     cleaned = clean_forbidden_markers(text)
     if cleaned != text:
@@ -121,17 +151,22 @@ def validate_output(text: str) -> tuple[str, list[str]]:
             "Cross-verification with Tier A/B sources recommended."
         )
 
+    # Layer 2: NeMo runtime (optional, fail-open)
+    nemo_warnings = _nemo_check(cleaned, kind="output")
+    warnings.extend(nemo_warnings)
+
     return cleaned, warnings
 
 
 def validate_input(text: str) -> tuple[str, list[str]]:
     """Run input validation checks. Returns (filtered_text, warnings).
 
+    Two-layer: pattern-based (zero token) + NeMo runtime (if available).
     Checks for instruction override attempts and sensitive data.
-    Zero LLM tokens — all pattern-based.
     """
     warnings: list[str] = []
 
+    # Layer 1: Pattern-based (zero token)
     # 1. Instruction override detection
     override_patterns = [
         r"ignore\s+(previous|your)\s+instructions",
@@ -152,6 +187,11 @@ def validate_input(text: str) -> tuple[str, list[str]]:
     filtered = filter_sensitive_outbound(text)
     if filtered != text:
         warnings.append("Sensitive terms redacted from query")
+
+    # Layer 2: NeMo runtime (optional, fail-open)
+    nemo_warnings = _nemo_check(filtered, kind="input")
+    warnings.extend(nemo_warnings)
+    # NeMo layer is advisory — doesn't block (pattern layer already handles hard blocks)
 
     return filtered, warnings
 

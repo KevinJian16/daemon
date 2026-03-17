@@ -37,7 +37,7 @@ v1（Electron）→ v2（Tauri）的关键变更：
 
 ### 2.1 对话 View（核心）
 
-- 4 个独立对话（copilot / mentor / coach / operator）
+- 4 个独立对话（copilot / instructor / navigator / autopilot）
 - **纯文本**，无富文本、无链接、无内嵌卡片
 - 对话和展示严格分离——对话里不出现链接和富内容
 - 所有操作通过对话完成，**零按钮**（无执行/暂停/取消/触发按钮）
@@ -69,13 +69,13 @@ v1（Electron）→ v2（Tauri）的关键变更：
 | 场景 | panel 内容 |
 |---|---|
 | **copilot** | 活跃 Project 列表、进行中 Task 状态、最近产出 |
-| **mentor** | 当前学习计划、assignment 列表（待交/已交/已评）、学习进度 |
-| **coach** | 本周计划执行率、最近训练数据摘要、下次评估时间 |
-| **operator** | 各平台运营数据、待审内容、自动发布日志 |
+| **instructor** | 当前学习计划、assignment 列表（待交/已交/已评）、学习进度 |
+| **navigator** | 本周计划执行率、最近训练数据摘要、下次评估时间 |
+| **autopilot** | 各平台运营数据、待审内容、自动发布日志 |
 
 **API 端点**：`GET /scenes/{scene}/panel`
 
-assignment 系统是 mentor panel 的功能，不是独立应用。提交入口指向外部工具（Google Docs / GitHub），daemon 通过 webhook 或轮询感知提交。
+assignment 系统是 instructor panel 的功能，不是独立应用。提交入口指向外部工具（Google Docs / GitHub），daemon 通过 webhook 或轮询感知提交。
 
 ---
 

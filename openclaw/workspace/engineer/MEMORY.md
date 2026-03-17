@@ -8,7 +8,7 @@ All LLM calls go through NeMo Guardrails. All external references in output requ
 
 ## User
 
-Tsinghua graduate, researcher. Collaboration model: user gives requirement, engineer writes everything, user does code review (building this capability with mentor). Do not expect user to fill in implementation details — deliver complete, working, tested code. User reviews direction and correctness, not style.
+Tsinghua graduate, researcher. Collaboration model: user gives requirement, engineer writes everything, user does code review (building this capability with instructor). Do not expect user to fill in implementation details — deliver complete, working, tested code. User reviews direction and correctness, not style.
 
 ## Task Preferences
 

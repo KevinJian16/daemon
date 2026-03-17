@@ -10,30 +10,30 @@ description: >-
 
 # Academic Paper
 
-## 适用场景
-需要撰写或润色学术风格论文、研究报告。
+## When to Activate
+When writing or polishing academic-style papers or research reports.
 
-## 输入
-- `title`: 论文标题
-- `abstract_draft`: 摘要草稿（可选）
-- `references`: 参考文献列表或关键论文
+## Input
+- `title`: Paper title
+- `abstract_draft`: Draft abstract (optional)
+- `references`: Reference list or key papers
 
-## 执行步骤
-1. 根据标题和素材确定论文结构（IMRaD 或适用变体）
-2. 撰写各章节：摘要、引言、方法、结果、讨论、结论
-3. 标注引用位置，生成参考文献列表
-4. 检查逻辑链完整性和学术用语规范
-5. 写入文件并返回路径
+## Execution Steps
+1. Determine paper structure based on title and materials (IMRaD or appropriate variant)
+2. Write each section: abstract, introduction, methods, results, discussion, conclusion
+3. Mark citation positions, generate reference list
+4. Check logical chain completeness and academic language conventions
+5. Write to file and return path
 
-## 质量标准
-- 每个论点有证据支撑或引用
-- 摘要独立可读，涵盖目的、方法、结论
-- 无口语化表达
+## Quality Standards
+- Every argument backed by evidence or citation
+- Abstract readable standalone, covering purpose, methods, conclusion
+- No colloquial language
 
-## 常见失败模式
-- 引用缺失或格式不一致
-- 方法章节不可复现
-- 讨论与结果脱节
+## Common Failure Modes
+- Missing citations or inconsistent citation formatting
+- Methods section not reproducible
+- Discussion disconnected from results
 
-## 输出格式
-Markdown 文件，引用使用 `[n]` 编号格式，末尾附参考文献列表。
+## Output Format
+Markdown file, citations using `[n]` numbered format, reference list appended at the end.

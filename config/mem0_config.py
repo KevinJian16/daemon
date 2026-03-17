@@ -1,8 +1,7 @@
 """Mem0 configuration and initialization.
 
-Mem0 replaces the old psyche/ directory (identity, voice, preferences,
-instinct, overlays). It provides semantic memory storage backed by
-PG + pgvector.
+Mem0 provides semantic memory storage backed by PG + pgvector.
+Replaces previous per-agent flat-file memory directories.
 
 Memory categories:
   - agent-level: identity, role definition, capabilities
@@ -82,18 +81,59 @@ def init_mem0():
 
 # Memory injection helpers for Step execution
 
+def _agent_focus_query(agent_id: str) -> str:
+    """Return a focus query string tailored to the agent type (§5.5).
+
+    L1 agents (copilot/instructor/navigator/autopilot): planning experience
+    writer: style preferences
+    reviewer: quality standards
+    researcher: domain knowledge
+    engineer: code patterns
+    publisher: platform preferences
+    """
+    agent_id_lower = agent_id.lower()
+    # L1 scene agents — planning and coordination experience
+    if agent_id_lower in {"copilot", "instructor", "navigator", "autopilot"}:
+        return f"agent:{agent_id} planning experience coordination"
+    # writer — style and voice
+    if agent_id_lower == "writer":
+        return f"agent:{agent_id} style preferences writing voice tone"
+    # reviewer — quality criteria and standards
+    if agent_id_lower == "reviewer":
+        return f"agent:{agent_id} quality standards review criteria checklist"
+    # researcher — domain knowledge and sources
+    if agent_id_lower == "researcher":
+        return f"agent:{agent_id} domain knowledge sources research patterns"
+    # engineer — code conventions and patterns
+    if agent_id_lower == "engineer":
+        return f"agent:{agent_id} code patterns conventions best practices"
+    # publisher — platform-specific preferences
+    if agent_id_lower == "publisher":
+        return f"agent:{agent_id} platform preferences publishing channels format"
+    # fallback for any other agent
+    return f"agent:{agent_id} context"
+
+
 def retrieve_agent_context(memory, agent_id: str, limit: int = 5) -> str:
     """Retrieve relevant memories for an agent before Step execution.
 
     Returns a compact text block (~50-200 tokens) to inject into
     the agent's session context.
+
+    Query is customised per agent type (§5.5):
+    - L1 agents: planning experience
+    - writer: style preferences
+    - reviewer: quality standards
+    - researcher: domain knowledge
+    - engineer: code patterns
+    - publisher: platform preferences
     """
     if memory is None:
         return ""
 
     try:
         results = memory.search(
-            query=f"agent:{agent_id} context",
+            query=_agent_focus_query(agent_id),
             user_id=agent_id,
             limit=limit,
         )

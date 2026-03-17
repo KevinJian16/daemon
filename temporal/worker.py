@@ -62,7 +62,7 @@ async def _create_pool():
 async def _register_schedules(client: Client, queue: str) -> None:
     """Register Temporal Schedules for periodic workflows.
 
-    Replaces old Cadence/Spine routines (§3.2, §7.7).
+    Creates periodic Temporal Schedules (§3.2, §7.7).
     Idempotent — creates schedules only if they don't exist.
     """
     from temporalio.client import Schedule, ScheduleActionStartWorkflow, ScheduleSpec, ScheduleIntervalSpec
@@ -153,6 +153,8 @@ async def start_worker(
         daemon_activities.activity_update_job_status,
         daemon_activities.activity_update_step_status,
         daemon_activities.activity_replan_gate,
+        daemon_activities.activity_plane_writeback,
+        daemon_activities.activity_trigger_chain,
         daemon_activities.activity_maintenance,
         # Health check activities (standalone)
         activity_health_check_infrastructure,
@@ -185,7 +187,7 @@ async def start_worker(
 
     logger.info("Daemon Worker started — queue=%s host=%s:%s", queue, host, port)
 
-    # Register Temporal Schedules (replaces Cadence/Spine routines)
+    # Register Temporal Schedules for periodic maintenance and learning workflows
     await _register_schedules(client, queue)
 
     loop = asyncio.get_event_loop()

@@ -10,29 +10,29 @@ description: >-
 
 # Health Check
 
-## 适用场景
-诊断系统各组件运行状态，发现潜在故障。
+## When to Activate
+When diagnosing the running status of system components and detecting potential failures.
 
-## 输入
-可选：指定检查范围（all / api / worker / infra）。
+## Input
+Optional: specify check scope (all / api / worker / infra).
 
-## 执行步骤
-1. 检查 API 进程：HTTP 端点可达性和响应时间
-2. 检查 Worker 进程：Temporal worker 注册状态
-3. 检查基础设施：PostgreSQL / MinIO / Langfuse 连通性
-4. 检查资源：磁盘空间、内存使用
-5. 汇总异常项并给出修复建议
+## Execution Steps
+1. Check API process: HTTP endpoint reachability and response time
+2. Check Worker process: Temporal worker registration status
+3. Check infrastructure: PostgreSQL / MinIO / Langfuse connectivity
+4. Check resources: disk space, memory usage
+5. Summarize anomalies and provide fix recommendations
 
-## 质量标准
-- 每个组件必须有明确的 healthy/degraded/down 状态
-- 响应时间超阈值标为 degraded
+## Quality Standards
+- Every component must have a clear healthy/degraded/down status
+- Response time exceeding threshold marked as degraded
 
-## 常见失败模式
-- 只检查端口开放，未验证服务实际响应
-- 遗漏检查 Temporal namespace 状态
+## Common Failure Modes
+- Only checking port availability without verifying actual service response
+- Missing check on Temporal namespace status
 
-## 输出格式
+## Output Format
 ```
-系统状态: HEALTHY / DEGRADED / DOWN
-[healthy/degraded/down] 组件名 | 详情
+System Status: HEALTHY / DEGRADED / DOWN
+[healthy/degraded/down] component name | details
 ```

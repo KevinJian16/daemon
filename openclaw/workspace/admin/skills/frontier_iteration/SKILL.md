@@ -11,91 +11,90 @@ description: >-
 
 # Frontier-Driven Iteration
 
-## 适用场景
-评估并整合前沿 AI 模型、基础设施组件或开源工具的更新，以持续提升 daemon 系统能力。
-触发条件：新模型发布、依赖库重大版本升级、用户反馈揭示系统能力短板。
+## When to Activate
+When evaluating and integrating updates to AI models, infrastructure components, or open-source tools to continuously improve daemon capabilities. Triggers: new model release, major dependency version upgrade, user feedback revealing capability gaps.
 
-## 输入
-- `component`: 需要评估的组件（模型/库/工具名称）
-- `current_version`: 当前使用的版本或模型 ID
-- `candidate`: 候选升级项（新版本/新模型）
-- `evaluation_criteria`: 评估维度（速度/质量/成本/稳定性）
+## Input
+- `component`: Component to evaluate (model/library/tool name)
+- `current_version`: Currently used version or model ID
+- `candidate`: Candidate upgrade (new version/new model)
+- `evaluation_criteria`: Evaluation dimensions (speed/quality/cost/stability)
 
-## 执行步骤
+## Execution Steps
 
-### 阶段 1：评估触发
-1. 确认升级触发原因（性能不足 / 新功能需求 / 安全漏洞 / 社区推荐）
-2. 检查当前组件的性能基线（从 Langfuse 获取历史 token 用量和错误率）
-3. 获取候选版本的 changelog 和已知 breaking changes
+### Phase 1: Evaluation Trigger
+1. Confirm upgrade trigger reason (performance gap / new feature need / security vulnerability / community recommendation)
+2. Check current component's performance baseline (get historical token usage and error rate from Langfuse)
+3. Obtain candidate version's changelog and known breaking changes
 
-### 阶段 2：兼容性分析
-1. 检查 API 兼容性：新版本是否有接口变更
-2. 检查 openclaw.json 中的模型配置是否需要更新
-3. 评估对现有 Skill/SOUL 文件的影响
-4. 识别依赖该组件的下游服务（activities.py, session_manager 等）
+### Phase 2: Compatibility Analysis
+1. Check API compatibility: whether new version has interface changes
+2. Check if openclaw.json model configuration needs updating
+3. Assess impact on existing Skill/SOUL files
+4. Identify downstream services depending on this component (activities.py, session_manager, etc.)
 
-### 阶段 3：沙箱验证
-1. 在 `config/` 中以新版本创建实验性配置（不修改生产配置）
-2. 选取 3-5 个代表性任务进行对比测试
-3. 记录对比结果：输出质量 / 延迟 / token 消耗 / 错误率
-4. 对比阈值：新版本在主要维度至少持平，目标维度有提升
+### Phase 3: Sandbox Validation
+1. Create experimental configuration in `config/` with new version (do not modify production config)
+2. Select 3-5 representative tasks for comparative testing
+3. Record comparison results: output quality / latency / token consumption / error rate
+4. Comparison threshold: new version at least matches on primary dimensions, improves on target dimension
 
-### 阶段 4：渐进式切换
-1. 更新 openclaw.json 或相关配置，将新版本设为 fallback
-2. 观察 1-2 个工作日，通过 Langfuse 监控异常
-3. 若稳定，将新版本提升为 primary
-4. 更新 SYSTEM_DESIGN.md 相关章节记录版本变更
+### Phase 4: Gradual Rollout
+1. Update openclaw.json or related config, set new version as fallback
+2. Observe for 1-2 business days, monitor for anomalies via Langfuse
+3. If stable, promote new version to primary
+4. Update relevant SYSTEM_DESIGN.md sections to record version change
 
-### 阶段 5：文档与回顾
-1. 更新 `.ref/` 中的相关文档（版本号、特性说明）
-2. 在 Mem0 中记录迭代经验（效果提升点 + 注意事项）
-3. 若升级失败，回滚并记录原因，避免重复踩坑
+### Phase 5: Documentation and Retrospective
+1. Update relevant documents in `.ref/` (version numbers, feature descriptions)
+2. Record iteration experience in Mem0 (improvement points + caveats)
+3. If upgrade fails, rollback and document the reason to avoid repeating the mistake
 
-## 评估维度权重
+## Evaluation Dimension Weights
 
-| 维度 | 权重 | 说明 |
-|------|------|------|
-| 输出质量 | 40% | 与 ground truth 或人工评估对比 |
-| 延迟 | 20% | P50/P95 响应时间 |
-| 成本 | 20% | token 单价 × 平均用量 |
-| 稳定性 | 20% | 错误率、超时率 |
+| Dimension | Weight | Description |
+|-----------|--------|-------------|
+| Output Quality | 40% | Compared against ground truth or human evaluation |
+| Latency | 20% | P50/P95 response time |
+| Cost | 20% | Token unit price x average usage |
+| Stability | 20% | Error rate, timeout rate |
 
-## 质量标准
-- 升级不得降低核心功能的输出质量（质量评分不低于当前版本的 95%）
-- 升级须有可回滚方案（旧配置保留至少 7 天）
-- 重大升级须有 operator 确认
+## Quality Standards
+- Upgrade must not degrade core functionality output quality (quality score no lower than 95% of current version)
+- Upgrade must have a rollback plan (old config retained for at least 7 days)
+- Major upgrades require autopilot confirmation
 
-## 常见失败模式
-- 直接切换 primary 无灰度 → 必须先设为 fallback 观察
-- 只测试 happy path → 必须包含边界情况和错误输入测试
-- 忽略 breaking changes → changelog 必须完整阅读
-- 未更新文档 → 升级完成后文档必须同步
+## Common Failure Modes
+- Switching primary directly without canary → must set as fallback first and observe
+- Testing only happy path → must include edge cases and error input tests
+- Ignoring breaking changes → changelog must be read completely
+- Not updating docs → documentation must be synced after upgrade completion
 
-## 输出格式
+## Output Format
 ```
-## 升级评估报告
+## Upgrade Evaluation Report
 
-**组件**: [组件名]
-**当前版本**: [版本]
-**候选版本**: [版本]
-**评估结论**: 建议升级 / 不建议升级 / 待观察
+**Component**: [component name]
+**Current Version**: [version]
+**Candidate Version**: [version]
+**Evaluation Conclusion**: Recommend upgrade / Do not recommend / Under observation
 
-### 评估结果
-| 维度 | 当前 | 候选 | 变化 |
-|------|------|------|------|
-| 质量 | ... | ... | +X% |
-| 延迟 | ... | ... | -Xms |
-| 成本 | ... | ... | -X% |
-| 稳定性 | ... | ... | ... |
+### Evaluation Results
+| Dimension | Current | Candidate | Change |
+|-----------|---------|-----------|--------|
+| Quality | ... | ... | +X% |
+| Latency | ... | ... | -Xms |
+| Cost | ... | ... | -X% |
+| Stability | ... | ... | ... |
 
-### 关键发现
-- [发现1]
-- [发现2]
+### Key Findings
+- [Finding 1]
+- [Finding 2]
 
-### 切换计划
-1. [步骤]
-2. [步骤]
+### Rollout Plan
+1. [Step]
+2. [Step]
 
-### 回滚方案
-[回滚步骤]
+### Rollback Plan
+[Rollback steps]
 ```

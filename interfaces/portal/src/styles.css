@@ -39,9 +39,9 @@
 
   /* Scene colors — softer palette */
   --color-scene-copilot: var(--scene-copilot);
-  --color-scene-mentor: var(--scene-mentor);
-  --color-scene-coach: var(--scene-coach);
-  --color-scene-operator: var(--scene-operator);
+  --color-scene-instructor: var(--scene-instructor);
+  --color-scene-navigator: var(--scene-navigator);
+  --color-scene-autopilot: var(--scene-autopilot);
 
   /* Radius — rounder, softer */
   --radius-lg: var(--radius);
@@ -134,9 +134,9 @@
 
     /* Scene colors — pastel, soft */
     --scene-copilot: oklch(0.65 0.1 290);
-    --scene-mentor: oklch(0.72 0.1 60);
-    --scene-coach: oklch(0.68 0.08 175);
-    --scene-operator: oklch(0.68 0.1 15);
+    --scene-instructor: oklch(0.72 0.1 60);
+    --scene-navigator: oklch(0.68 0.08 175);
+    --scene-autopilot: oklch(0.68 0.1 15);
   }
 
   .dark {

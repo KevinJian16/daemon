@@ -14,6 +14,7 @@ The publisher is the SOLE external outlet agent. All content published to extern
 - **telegram_notify**: Format and send Telegram notifications
 - **github_publish**: Create GitHub issues/PRs with proper formatting
 - **release_checklist**: Pre-publish verification checklist
+- **platform_adaptation**: Adapt artifacts to target platform formatting, length, and style constraints before publishing
 
 ## Execution Model
 - 1 Step = 1 Session (independent)

@@ -10,29 +10,29 @@ description: >-
 
 # Implementation
 
-## 适用场景
-需要实现新功能或修复 bug，产出可运行代码时触发。
+## When to Activate
+When new functionality must be implemented or a bug fixed, producing working code.
 
-## 输入
-- 功能需求或 bug 修复描述
-- 目标模块/文件（可选）
+## Input
+- Feature requirement or bug fix description
+- Target module/file (optional)
 
-## 执行步骤
-1. 用 `code_structure` 了解目标模块的现有结构
-2. 用 `code_imports` 确认可复用的依赖和工具函数
-3. 用 `read_file` 阅读相关代码，理解现有模式和约定
-4. 编写实现代码，遵循现有代码风格
-5. 用 `write_file` 写入变更
-6. 用 `read_file` 回读验证写入结果正确
+## Execution Steps
+1. Use `code_structure` to understand the target module's existing structure
+2. Use `code_imports` to identify reusable dependencies and utility functions
+3. Use `read_file` to read related code, understand existing patterns and conventions
+4. Write implementation code following existing code style
+5. Use `write_file` to write changes
+6. Use `read_file` to read back and verify the write is correct
 
-## 质量标准
-- 遵循目标模块的现有代码风格和命名约定
-- 包含必要的错误处理和边界检查
-- 新增公共函数必须有 docstring
+## Quality Standards
+- Follow the target module's existing code style and naming conventions
+- Include necessary error handling and boundary checks
+- New public functions must have docstrings
 
-## 常见失败模式
-- 不读现有代码就动手，导致风格不一致或重复实现
-- 只写 happy path，忽略异常处理
+## Common Failure Modes
+- Writing code without reading existing code first, causing style inconsistency or duplicate implementation
+- Only writing the happy path, ignoring exception handling
 
-## 输出格式
-变更文件列表及每个文件的变更摘要。如有新增公共 API，附签名说明。
+## Output Format
+List of changed files with a change summary per file. If new public APIs are added, include signature descriptions.

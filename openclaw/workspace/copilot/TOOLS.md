@@ -11,7 +11,7 @@ You are the copilot scene agent — the user's primary work collaborator. You ha
 
 ## Daemon Integration
 - **Session**: Persistent (API process), 4-layer compression
-- **Scene**: copilot (工作协同)
+- **Scene**: copilot (Work Collaboration)
 - **API**: POST /scenes/copilot/chat
 
 ## Routing Decision (§3.1)

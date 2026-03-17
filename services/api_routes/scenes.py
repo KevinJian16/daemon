@@ -5,7 +5,7 @@ Endpoints:
   GET  /scenes/{scene}/chat/stream — WebSocket real-time chat
   GET  /scenes/{scene}/panel    — Scene panel data (messages, digests, decisions)
 
-Scenes: copilot, mentor, coach, operator
+Scenes: copilot, instructor, navigator, autopilot
 
 Reference: SYSTEM_DESIGN.md §5.1, TODO.md Phase 5.8
 """
@@ -206,10 +206,10 @@ async def scene_panel(scene: str, _user: dict = Depends(get_current_user)) -> di
     structured data (§4.2).
 
     Per-scene structured data:
-      copilot  → recent projects + active tasks summary
-      mentor   → learning plans + assignment progress
-      coach    → execution rates + performance metrics
-      operator → platform status + system health
+      copilot    → recent projects + active tasks summary
+      instructor → learning plans + assignment progress
+      navigator  → execution rates + performance metrics
+      autopilot  → platform status + system health
 
     No blocking UX (§0.9): internal errors return empty panel rather than
     exposing stack traces.
@@ -237,10 +237,10 @@ async def scene_panel(scene: str, _user: dict = Depends(get_current_user)) -> di
 async def _get_scene_structured_data(scene: str) -> dict:
     """Return per-scene structured panel data (§4.2).
 
-    copilot:  recent projects + active tasks summary
-    mentor:   learning plans + assignment progress
-    coach:    execution rates + performance metrics
-    operator: platform status + system health
+    copilot:    recent projects + active tasks summary
+    instructor: learning plans + assignment progress
+    navigator:  execution rates + performance metrics
+    autopilot:  platform status + system health
     """
     if not _store:
         return {}
@@ -248,12 +248,12 @@ async def _get_scene_structured_data(scene: str) -> dict:
     try:
         if scene == "copilot":
             return await _copilot_structured()
-        elif scene == "mentor":
-            return await _mentor_structured()
-        elif scene == "coach":
-            return await _coach_structured()
-        elif scene == "operator":
-            return await _operator_structured()
+        elif scene == "instructor":
+            return await _instructor_structured()
+        elif scene == "navigator":
+            return await _navigator_structured()
+        elif scene == "autopilot":
+            return await _autopilot_structured()
     except Exception as exc:
         logger.warning("Structured data for scene %s failed: %s", scene, exc)
 
@@ -306,15 +306,15 @@ async def _copilot_structured() -> dict:
     }
 
 
-async def _mentor_structured() -> dict:
-    """mentor panel: learning plans + assignment progress."""
+async def _instructor_structured() -> dict:
+    """instructor panel: learning plans + assignment progress."""
     learning_plans: list[dict] = []
     assignment_progress: list[dict] = []
 
     try:
-        # Learning plans: tasks tagged with source = "scene:mentor"
+        # Learning plans: tasks tagged with source = "scene:instructor"
         if hasattr(_store, "list_tasks_by_source"):
-            tasks = await _store.list_tasks_by_source("scene:mentor", limit=10)
+            tasks = await _store.list_tasks_by_source("scene:instructor", limit=10)
             learning_plans = [
                 {
                     "task_id": str(t.get("task_id") or ""),
@@ -325,12 +325,12 @@ async def _mentor_structured() -> dict:
                 if isinstance(t, dict)
             ]
     except Exception as exc:
-        logger.debug("mentor learning plans fetch failed: %s", exc)
+        logger.debug("instructor learning plans fetch failed: %s", exc)
 
     try:
-        # Assignment progress: jobs sourced from mentor scene (last 10)
+        # Assignment progress: jobs sourced from instructor scene (last 10)
         if hasattr(_store, "list_jobs_by_source"):
-            jobs = await _store.list_jobs_by_source("scene:mentor", limit=10)
+            jobs = await _store.list_jobs_by_source("scene:instructor", limit=10)
             assignment_progress = [
                 {
                     "job_id": str(j.get("job_id") or ""),
@@ -342,7 +342,7 @@ async def _mentor_structured() -> dict:
                 if isinstance(j, dict)
             ]
     except Exception as exc:
-        logger.debug("mentor assignment progress fetch failed: %s", exc)
+        logger.debug("instructor assignment progress fetch failed: %s", exc)
 
     return {
         "learning_plans": learning_plans,
@@ -354,8 +354,8 @@ async def _mentor_structured() -> dict:
     }
 
 
-async def _coach_structured() -> dict:
-    """coach panel: execution rates + performance metrics."""
+async def _navigator_structured() -> dict:
+    """navigator panel: execution rates + performance metrics."""
     metrics: dict = {
         "total_jobs": 0,
         "completed_jobs": 0,
@@ -377,13 +377,13 @@ async def _coach_structured() -> dict:
                 metrics["completion_rate"] = round(completed / total, 3) if total else 0.0
                 metrics["avg_step_count"] = float(raw.get("avg_step_count") or 0)
     except Exception as exc:
-        logger.debug("coach metrics fetch failed: %s", exc)
+        logger.debug("navigator metrics fetch failed: %s", exc)
 
     return {"performance_metrics": metrics}
 
 
-async def _operator_structured() -> dict:
-    """operator panel: platform status + system health."""
+async def _autopilot_structured() -> dict:
+    """autopilot panel: platform status + system health."""
     import urllib.request
 
     def _http_ok(url: str, timeout: int = 5) -> bool:

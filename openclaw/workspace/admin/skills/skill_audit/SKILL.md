@@ -11,28 +11,28 @@ description: >-
 
 # Skill Audit
 
-## 适用场景
-基于 Langfuse 指标评估 SKILL.md 的实际执行效果并提出改进。
+## When to Activate
+When evaluating the actual execution effectiveness of SKILL.md based on Langfuse metrics and proposing improvements.
 
-## 输入
-目标 agent 名 + skill 名，或 "all" 全量审计。
+## Input
+Target agent name + skill name, or "all" for full audit.
 
-## 执行步骤
-1. 从 Langfuse 拉取该 skill 近期 trace 数据（成功率、耗时、token 用量）
-2. 分析失败 trace 的根因分布
-3. 比对 SKILL.md 文本与实际执行路径的偏差
-4. 生成改进建议（步骤调整 / 约束补充 / 示例添加）
+## Execution Steps
+1. Pull recent trace data for the skill from Langfuse (success rate, latency, token usage)
+2. Analyze root cause distribution of failed traces
+3. Compare SKILL.md text against actual execution path deviations
+4. Generate improvement recommendations (step adjustments / constraint additions / example additions)
 
-## 质量标准
-- 改进建议必须基于实际 trace 数据，不凭猜测
-- 每条建议附对应的失败 trace ID
+## Quality Standards
+- Improvement recommendations must be based on actual trace data, not guesswork
+- Each recommendation must cite the corresponding failed trace ID
 
-## 常见失败模式
-- 样本量不足时过早下结论
-- 只关注成功率，忽略 token 效率退化
+## Common Failure Modes
+- Drawing conclusions prematurely with insufficient sample size
+- Focusing only on success rate while ignoring token efficiency degradation
 
-## 输出格式
+## Output Format
 ```
-Skill: {agent}/{skill} | 成功率: X% | 均耗时: Xs
-[issue] 描述 | trace_id | 建议修改
+Skill: {agent}/{skill} | Success rate: X% | Avg latency: Xs
+[issue] description | trace_id | suggested change
 ```

@@ -12,3 +12,13 @@ verify_required = "cross_check"
 # 低可信：论坛、社交媒体、匿名来源
 sources = ["reddit", "stackoverflow_comments", "unknown"]
 verify_required = "mandatory"
+
+# TTL tiers for knowledge_cache (§5.6.1)
+# tier1 = web pages (short shelf life)
+# tier2 = documentation (medium shelf life)
+# tier3 = research/academic (long shelf life)
+
+[ttl]
+tier1 = 7    # days — web pages, news, blog posts
+tier2 = 30   # days — official docs, wikis, release notes
+tier3 = 90   # days — academic papers, research reports

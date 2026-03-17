@@ -11,30 +11,30 @@ description: >-
 
 # Tech Blog
 
-## 适用场景
-需要撰写技术博客文章，面向开发者或技术受众。
+## When to Activate
+When writing a technical blog post targeting developers or technical audiences.
 
-## 输入
-- `topic`: 主题或标题
-- `audience`: 目标读者（默认：中级开发者）
-- `length`: 目标字数（默认：1500）
+## Input
+- `topic`: Topic or title
+- `audience`: Target readers (default: intermediate developers)
+- `length`: Target word count (default: 1500)
 
-## 执行步骤
-1. 确定核心论点和读者收益
-2. 拟定大纲：引言、正文（2-4 节）、总结
-3. 撰写初稿，每节配代码示例或图示说明
-4. 检查技术准确性和行文流畅度
-5. 写入文件并返回路径
+## Execution Steps
+1. Determine core thesis and reader benefit
+2. Draft outline: introduction, body (2-4 sections), conclusion
+3. Write first draft, each section with code examples or diagrams
+4. Check technical accuracy and prose flow
+5. Write to file and return path
 
-## 质量标准
-- 开头 3 句内点明读者能学到什么
-- 代码示例可直接运行
-- 无未定义术语，首次出现需解释
+## Quality Standards
+- Reader benefit stated within first 3 sentences
+- Code examples runnable standalone
+- No undefined terms; explain on first occurrence
 
-## 常见失败模式
-- 堆砌概念缺乏实例
-- 代码片段缺少上下文或依赖说明
-- 结尾无行动号召
+## Common Failure Modes
+- Piling up concepts without examples
+- Code snippets lacking context or dependency descriptions
+- No call to action at the end
 
-## 输出格式
-Markdown 文件，含 YAML front matter（title, date, tags）。
+## Output Format
+Markdown file with YAML front matter (title, date, tags).

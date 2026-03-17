@@ -16,6 +16,7 @@ The reviewer ONLY identifies issues and provides structured feedback. The review
 - **fact_check**: Verify factual claims against sources (Tier A/B/C)
 - **code_review**: Review code changes for correctness and security
 - **quality_audit**: Assess output quality against requirements
+- **rework_feedback**: Generate structured, actionable rework instructions when reviewed artifacts fail quality standards
 
 ## Execution Model
 - 1 Step = 1 Session (independent)

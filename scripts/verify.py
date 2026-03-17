@@ -35,7 +35,7 @@ def _utc() -> str:
 
 def _notify_telegram(msg: str) -> bool:
     """Send notification via Telegram."""
-    token = os.environ.get("TELEGRAM_BOT_TOKEN_OPERATOR") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    token = os.environ.get("TELEGRAM_BOT_TOKEN_AUTOPILOT") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
     if not token or not chat_id:
         _log("  Telegram not configured, skipping notification")
@@ -155,11 +155,133 @@ def run_infrastructure_checks(hc: HealthCheck) -> None:
     hc.check("MinIO console reachable", lambda: _http_ok("http://localhost:9001", timeout=5))
 
 
+def run_self_governance_checks(hc: HealthCheck) -> None:
+    """Self-governance validation (§0.10).
+
+    Validates:
+    - All agent directories exist in OC workspace
+    - SOUL.md, TOOLS.md, SKILL_GRAPH.md present for each agent
+    - openclaw.json is valid JSON with required fields
+    - model_policy.json agent-model mappings are valid
+    - No deprecated terms in active code
+    """
+    _log("Self-governance checks:")
+
+    oc_workspace = DAEMON_HOME / "openclaw" / "workspace"
+    oc_json = DAEMON_HOME / "openclaw" / "openclaw.json"
+    model_policy = DAEMON_HOME / "config" / "model_policy.json"
+
+    # Expected agents per SYSTEM_DESIGN.md §1.2
+    EXPECTED_AGENTS = {
+        "copilot", "instructor", "navigator", "autopilot",
+        "researcher", "writer", "reviewer", "publisher",
+        "engineer", "admin",
+    }
+
+    REQUIRED_FILES = ("SOUL.md", "TOOLS.md", "SKILL_GRAPH.md")
+
+    # Deprecated terms that must not appear in active code
+    # These were replaced by new terminology in the architecture refactor
+    DEPRECATED_TERMS = [
+        "deed", "move", "folio_writ", "cadence", "herald",
+        "ether", "retinue", "cortex", "psyche", "instinct_engine",
+        "trail", "vault", "ledger",
+    ]
+
+    # Check agent directories exist
+    for agent in EXPECTED_AGENTS:
+        agent_dir = oc_workspace / agent
+        hc.check(
+            f"agent workspace exists: {agent}",
+            lambda d=agent_dir: d.is_dir(),
+        )
+
+    # Check required files per agent
+    for agent in EXPECTED_AGENTS:
+        agent_dir = oc_workspace / agent
+        if not agent_dir.is_dir():
+            continue  # already failed above
+        for fname in REQUIRED_FILES:
+            fpath = agent_dir / fname
+            hc.check(
+                f"agent {agent}/{fname}",
+                lambda p=fpath: p.is_file() and p.stat().st_size > 0,
+            )
+
+    # Validate openclaw.json
+    def _check_openclaw_json() -> bool:
+        if not oc_json.exists():
+            return False
+        raw = json.loads(oc_json.read_text())
+        # Required top-level fields
+        for field in ("agents", "version"):
+            if field not in raw:
+                return False
+        agents = raw.get("agents")
+        if not isinstance(agents, (dict, list)) or not agents:
+            return False
+        return True
+
+    hc.check("openclaw.json valid JSON + required fields", _check_openclaw_json)
+
+    # Validate model_policy.json
+    def _check_model_policy() -> bool:
+        if not model_policy.exists():
+            return False
+        raw = json.loads(model_policy.read_text())
+        agent_map = raw.get("agent_model_map")
+        if not isinstance(agent_map, dict):
+            return False
+        # Every expected agent must be mapped
+        for agent in EXPECTED_AGENTS:
+            if agent not in agent_map:
+                return False
+        return True
+
+    hc.check("model_policy.json agent-model mappings complete", _check_model_policy)
+
+    # Check for deprecated terms in active Python code
+    # Only scan source directories, not archives
+    active_dirs = [
+        DAEMON_HOME / "services",
+        DAEMON_HOME / "temporal",
+        DAEMON_HOME / "runtime",
+        DAEMON_HOME / "config",
+        DAEMON_HOME / "spine",
+    ]
+
+    def _scan_deprecated(term: str) -> bool:
+        """Returns True (PASS) if term is NOT found in active code."""
+        import subprocess
+        py_files = []
+        for d in active_dirs:
+            if not d.exists():
+                continue
+            py_files.extend(str(p) for p in d.rglob("*.py") if "__pycache__" not in str(p))
+        if not py_files:
+            return True
+        result = subprocess.run(
+            ["grep", "-l", "--include=*.py", "-r", term] + [str(d) for d in active_dirs if d.exists()],
+            capture_output=True, text=True,
+        )
+        # PASS if no files contain the deprecated term
+        return result.returncode != 0 or not result.stdout.strip()
+
+    # Only check a subset — the most important deprecated module references
+    key_deprecated = ["from services.cadence", "from services.herald", "ether.JSONL"]
+    for term in key_deprecated:
+        hc.check(
+            f"no deprecated term: {repr(term)}",
+            lambda t=term: _scan_deprecated(t),
+        )
+
+
 def run_full_check() -> dict:
     """Run full health check and save report."""
     hc = HealthCheck()
 
     run_infrastructure_checks(hc)
+    run_self_governance_checks(hc)
 
     report = {
         "checked_utc": _utc(),

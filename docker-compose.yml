@@ -20,6 +20,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-databases.sql:/docker-entrypoint-initdb.d/01-init-databases.sql
+      - ./scripts/init-firecrawl.sql:/docker-entrypoint-initdb.d/02-init-firecrawl.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-daemon}"]
       interval: 10s
@@ -149,6 +150,7 @@ services:
       plane-migrator:
         condition: service_completed_successfully
     command: ./bin/docker-entrypoint-worker.sh
+    mem_limit: 1536m
 
   plane-beat:
     image: artifacts.plane.so/makeplane/plane-backend:stable
@@ -179,6 +181,11 @@ services:
   plane-space:
     image: artifacts.plane.so/makeplane/plane-space:stable
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const h=require('http');h.get('http://localhost:3000/',r=>{process.exit(r.statusCode<500?0:1)}).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     depends_on:
       - plane-api
       - plane-frontend
@@ -236,6 +243,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    mem_limit: 1536m
 
   langfuse-web:
     image: langfuse/langfuse:3
@@ -303,10 +311,61 @@ services:
 
   # ============================================================
   # Firecrawl (Web Scraping → Clean Markdown)
-  # NOTE: ghcr.io image requires auth; using Firecrawl cloud API
-  # via MCP server (mcp_servers/firecrawl_scrape.py) instead.
-  # To self-host: build from https://github.com/mendableai/firecrawl
+  # Self-hosted from vendor/firecrawl (AGPL-3.0, free)
+  # API on port 3002, no auth (USE_DB_AUTHENTICATION=false)
+  # Reference: SYSTEM_DESIGN.md §5.6
   # ============================================================
+
+  firecrawl-playwright:
+    build: vendor/firecrawl/apps/playwright-service-ts
+    restart: unless-stopped
+    environment:
+      PORT: "3000"
+      BLOCK_MEDIA: "${FIRECRAWL_BLOCK_MEDIA:-true}"
+      MAX_CONCURRENT_PAGES: "${FIRECRAWL_MAX_CONCURRENT_PAGES:-5}"
+      ALLOW_LOCAL_WEBHOOKS: "true"  # Disable SSRF check — Docker DNS resolves external hosts as private IP
+    tmpfs:
+      - /tmp/.cache:noexec,nosuid,size=512m
+    mem_limit: 2g
+
+  firecrawl-mq:
+    image: rabbitmq:3-management-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  firecrawl:
+    build: vendor/firecrawl/apps/api
+    restart: unless-stopped
+    ports:
+      - "3002:3002"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3002"
+      REDIS_URL: redis://:${REDIS_PASSWORD:-daemon-redis}@redis:6379/2
+      REDIS_RATE_LIMIT_URL: redis://:${REDIS_PASSWORD:-daemon-redis}@redis:6379/2
+      PLAYWRIGHT_MICROSERVICE_URL: http://firecrawl-playwright:3000/scrape
+      USE_DB_AUTHENTICATION: "false"
+      NUQ_DATABASE_URL: postgresql://${POSTGRES_USER:-daemon}:${POSTGRES_PASSWORD:-daemon}@postgres:5432/firecrawl
+      NUQ_RABBITMQ_URL: amqp://firecrawl-mq:5672
+      NUM_WORKERS_PER_QUEUE: "${FIRECRAWL_NUM_WORKERS:-4}"
+      CRAWL_CONCURRENT_REQUESTS: "5"
+      MAX_CONCURRENT_JOBS: "3"
+      ENV: local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      firecrawl-playwright:
+        condition: service_started
+      firecrawl-mq:
+        condition: service_healthy
+    command: ["node", "dist/src/harness.js", "--start-docker"]
+    mem_limit: 4g
 
   # ============================================================
   # RAGFlow (Document RAG Pipeline)
@@ -328,6 +387,7 @@ services:
       interval: 15s
       timeout: 10s
       retries: 5
+    mem_limit: 1g
 
   ragflow:
     image: infiniflow/ragflow:v0.15.1-slim
@@ -362,6 +422,7 @@ services:
     volumes:
       - ragflow_data:/ragflow/data
       - ./config/ragflow/service_conf.yaml:/ragflow/conf/service_conf.yaml:ro
+    mem_limit: 2g
 
   # ============================================================
   # Temporal (Workflow Orchestration)

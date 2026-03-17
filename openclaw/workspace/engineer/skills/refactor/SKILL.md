@@ -9,29 +9,29 @@ description: >-
 
 # Refactor
 
-## 适用场景
-需要重构代码（重命名、提取函数、调整模块结构）且不改变外部行为时触发。
+## When to Activate
+When code needs refactoring (rename, extract function, restructure modules) without changing external behavior.
 
-## 输入
-- 重构目标描述（如"将 X 函数拆分"或"重命名 Y 为 Z"）
-- 涉及的文件/模块范围
+## Input
+- Refactoring goal description (e.g., "split function X" or "rename Y to Z")
+- Scope of affected files/modules
 
-## 执行步骤
-1. 用 `code_structure` 理解当前模块结构
-2. 用 `code_functions` 找出目标符号的所有定义
-3. 用 `code_imports` 找出所有导入和引用点
-4. 制定变更计划，列出所有需要修改的文件
-5. 用 `write_file` 逐文件执行变更
-6. 用 `read_file` 验证每个变更点的上下文正确性
+## Execution Steps
+1. Use `code_structure` to understand current module structure
+2. Use `code_functions` to find all definitions of the target symbol
+3. Use `code_imports` to find all import and reference points
+4. Create a change plan listing all files that need modification
+5. Use `write_file` to apply changes file by file
+6. Use `read_file` to verify context correctness at each change point
 
-## 质量标准
-- 所有引用点必须同步更新，不遗漏
-- 变更后模块的公共 API 语义不变
-- 不引入循环导入
+## Quality Standards
+- All reference points must be updated in sync, with none missed
+- Public API semantics of the changed module must remain unchanged
+- Do not introduce circular imports
 
-## 常见失败模式
-- 改了定义但漏改调用方
-- 字符串中的引用（如日志、配置键）未同步更新
+## Common Failure Modes
+- Changing the definition but missing call sites
+- String references (e.g., log messages, config keys) not updated in sync
 
-## 输出格式
-变更文件列表，每个文件标注变更类型（修改/新增/删除）和变更摘要。
+## Output Format
+List of changed files, each annotated with change type (modified / added / deleted) and change summary.

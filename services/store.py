@@ -1,4 +1,4 @@
-"""PG data layer — replaces Ledger JSON file I/O.
+"""PG data layer (Store) — asyncpg-based persistent storage for daemon objects.
 
 Reference: SYSTEM_DESIGN_REFERENCE.md Appendix C
 """
@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -88,6 +89,15 @@ class Store:
         is_ephemeral: bool = False,
         requires_review: bool = False,
     ) -> dict:
+        # §3.5: Same Task max 1 non-closed Job constraint.
+        # Enforce at the DB layer as a second gate (scenes.py also checks before calling).
+        already_active = await self.has_active_job_for_task(task_id)
+        if already_active:
+            raise ValueError(
+                f"Task {task_id} already has a non-closed Job. "
+                "Cannot create a second Job until the existing one is closed, failed, or cancelled."
+            )
+
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -145,6 +155,78 @@ class Store:
             )
             return [dict(r) for r in rows]
 
+    async def has_active_job_for_task(self, task_id: UUID) -> bool:
+        """Check if a Task already has a non-closed (running) Job (§3.5).
+
+        Returns True if there is at least one Job with status NOT IN
+        ('closed', 'failed', 'cancelled').
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchval(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM jobs
+                    WHERE task_id = $1
+                      AND status NOT IN ('closed', 'failed', 'cancelled')
+                )
+                """,
+                task_id,
+            )
+            return bool(row)
+
+    async def get_last_final_artifact_for_task(self, task_id: UUID) -> dict | None:
+        """Get the most recent final artifact across all Jobs for a Task (§3.7.1).
+
+        Used for Job->Job artifact chain injection.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT a.* FROM job_artifacts a
+                JOIN jobs j ON j.job_id = a.job_id
+                WHERE j.task_id = $1 AND a.is_final = TRUE
+                ORDER BY a.created_at DESC LIMIT 1
+                """,
+                task_id,
+            )
+            return dict(row) if row else None
+
+    async def get_completed_tasks_for_project(self, project_id: UUID) -> list[dict]:
+        """Get completed Tasks for a project — for project-level context assembly (§3.6.1)."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT t.task_id, t.title, t.created_at
+                FROM daemon_tasks t
+                WHERE t.project_id = $1
+                  AND EXISTS (
+                    SELECT 1 FROM jobs j
+                    WHERE j.task_id = t.task_id
+                      AND j.status = 'closed'
+                      AND j.sub_status IN ('completed', 'succeeded')
+                  )
+                ORDER BY t.created_at
+                """,
+                project_id,
+            )
+            return [dict(r) for r in rows]
+
+    async def get_project_goal(self, project_id: UUID) -> str | None:
+        """Get project goal/title from daemon_tasks or Plane (§3.6.1).
+
+        For now, derives from the first task title in the project.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchval(
+                """
+                SELECT title FROM daemon_tasks
+                WHERE project_id = $1
+                ORDER BY created_at ASC LIMIT 1
+                """,
+                project_id,
+            )
+            return str(row) if row else None
+
     # ------------------------------------------------------------------
     # job_steps
     # ------------------------------------------------------------------
@@ -160,14 +242,15 @@ class Store:
         model_hint: str | None = None,
         depends_on: list[int] | None = None,
         input_artifacts: list[str] | None = None,
+        skill_used: str | None = None,
     ) -> dict:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO job_steps
                     (job_id, step_index, goal, agent_id, execution_type,
-                     model_hint, depends_on, input_artifacts)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                     model_hint, depends_on, input_artifacts, skill_used)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 RETURNING *
                 """,
                 job_id,
@@ -178,6 +261,7 @@ class Store:
                 model_hint,
                 depends_on or [],
                 input_artifacts or [],
+                skill_used,
             )
             return dict(row)
 
@@ -254,24 +338,85 @@ class Store:
             )
             return [dict(r) for r in rows]
 
+    async def get_artifact(self, artifact_id: UUID) -> dict | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM job_artifacts WHERE artifact_id = $1", artifact_id
+            )
+            return dict(row) if row else None
+
+    async def get_final_artifact_for_job(self, job_id: UUID) -> dict | None:
+        """Get the most recent final artifact for a Job."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM job_artifacts
+                WHERE job_id = $1 AND is_final = TRUE
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                job_id,
+            )
+            return dict(row) if row else None
+
+    async def mark_artifact_final(self, artifact_id: UUID) -> dict | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE job_artifacts SET is_final = TRUE WHERE artifact_id = $1 RETURNING *",
+                artifact_id,
+            )
+            return dict(row) if row else None
+
+    async def mark_artifact_gdrive_synced(self, artifact_id: UUID) -> dict | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE job_artifacts SET gdrive_synced = TRUE WHERE artifact_id = $1 RETURNING *",
+                artifact_id,
+            )
+            return dict(row) if row else None
+
+    async def mark_artifact_key(self, artifact_id: UUID) -> dict | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE job_artifacts SET key_marked = TRUE WHERE artifact_id = $1 RETURNING *",
+                artifact_id,
+            )
+            return dict(row) if row else None
+
+    async def get_artifacts_for_task(self, task_id: UUID) -> list[dict]:
+        """Get all artifacts across all Jobs for a Task."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT a.* FROM job_artifacts a
+                JOIN jobs j ON j.job_id = a.job_id
+                WHERE j.task_id = $1
+                ORDER BY a.created_at
+                """,
+                task_id,
+            )
+            return [dict(r) for r in rows]
+
     # ------------------------------------------------------------------
     # conversation_messages (L1 — layer 1)
     # ------------------------------------------------------------------
 
     async def save_message(
-        self, scene: str, role: str, content: str, token_count: int | None = None
+        self, scene: str, role: str, content: str,
+        token_count: int | None = None, source: str = "desktop",
     ) -> dict:
+        """Save a conversation message with source tracking (§4.10 sync)."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO conversation_messages (scene, role, content, token_count)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO conversation_messages (scene, role, content, token_count, source)
+                VALUES ($1, $2, $3, $4, $5)
                 RETURNING *
                 """,
                 scene,
                 role,
                 content,
                 token_count,
+                source,
             )
             return dict(row)
 
@@ -384,11 +529,51 @@ class Store:
     # knowledge_cache
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _ttl_for_tier(source_tier: str) -> timedelta:
+        """Auto-compute TTL from source tier (§5.6.1).
+
+        Reads TTL days from config/source_tiers.toml [ttl] section.
+        Tier mapping:
+          tier1 = 7 days  (web pages)
+          tier2 = 30 days (docs)
+          tier3 = 90 days (research)
+
+        Falls back to hard-coded defaults if the file is missing or
+        the section is absent.
+        """
+        # Default TTLs (days) if config is unavailable
+        default_ttl: dict[str, int] = {"tier1": 7, "tier2": 30, "tier3": 90}
+
+        tier_lower = source_tier.lower().strip()
+        try:
+            config_path = Path(__file__).parent.parent / "config" / "source_tiers.toml"
+            if config_path.exists():
+                try:
+                    import tomllib  # Python 3.11+
+                except ImportError:
+                    try:
+                        import tomli as tomllib  # type: ignore[no-redef]
+                    except ImportError:
+                        tomllib = None  # type: ignore[assignment]
+
+                if tomllib is not None:
+                    with config_path.open("rb") as f:
+                        data = tomllib.load(f)
+                    ttl_section = data.get("ttl", {})
+                    if tier_lower in ttl_section:
+                        return timedelta(days=int(ttl_section[tier_lower]))
+        except Exception:
+            pass
+
+        days = default_ttl.get(tier_lower, 30)
+        return timedelta(days=days)
+
     async def upsert_knowledge(
         self,
         source_url: str,
         source_tier: str,
-        expires_at: datetime,
+        expires_at: datetime | None = None,
         *,
         project_id: UUID | None = None,
         title: str | None = None,
@@ -396,6 +581,14 @@ class Store:
         ragflow_doc_id: str | None = None,
         embedding: list[float] | None = None,
     ) -> dict:
+        """Upsert a knowledge_cache entry.
+
+        If expires_at is not provided, it is auto-computed from source_tier
+        using the TTL tiers defined in config/source_tiers.toml (§5.6.1).
+        """
+        if expires_at is None:
+            expires_at = datetime.now(UTC) + self._ttl_for_tier(source_tier)
+
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -422,6 +615,81 @@ class Store:
                 expires_at,
             )
             return dict(row)
+
+    async def search_knowledge(
+        self,
+        query: str,
+        *,
+        project_id: UUID | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Search knowledge_cache with project_id-first fallback (§5.6.1).
+
+        Priority:
+          1. If project_id supplied: return project-scoped results first, then
+             pad with global (project_id IS NULL) results up to `limit`.
+          2. If no project_id: return global results only.
+
+        Only non-expired entries are returned.
+        """
+        async with self._pool.acquire() as conn:
+            if project_id is not None:
+                # Project-scoped first
+                project_rows = await conn.fetch(
+                    """
+                    SELECT * FROM knowledge_cache
+                    WHERE project_id = $1
+                      AND expires_at > now()
+                      AND (title ILIKE $2 OR content_summary ILIKE $2)
+                    ORDER BY expires_at DESC
+                    LIMIT $3
+                    """,
+                    project_id,
+                    f"%{query}%",
+                    limit,
+                )
+                results = [dict(r) for r in project_rows]
+
+                remaining = limit - len(results)
+                if remaining > 0:
+                    # Pad with global entries not already in results
+                    existing_ids = {r["cache_id"] for r in results}
+                    global_rows = await conn.fetch(
+                        """
+                        SELECT * FROM knowledge_cache
+                        WHERE project_id IS NULL
+                          AND expires_at > now()
+                          AND (title ILIKE $1 OR content_summary ILIKE $1)
+                        ORDER BY expires_at DESC
+                        LIMIT $2
+                        """,
+                        f"%{query}%",
+                        remaining + len(existing_ids),  # over-fetch, then filter
+                    )
+                    for r in global_rows:
+                        d = dict(r)
+                        if d["cache_id"] not in existing_ids:
+                            results.append(d)
+                            if len(results) >= limit:
+                                break
+
+                return results[:limit]
+
+            else:
+                # Global only
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM knowledge_cache
+                    WHERE project_id IS NULL
+                      AND expires_at > now()
+                      AND (title ILIKE $1 OR content_summary ILIKE $1)
+                    ORDER BY expires_at DESC
+                    LIMIT $2
+                    """,
+                    f"%{query}%",
+                    limit,
+                )
+                return [dict(r) for r in rows]
 
     async def cleanup_expired_knowledge(self) -> int:
         async with self._pool.acquire() as conn:
@@ -464,6 +732,76 @@ class Store:
             return count
 
     # ------------------------------------------------------------------
+    # Cross-scene decision query (§3.3.1)
+    # ------------------------------------------------------------------
+
+    async def search_decisions_cross_scene(
+        self,
+        query: str | None = None,
+        *,
+        project_id: UUID | None = None,
+        tags: list[str] | None = None,
+        scenes: list[str] | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Query conversation_decisions across multiple scenes (§3.3.1).
+
+        Unlike get_recent_decisions() which is single-scene, this method
+        searches all scenes (or the specified subset) and supports filtering
+        by project_id and/or tags.
+
+        Args:
+            query:      Optional substring to match in content or context_summary.
+            project_id: Limit to decisions attached to this project.
+            tags:       Limit to decisions that contain ALL supplied tags.
+            scenes:     Limit to these scene names (default: all 4 scenes).
+            limit:      Max results to return (default 50).
+
+        Returns:
+            List of decision dicts ordered newest first.
+        """
+        clauses: list[str] = []
+        params: list = []
+        idx = 1
+
+        if scenes:
+            placeholders = ", ".join(f"${i}" for i in range(idx, idx + len(scenes)))
+            clauses.append(f"scene IN ({placeholders})")
+            params.extend(scenes)
+            idx += len(scenes)
+
+        if project_id is not None:
+            clauses.append(f"project_id = ${idx}")
+            params.append(project_id)
+            idx += 1
+
+        if tags:
+            # All supplied tags must be present in the tags array column
+            for tag in tags:
+                clauses.append(f"${idx} = ANY(tags)")
+                params.append(tag)
+                idx += 1
+
+        if query:
+            clauses.append(f"(content ILIKE ${idx} OR context_summary ILIKE ${idx})")
+            params.append(f"%{query}%")
+            idx += 1
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+
+        sql = f"""
+        SELECT * FROM conversation_decisions
+        {where}
+        ORDER BY created_at DESC
+        LIMIT ${idx}
+        """
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+            return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
     # Query helpers (API endpoints)
     # ------------------------------------------------------------------
 
@@ -482,14 +820,22 @@ class Store:
             return [dict(r) for r in rows]
 
     async def get_task_activity(self, task_id: UUID, limit: int = 50) -> list[dict]:
-        """Get activity feed for a task: jobs + steps ordered by time."""
+        """Get activity feed for a task: jobs + steps in D.4 format (§4.5).
+
+        Each record has:
+          type: user_message | agent_result | job_boundary | step_status | action_record
+          actor: agent_id or "system"
+          job_id: UUID string of the owning Job
+          metadata: additional context dict
+        """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT
                     js.step_id, js.step_index, js.goal, js.agent_id,
                     js.status, js.output_summary, js.started_at, js.completed_at,
-                    j.job_id, j.workflow_id, j.status AS job_status
+                    j.job_id, j.workflow_id, j.status AS job_status,
+                    j.sub_status AS job_sub_status
                 FROM job_steps js
                 JOIN jobs j ON j.job_id = js.job_id
                 WHERE j.task_id = $1
@@ -498,4 +844,40 @@ class Store:
                 """,
                 task_id, limit,
             )
-            return [dict(r) for r in rows]
+            records = []
+            for r in rows:
+                row = dict(r)
+                job_id_str = str(row.get("job_id") or "")
+                agent_id = str(row.get("agent_id") or "system")
+                step_status = str(row.get("status") or "")
+                job_status = str(row.get("job_status") or "")
+                job_sub_status = str(row.get("job_sub_status") or "")
+
+                # Determine D.4 record type
+                if step_status in ("completed", "failed", "error"):
+                    record_type = "agent_result"
+                elif step_status in ("running", "started", "pending"):
+                    record_type = "step_status"
+                elif job_sub_status in ("completed", "failed", "cancelled"):
+                    record_type = "job_boundary"
+                else:
+                    record_type = "step_status"
+
+                records.append({
+                    "type": record_type,
+                    "actor": agent_id,
+                    "job_id": job_id_str,
+                    "step_id": str(row.get("step_id") or ""),
+                    "step_index": row.get("step_index"),
+                    "goal": str(row.get("goal") or ""),
+                    "status": step_status,
+                    "output_summary": str(row.get("output_summary") or ""),
+                    "started_at": row.get("started_at").isoformat() if row.get("started_at") else None,
+                    "completed_at": row.get("completed_at").isoformat() if row.get("completed_at") else None,
+                    "metadata": {
+                        "workflow_id": str(row.get("workflow_id") or ""),
+                        "job_status": job_status,
+                        "job_sub_status": job_sub_status,
+                    },
+                })
+            return records

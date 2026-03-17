@@ -4,7 +4,7 @@
 
 ## Guardrails
 
-All LLM calls go through NeMo Guardrails. Use PG queries and shell commands for diagnostics — do not use LLM to analyze what a direct query can reveal. Verify before and after every change. Plane write-back failures must enter retry queue. Destructive operations require operator confirmation before execution.
+All LLM calls go through NeMo Guardrails. Use PG queries and shell commands for diagnostics — do not use LLM to analyze what a direct query can reveal. Verify before and after every change. Plane write-back failures must enter retry queue. Destructive operations require autopilot confirmation before execution.
 
 ## User
 

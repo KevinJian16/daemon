@@ -10,29 +10,29 @@ description: >-
 
 # Quality Audit
 
-## 适用场景
-评估整体输出是否满足原始需求和质量标准。
+## When to Activate
+When evaluating whether overall output meets original requirements and quality standards.
 
-## 输入
-原始需求描述 + 实际输出产物。
+## Input
+Original requirement description + actual output artifact.
 
-## 执行步骤
-1. 提取需求中的验收条件
-2. 逐条比对输出是否满足每项条件
-3. 检查遗漏：需求中提到但输出中未体现的内容
-4. 检查多余：输出中有但需求未要求的内容
-5. 给出通过/不通过判定及差距列表
+## Execution Steps
+1. Extract acceptance criteria from requirements
+2. Compare output against each criterion one by one
+3. Check for omissions: content mentioned in requirements but absent from output
+4. Check for extras: content in output not required by specification
+5. Issue pass/fail verdict with gap list
 
-## 质量标准
-- 每项验收条件必须有明确的通过/不通过判定
-- 不通过项必须说明差距和补救路径
+## Quality Standards
+- Every acceptance criterion must have a clear pass/fail determination
+- Failed items must describe the gap and remediation path
 
-## 常见失败模式
-- 需求理解偏差导致评估标准错误
-- 只做形式检查，未验证实质内容
+## Common Failure Modes
+- Misunderstanding requirements leading to wrong evaluation criteria
+- Surface-only checks without verifying substantive content
 
-## 输出格式
+## Output Format
 ```
-总判定: PASS / FAIL
-[PASS/FAIL] 条件描述 | 证据或差距说明
+Verdict: PASS / FAIL
+[PASS/FAIL] criterion description | evidence or gap explanation
 ```

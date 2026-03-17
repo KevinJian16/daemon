@@ -1,4 +1,4 @@
-"""PG LISTEN/NOTIFY event bus — replaces Ether (JSONL append + file watcher).
+"""PG LISTEN/NOTIFY event bus (EventBus).
 
 Reference: SYSTEM_DESIGN.md §6.4, SYSTEM_DESIGN_REFERENCE.md Appendix D.3
 """
@@ -118,6 +118,81 @@ class EventBus:
                 event_type,
                 json.dumps(payload),
             )
+
+    async def replay_unconsumed(self, *, max_age_hours: int = 24, batch_size: int = 100) -> int:
+        """Replay unconsumed events from event_log on Worker restart (§6.4).
+
+        Queries event_log for rows where consumed = FALSE and created_at is within
+        the last `max_age_hours` hours. Dispatches each to registered callbacks
+        exactly like a live NOTIFY, then marks the row as consumed.
+
+        Call this once after connect() during Worker startup to recover any
+        events that were missed while the Worker was offline.
+
+        Returns the number of events replayed.
+        """
+        pool = self._pool
+        if pool is None:
+            logger.warning("EventBus.replay_unconsumed() called before pool is set — skipping")
+            return 0
+
+        replayed = 0
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT event_id, channel, event_type, payload
+                    FROM event_log
+                    WHERE consumed_at IS NULL
+                      AND created_at >= now() - make_interval(hours => $1)
+                    ORDER BY created_at ASC
+                    LIMIT $2
+                    """,
+                    max_age_hours,
+                    batch_size,
+                )
+
+            for row in rows:
+                channel = str(row["channel"])
+                callbacks = self._callbacks.get(channel, [])
+                if not callbacks:
+                    # No subscribers for this channel; mark consumed anyway
+                    pass
+                else:
+                    try:
+                        payload_data = json.loads(row["payload"])
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "EventBus replay: invalid JSON for event %s on channel %s",
+                            row["event_id"], channel,
+                        )
+                        payload_data = {}
+
+                    for cb in callbacks:
+                        asyncio.create_task(self._safe_call(cb, payload_data))
+
+                # Mark as consumed regardless of whether callbacks exist
+                try:
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            "UPDATE event_log SET consumed_at = NOW() WHERE event_id = $1",
+                            row["event_id"],
+                        )
+                except Exception as mark_exc:
+                    logger.warning(
+                        "EventBus replay: failed to mark event %s consumed: %s",
+                        row["event_id"], mark_exc,
+                    )
+
+                replayed += 1
+
+        except Exception as exc:
+            logger.warning("EventBus.replay_unconsumed() failed: %s", exc)
+            return replayed
+
+        if replayed:
+            logger.info("EventBus replayed %d unconsumed events on startup", replayed)
+        return replayed
 
     def _dispatch(
         self,

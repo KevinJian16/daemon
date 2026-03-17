@@ -1,46 +1,38 @@
 {
   "_comment": "Model registry — canonical model definitions used by OpenClaw agent sessions.",
-  "_version": "2.0.0",
-  "_updated": "2026-03-15",
+  "_version": "4.0.0",
+  "_updated": "2026-03-16",
   "models": [
     {
       "alias": "fast",
       "provider": "minimax",
       "model_id": "MiniMax-M2.5",
-      "description": "High-frequency workhorse: L1 scenes (copilot/mentor/coach/operator), L2 execution (researcher/engineer/publisher/admin). 1M context.",
+      "description": "High-frequency workhorse: L1 scenes (copilot/instructor/navigator/autopilot), L2 execution (engineer/publisher). SWE-bench 80.2%, 1M context. Coding Plan billing.",
       "context_window": 1000000,
       "supports_temperature": true
     },
     {
       "alias": "analysis",
-      "provider": "deepseek",
-      "model_id": "deepseek-reasoner",
-      "description": "Deep reasoning: researcher (deep analysis), L1 (complex planning). Note: 65K context, no temperature.",
-      "context_window": 65536,
-      "supports_temperature": false
+      "provider": "qwen",
+      "model_id": "qwen3.5-plus",
+      "description": "Deep analysis + reasoning: researcher agent. AIME 91.3, 1M context, fast (1/6 Claude speed). Per-token billing.",
+      "context_window": 1000000,
+      "supports_temperature": true
     },
     {
       "alias": "review",
-      "provider": "qwen",
-      "model_id": "qwen-max",
-      "description": "Quality gate: reviewer agent — fact_check, code_review, quality_audit. Strong structured output, bilingual.",
-      "context_window": 32768,
+      "provider": "zhipu",
+      "model_id": "GLM-5",
+      "description": "Quality + creative: reviewer (审查), writer (写作), admin (系统评估). SWE-bench 77.8%, LMArena Text+Code #1 open source. 128K context. Per-token billing.",
+      "context_window": 128000,
       "supports_temperature": true
     },
     {
       "alias": "creative",
       "provider": "zhipu",
-      "model_id": "glm-z1-flash",
-      "description": "Creative writing: writer agent — tech_blog, academic_paper, documentation, data_visualization. 128K context, bilingual.",
+      "model_id": "GLM-5",
+      "description": "Alias for review — same GLM-5 model. Used by writer agent for creative writing with human-like alignment.",
       "context_window": 128000,
-      "supports_temperature": true
-    },
-    {
-      "alias": "qwen",
-      "provider": "qwen",
-      "model_id": "qwen-max",
-      "description": "Dev/coding: engineer agent alternative. Same model as review alias.",
-      "context_window": 32768,
       "supports_temperature": true
     },
     {
@@ -55,9 +47,36 @@
       "alias": "embedding",
       "provider": "zhipu",
       "model_id": "embedding-3",
-      "description": "Text embedding for Mem0 semantic retrieval. 1024 dimensions, bilingual zh/en.",
+      "description": "Text embedding fallback. 1024 dimensions, bilingual zh/en. Primary is local-embedding.",
       "context_window": 8192,
       "supports_temperature": false
+    },
+    {
+      "alias": "local-heavy",
+      "provider": "ollama",
+      "model_id": "qwen2.5:32b",
+      "description": "Local 32B model via Ollama (M4 Pro, ~10 tok/s). Use for: triage, guardrails, replan gate, structured extraction. Zero API cost.",
+      "context_window": 32768,
+      "supports_temperature": true,
+      "endpoint": "http://localhost:11434"
+    },
+    {
+      "alias": "local-light",
+      "provider": "ollama",
+      "model_id": "qwen2.5:7b",
+      "description": "Local 7B model via Ollama (M4 Pro, ~35 tok/s). Use for: classification, summarization, quick judgment. Zero API cost.",
+      "context_window": 32768,
+      "supports_temperature": true,
+      "endpoint": "http://localhost:11434"
+    },
+    {
+      "alias": "local-embedding",
+      "provider": "ollama",
+      "model_id": "nomic-embed-text",
+      "description": "Local embedding primary. 768 dimensions, 47ms on M4 Pro. Zero cost.",
+      "context_window": 8192,
+      "supports_temperature": false,
+      "endpoint": "http://localhost:11434"
     }
   ]
 }

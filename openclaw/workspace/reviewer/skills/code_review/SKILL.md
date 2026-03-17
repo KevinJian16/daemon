@@ -10,28 +10,28 @@ description: >-
 
 # Code Review
 
-## 适用场景
-审查代码变更的正确性、安全性和风格一致性。
+## When to Activate
+When reviewing code changes for correctness, security, and style consistency.
 
-## 输入
-代码 diff 或文件路径列表。
+## Input
+Code diff or list of file paths.
 
-## 执行步骤
-1. 读取变更文件，理解修改意图
-2. 检查正确性：逻辑错误、边界条件、异常处理
-3. 检查安全性：注入、硬编码凭证、不安全依赖
-4. 检查风格：命名规范、类型注解、文档字符串
-5. 按严重程度标注发现项
+## Execution Steps
+1. Read changed files, understand modification intent
+2. Check correctness: logic errors, boundary conditions, exception handling
+3. Check security: injection, hardcoded credentials, unsafe dependencies
+4. Check style: naming conventions, type annotations, docstrings
+5. Categorize findings by severity
 
-## 质量标准
-- 安全问题必须标为 blocker
-- 每条反馈附具体行号和修正建议
+## Quality Standards
+- Security issues must be marked as blocker
+- Each finding includes specific line number and fix suggestion
 
-## 常见失败模式
-- 只看改动行，忽略上下文逻辑
-- 风格问题与正确性问题混为一谈
+## Common Failure Modes
+- Only reading changed lines, ignoring surrounding context logic
+- Conflating style issues with correctness issues
 
-## 输出格式
+## Output Format
 ```
-[blocker/warning/nit] file:line - 描述 | 建议修改
+[blocker/warning/nit] file:line - description | suggested fix
 ```

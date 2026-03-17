@@ -1,7 +1,7 @@
 {
   "version": 2,
   "canonical_agents": {
-    "l1": ["copilot", "mentor", "coach", "operator"],
+    "l1": ["copilot", "instructor", "navigator", "autopilot"],
     "l2": ["researcher", "engineer", "writer", "reviewer", "publisher", "admin"]
   },
   "temporal": {
@@ -16,8 +16,8 @@
     "publisher": 1,
     "admin": 2,
     "copilot": 1,
-    "mentor": 1,
-    "coach": 1,
-    "operator": 1
+    "instructor": 1,
+    "navigator": 1,
+    "autopilot": 1
   }
 }

@@ -10,30 +10,30 @@ description: >-
 
 # Announcement
 
-## 适用场景
-需要撰写产品发布、功能更新、变更通知等公告。
+## When to Activate
+When writing product launches, feature updates, change notifications, or other announcements.
 
-## 输入
-- `subject`: 公告主题
-- `audience`: 受众（用户 / 团队 / 公众）
-- `tone`: 语气（正式 / 轻松，默认：正式）
+## Input
+- `subject`: Announcement topic
+- `audience`: Target audience (users / team / public)
+- `tone`: Tone (formal / casual, default: formal)
 
-## 执行步骤
-1. 提炼核心信息：什么变了、为什么、影响谁
-2. 按倒金字塔结构组织：结论先行，细节在后
-3. 撰写正文，控制在 500 字以内
-4. 添加行动项或时间线（如适用）
-5. 写入文件并返回路径
+## Execution Steps
+1. Distill core message: what changed, why, who is affected
+2. Organize in inverted pyramid: conclusion first, details after
+3. Write body text, keep under 500 words
+4. Add action items or timeline (if applicable)
+5. Write to file and return path
 
-## 质量标准
-- 首段包含全部关键信息
-- 影响范围和时间节点明确
-- 有明确的下一步行动指引
+## Quality Standards
+- First paragraph contains all key information
+- Impact scope and timeline are explicit
+- Clear next-step guidance included
 
-## 常见失败模式
-- 埋没关键信息在细节中
-- 缺少生效时间或影响说明
-- 语气与受众不匹配
+## Common Failure Modes
+- Burying key information in details
+- Missing effective date or impact description
+- Tone mismatch with audience
 
-## 输出格式
-Markdown 文件，结构：标题、摘要段、详情、行动项、联系方式。
+## Output Format
+Markdown file, structured as: title, summary paragraph, details, action items, contact info.

@@ -12,7 +12,7 @@ Tsinghua graduate, researcher. Output priority: GitHub + arXiv → blog → soci
 
 ## Task Preferences
 
-Telegram: short, direct, specific. State what happened and why it matters. No enthusiasm inflation. GitHub releases: technical, changelog conventions. Blog intros: conclusion-first, no warmup paragraphs. Schedule non-urgent pushes around coach's exercise windows.
+Telegram: short, direct, specific. State what happened and why it matters. No enthusiasm inflation. GitHub releases: technical, changelog conventions. Blog intros: conclusion-first, no warmup paragraphs. Schedule non-urgent pushes around navigator's exercise windows.
 
 ## Style: Telegram/Social
 

@@ -149,9 +149,9 @@ daemon 定义四个场景，区分依据是**用户与 daemon 之间的主导权
 | 场景 | 关系动态 | 用户的认知模式 |
 |---|---|---|
 | copilot | 用户主导，daemon 执行+建议 | 指挥、决策、关注结果 |
-| mentor | daemon 引导，用户学习 | 学习、探索、接受评价 |
-| coach | daemon 规划，用户表现 | 执行、突破、关注表现 |
-| operator | daemon 自主，用户监督 | 监督、审视、关注策略 |
+| instructor | daemon 引导，用户学习 | 学习、探索、接受评价 |
+| navigator | daemon 规划，用户表现 | 执行、突破、关注表现 |
+| autopilot | daemon 自主，用户监督 | 监督、审视、关注策略 |
 
 FINAL 规则：
 - 场景定义关系和氛围，不定义"做什么"。任何场景里什么都可能发生，但权力关系始终由场景决定。
@@ -159,7 +159,7 @@ FINAL 规则：
 - 每个场景通过 SOUL.md 定义关系动态，通过 SKILL.md 定义工作方法。同一套执行基础设施（OC + L2 agent + MCP），不同的上层行为。
 - 这个设计的理论基础是 situated cognition（情境认知）：认知不是脱离环境的抽象过程，而是被情境塑造的。离散的场景比连续的自主性滑块更符合人类认知方式。
 
-**与市面角色扮演 chatbot 的本质区别**：市面角色扮演产品（Character.ai 等）做的是**表演层的角色扮演**——换名字、换语气、换人设，但底层机制一样。daemon 的场景设计不同：**场景不只改变 agent 怎么说话，而是改变整个系统怎么运作。** mentor 场景下系统会布置作业、创建文档、等待用户提交、评估产出；coach 场景下系统会设定量化目标、定期拉取数据、生成表现分析；operator 场景下系统会自主行动、定期汇报。从 prompt 到 session 到 Job 到 Temporal workflow，整条链路都跟着场景变。这是"表演层角色扮演"和"架构层场景设计"的本质区别。
+**与市面角色扮演 chatbot 的本质区别**：市面角色扮演产品（Character.ai 等）做的是**表演层的角色扮演**——换名字、换语气、换人设，但底层机制一样。daemon 的场景设计不同：**场景不只改变 agent 怎么说话，而是改变整个系统怎么运作。** instructor 场景下系统会布置作业、创建文档、等待用户提交、评估产出；navigator 场景下系统会设定量化目标、定期拉取数据、生成表现分析；autopilot 场景下系统会自主行动、定期汇报。从 prompt 到 session 到 Job 到 Temporal workflow，整条链路都跟着场景变。这是"表演层角色扮演"和"架构层场景设计"的本质区别。
 
 ---
 
@@ -280,9 +280,9 @@ L1 agent 按场景划分，每个场景定义用户与 daemon 之间的主导权
 | agent | 场景 | 关系动态 | 用户认知模式 | Mem0 积累内容 |
 |---|---|---|---|---|
 | `copilot` | 日常工作 | 用户主导，daemon 执行+建议 | 指挥、决策、关注结果 | 工作偏好、项目上下文、规划经验 |
-| `mentor` | 学习指导 | daemon 引导，用户学习 | 学习、探索、接受评价 | 学习进度、理解水平、教学经验、英文写作纠正记录 |
-| `coach` | 计划表现 | daemon 规划，用户执行 | 执行、突破、关注表现 | 训练数据、计划执行历史 |
-| `operator` | 持续运营 | daemon 自主，用户监督 | 监督、审视、关注策略 | 运营策略、平台经验 |
+| `instructor` | 学习指导 | daemon 引导，用户学习 | 学习、探索、接受评价 | 学习进度、理解水平、教学经验、英文写作纠正记录 |
+| `navigator` | 计划表现 | daemon 规划，用户执行 | 执行、突破、关注表现 | 训练数据、计划执行历史 |
+| `autopilot` | 持续运营 | daemon 自主，用户监督 | 监督、审视、关注策略 | 运营策略、平台经验 |
 
 L1 agent 特性：
 - 4 个 L1 agent 并列，没有谁是"主"。用户自己选择去哪个场景。
@@ -439,12 +439,12 @@ FINAL 规则：
 ┌────────────────────────────────────────────────────────────────────┐
 │                          用户界面                                    │
 │  桌面客户端（Tauri）：4 个场景对话 + 场景 panel                      │
-│  Telegram：4 个独立 bot DM（copilot / mentor / coach / operator）   │
+│  Telegram：4 个独立 bot DM（copilot / instructor / navigator / autopilot）   │
 └──────────┬──────────────────────────────┬──────────────────────────┘
            │ WebSocket × 4                │ Telegram API × 4
 ┌──────────▼──────────────────────────────▼──────────────────────────┐
 │                      daemon API（FastAPI）                           │
-│  L1 OC session × 4（copilot / mentor / coach / operator）          │
+│  L1 OC session × 4（copilot / instructor / navigator / autopilot）          │
 │  持久 session，daemon 管理压缩                                       │
 │  + Plane webhook handler + 胶水 API                                 │
 │  L1 输出 structured action → 创建 Temporal workflow                 │
@@ -664,13 +664,13 @@ Temporal Schedule（定时触发 InfoPullWorkflow）
 
 **订阅管理**：用户在任何场景对话中都可以管理订阅（"帮我关注这个库的 release"），订阅存入 PG 表 `info_subscriptions`（全局，不按场景分区）。
 
-**4 个 L1 如何使用信息**取决于各自的关系动态，不取决于信息分类。同一条信息（比如"依赖库有 breaking change"），copilot 以协作者身份提出，mentor 借机教学，coach 关注计划影响，operator 可能已自动处理。
+**4 个 L1 如何使用信息**取决于各自的关系动态，不取决于信息分类。同一条信息（比如"依赖库有 breaking change"），copilot 以协作者身份提出，instructor 借机教学，navigator 关注计划影响，autopilot 可能已自动处理。
 
 **文献管理**：Zotero（元数据管理：收藏/标注/分组/引用格式）+ RAGFlow（全文检索：PDF 解析/语义搜索/跨文献检索），两者互补，全局基础设施，不按场景分区。
 
 **博客发布基础设施**：writer 产出 Markdown → publisher 跨平台发布。渠道优先级：① Hugo + GitHub Pages（canonical，完全所有权）② Dev.to（Forem API v1，技术社区）③ Hashnode（GraphQL API，开发者社区）。publisher 写一次 Markdown，自动适配各平台格式和 front matter。
 
-**英文写作辅助**：mentor 场景集成 LanguageTool（self-hosted Docker，零 API 成本，无限调用）。用户每次英文输出（论文、博客、GitHub）均经过 LanguageTool 检查语法/风格/学术用词 → mentor 解释错误模式 → Mem0 记录用户常犯错误 → 逐步减少同类问题。与 Stage 0 采访确认的"渐进式英文浸泡"策略配合。
+**英文写作辅助**：instructor 场景集成 LanguageTool（self-hosted Docker，零 API 成本，无限调用）。用户每次英文输出（论文、博客、GitHub）均经过 LanguageTool 检查语法/风格/学术用词 → instructor 解释错误模式 → Mem0 记录用户常犯错误 → 逐步减少同类问题。与 Stage 0 采访确认的"渐进式英文浸泡"策略配合。
 
 ### 2.8 模型策略
 
@@ -678,8 +678,8 @@ Temporal Schedule（定时触发 InfoPullWorkflow）
 
 | 层级 | Agent | 默认模型 | 理由 |
 |---|---|---|---|
-| L1 | copilot / mentor / coach / operator（对话） | MiniMax M2.5（fast） | 对话快响应，用户在等，Coding Plan 包月 |
-| L1 | copilot / mentor / coach / operator（routing） | Qwen3.5-Plus（analysis） | 规划质量优先，routing 是执行链起点，选错全白做 |
+| L1 | copilot / instructor / navigator / autopilot（对话） | MiniMax M2.5（fast） | 对话快响应，用户在等，Coding Plan 包月 |
+| L1 | copilot / instructor / navigator / autopilot（routing） | Qwen3.5-Plus（analysis） | 规划质量优先，routing 是执行链起点，选错全白做 |
 | L2 | researcher | Qwen3.5-Plus（analysis） | 搜索+深度分析，强推理 |
 | L2 | engineer | Qwen3.5-Plus（analysis） | 代码质量需要强推理，Step 异步执行不需要秒回 |
 | L2 | writer | GLM-5（creative） | 写作人感最强 |
@@ -1212,10 +1212,10 @@ Plane 是后端数据基础设施，不是用户产品。用户不需要知道 P
 
 | 场景 | panel 内容（示例） |
 |---|---|
-| mentor | 当前学习计划、assignment 列表（待交/已交/已评）、学习进度 |
-| coach | 本周计划执行率、最近训练数据摘要、下次评估时间 |
+| instructor | 当前学习计划、assignment 列表（待交/已交/已评）、学习进度 |
+| navigator | 本周计划执行率、最近训练数据摘要、下次评估时间 |
 | copilot | 活跃 Project 列表、进行中的 Task 状态、最近产出 |
-| operator | 各平台运营数据、待审内容、自动发布日志 |
+| autopilot | 各平台运营数据、待审内容、自动发布日志 |
 
 外部工具的打开方式（**原生应用调起，用户自行管理窗口布局**）：
 
@@ -1242,7 +1242,7 @@ daemon 打开目标应用/文件后，自动将其窗口定位为：左边距 15
 关键设计决策：
 - **客户端不替代专业工具**，只做入口和聚合。用户在 Google Docs 里写作业，不在客户端里写。
 - **客户端不内嵌外部网页**，通过系统浏览器打开，窗口布局交给用户和 Stage Manager。
-- **assignment 系统是 panel 功能**，不是独立应用。mentor panel 显示作业列表和状态，提交入口指向外部工具（Google Docs / GitHub），daemon 通过 webhook 或轮询感知提交。
+- **assignment 系统是 panel 功能**，不是独立应用。instructor panel 显示作业列表和状态，提交入口指向外部工具（Google Docs / GitHub），daemon 通过 webhook 或轮询感知提交。
 - **对话和展示严格分离**。对话里不出现链接和富内容，该看什么、在哪看，用户和 agent 心里都清楚。
 
 ### 4.3 Draft 语义与转正流程
@@ -1271,7 +1271,7 @@ FINAL 规则：自动任务也必须先形成 Draft，除非是明确的 `route=
 
 **FINAL 规则：场景对话流是用户看到的主流，Task 活动流降为后台数据。**
 
-用户体验 = "和 mentor 聊天"，不是"查看 Task A 的活动记录"。一次对话可能跨多个 Project/Task，甚至纯闲聊。L2 执行结果由 L1 在对话里自然汇报，用户不直接看 Task 活动流。
+用户体验 = "和 instructor 聊天"，不是"查看 Task A 的活动记录"。一次对话可能跨多个 Project/Task，甚至纯闲聊。L2 执行结果由 L1 在对话里自然汇报，用户不直接看 Task 活动流。
 
 **场景对话流**（面向用户）：
 - 存储在 `conversation_messages` PG 表（见 §3.3.1）
@@ -1332,7 +1332,7 @@ FINAL 规则：daemon API 面向自建客户端，按场景路由，提供以下
 
 | 类别 | 端点 | 说明 |
 |---|---|---|
-| 对话 | `POST /scenes/{scene}/chat` | 场景对话输入（scene = copilot/mentor/coach/operator） |
+| 对话 | `POST /scenes/{scene}/chat` | 场景对话输入（scene = copilot/instructor/navigator/autopilot） |
 | 对话 | `GET /scenes/{scene}/chat/stream` (WebSocket) | 场景实时对话流 |
 | 场景 | `GET /scenes/{scene}/panel` | 场景 panel 数据 |
 | 活动流 | `GET /tasks/{id}/activity` | Task 活动流（后台，面向 CC/admin） |
@@ -1367,7 +1367,7 @@ FINAL 规则：daemon API 面向自建客户端，按场景路由，提供以下
 
 **FINAL 规则：4 个独立 Bot Token，4 个独立 DM。**
 
-用户在 Telegram 里看到 4 个联系人（copilot / mentor / coach / operator），各自 DM。场景之间无协作关系，不放在同一个群里。
+用户在 Telegram 里看到 4 个联系人（copilot / instructor / navigator / autopilot），各自 DM。场景之间无协作关系，不放在同一个群里。
 
 **定位：信箱 + 对讲机**（DD-79）。Telegram 不是桌面客户端的镜像，是 daemon 的对外通知渠道和用户的快捷回复入口。
 
@@ -1519,7 +1519,7 @@ FINAL 规则：Mem0 只做按需检索，不做全量注入。
 
 | 层级 | agent | 默认检索重点 | 约 token |
 |---|---|---|---|
-| L1 | copilot / mentor / coach / operator | 规划经验、历史 DAG 模式、场景上下文 | ~100-200 |
+| L1 | copilot / instructor / navigator / autopilot | 规划经验、历史 DAG 模式、场景上下文 | ~100-200 |
 | L2 | researcher | 搜索策略、分析框架 | ~50-100 |
 | L2 | engineer | 技术偏好、代码风格 | ~50-100 |
 | L2 | writer | 写作风格 + 语言 + task_type | ~100-200 |
@@ -1544,17 +1544,17 @@ FINAL 规则：Mem0 只做按需检索，不做全量注入。
 | Unpaywall API | DOI→免费全文 PDF（100K/天） | MCP tool → researcher |
 | Firecrawl | 网页 → 干净 Markdown（省 80%+ token） | Docker 自部署，MCP tool → L2 agent |
 | RAGFlow | PDF/文档 → 语义分块 → 向量检索 | Docker 服务 |
-| LanguageTool | 英文语法/风格检查（self-hosted，无限调用） | Docker 自部署，MCP tool → mentor |
+| LanguageTool | 英文语法/风格检查（self-hosted，无限调用） | Docker 自部署，MCP tool → instructor |
 | Dev.to + Hashnode | 博客跨平台发布（REST + GraphQL） | MCP tool → publisher |
-| OpenWeatherMap | 户外运动天气预报（免费 1000 req/天） | MCP tool → coach/operator |
-| Intervals.icu | 运动数据/训练计划/体能曲线（100+ endpoint） | MCP tool → coach |
+| OpenWeatherMap | 户外运动天气预报（免费 1000 req/天） | MCP tool → navigator/autopilot |
+| Intervals.icu | 运动数据/训练计划/体能曲线（100+ endpoint） | MCP tool → navigator |
 | Kroki | 统一图表 API（Mermaid/PlantUML/D2/Vega 等 20+ 格式） | MCP tool → researcher/writer |
 | ECharts | 交互式数据可视化图表（Apache 官方 MCP） | MCP tool → researcher/writer |
-| Strava API | 运动数据原始获取（OAuth 2.0，200 req/15min） | MCP tool → coach |
+| Strava API | 运动数据原始获取（OAuth 2.0，200 req/15min） | MCP tool → navigator |
 | DBLP / Academix | CS 论文权威检索 / 统一学术搜索聚合 | MCP tool → researcher |
 | HuggingFace Hub | 模型/数据集/Spaces 搜索、trending 监控 | MCP tool → researcher/engineer |
-| Libraries.io | 开源依赖监控（40M+ 包，跨 NPM/PyPI/Cargo 等） | MCP tool → engineer/operator |
-| LeetCode MCP | 题库搜索（tag/难度）+ 题目详情 + 提交历史，mentor 主导出题 | MCP tool → mentor |
+| Libraries.io | 开源依赖监控（40M+ 包，跨 NPM/PyPI/Cargo 等） | MCP tool → engineer/autopilot |
+| LeetCode MCP | 题库搜索（tag/难度）+ 题目详情 + 提交历史，instructor 主导出题 | MCP tool → instructor |
 
 **学术搜索互补策略**：researcher 搜索学术文献时组合调用四个源——Semantic Scholar（引用关系图+推荐）+ OpenAlex（覆盖最广 2.5 亿篇）+ CrossRef（DOI 元数据权威）+ CORE（开放获取全文 PDF）。四个源覆盖不同维度，不选其一。Academix MCP（npm 包）可作为聚合入口一次搜五个源。Elicit 无公开 API，仅作为用户浏览器工具使用，不纳入 MCP。
 
@@ -1620,10 +1620,10 @@ FINAL 规则：检索时先查同一 `project_id` 范围，再回退到全局；
 | researcher | 文献笔记、分析报告 |
 | writer | 文章草稿、博客 |
 | engineer | 技术文档（用户项目相关） |
-| mentor | 学习笔记、作业反馈 |
+| instructor | 学习笔记、作业反馈 |
 
 **不写入 vault**：
-- admin / operator 系统产出 → `state/background_reports/`（本地归档清理）
+- admin / autopilot 系统产出 → `state/background_reports/`（本地归档清理）
 - 代码文件 → GitHub
 - PDF 论文 → Zotero library
 - 大文件/临时产物 → MinIO
@@ -1727,13 +1727,13 @@ Mem0 中的记忆随使用不断积累，会出现碎片化、重复、矛盾、
 | 触发条件 | 动作 | 执行者 | 实现方式 |
 |---|---|---|---|
 | Engineer build 周期结束（检测到 copilot 场景连续多个 engineer step 完成） | 提醒用户做 literature mapping | copilot L1 | L1 在对话中主动提出 |
-| 接近 CFP deadline（T-8 周） | 提醒启动论文写作 | copilot/mentor L1 | Temporal Schedule 检查 mldeadlines 日历 |
-| InfoPull 发现新论文（符合用户关注领域） | 推送到 Telegram + 存入 Zotero | operator → publisher | InfoPullWorkflow → notify_urgent |
-| 每天固定时间 | 日报推送（当日巡检摘要，按领域分类） | operator | Temporal Schedule → InfoPullWorkflow triage → Telegram |
-| 每周 | 推荐 2-3 篇论文 + 运动周报 + 项目进度 | mentor/coach/copilot | BackgroundMaintenanceWorkflow → system_snapshot → 各 L1 推送 |
-| Writer/publisher 产出英文内容后 | LanguageTool 检查 + mentor 解释错误模式 | mentor | Post-step hook：检测英文输出 → LanguageTool MCP → mentor session 解读 |
+| 接近 CFP deadline（T-8 周） | 提醒启动论文写作 | copilot/instructor L1 | Temporal Schedule 检查 mldeadlines 日历 |
+| InfoPull 发现新论文（符合用户关注领域） | 推送到 Telegram + 存入 Zotero | autopilot → publisher | InfoPullWorkflow → notify_urgent |
+| 每天固定时间 | 日报推送（当日巡检摘要，按领域分类） | autopilot | Temporal Schedule → InfoPullWorkflow triage → Telegram |
+| 每周 | 推荐 2-3 篇论文 + 运动周报 + 项目进度 | instructor/navigator/copilot | BackgroundMaintenanceWorkflow → system_snapshot → 各 L1 推送 |
+| Writer/publisher 产出英文内容后 | LanguageTool 检查 + instructor 解释错误模式 | instructor | Post-step hook：检测英文输出 → LanguageTool MCP → instructor session 解读 |
 | 完成一个 build + write 周期 | 提醒更新 GitHub profile + 写技术博客 | copilot L1 | L1 在对话中主动提出 |
-| 代码 PR 提交 | mentor 引导用户做 code review（教学目的，不是代替用户 review） | mentor L1 | GitHub webhook 触发 → mentor session |
+| 代码 PR 提交 | instructor 引导用户做 code review（教学目的，不是代替用户 review） | instructor L1 | GitHub webhook 触发 → instructor session |
 
 **三层推送模型**（来源：Stage 0 Interview §3）：
 
@@ -1751,7 +1751,7 @@ Mem0 中的记忆随使用不断积累，会出现碎片化、重复、矛盾、
 | 用户输入不限语言 | L1 接受中文提问，英文回复 |
 | 不懂就问 | 用中文解释具体概念，不整篇翻译 |
 | 所有对外产出从第一天起全英文 | publisher 强制检查语言 |
-| 英文写作经 LanguageTool 检查 | mentor 场景，每次输出后 LanguageTool MCP → 解释错误模式 → Mem0 记录常犯错误 |
+| 英文写作经 LanguageTool 检查 | instructor 场景，每次输出后 LanguageTool MCP → 解释错误模式 → Mem0 记录常犯错误 |
 
 ---
 
@@ -1806,7 +1806,7 @@ FINAL 规则：
 | 组件 | 说明 |
 |---|---|
 | OpenClaw | Agent 编排平台 |
-| 10 agents | L1: copilot / mentor / coach / operator; L2: researcher / engineer / writer / reviewer / publisher / admin |
+| 10 agents | L1: copilot / instructor / navigator / autopilot; L2: researcher / engineer / writer / reviewer / publisher / admin |
 | L1 Session | 持久 session，API 进程管理，daemon 控制压缩 |
 | L2 Session | 1 Step = 1 Session，生命周期 = Step 级别 |
 | 并发配置 | `maxChildrenPerAgent`（默认 5）/ `maxConcurrent`（默认 8），暖机时校准 |
@@ -2156,9 +2156,9 @@ FINAL 规则：
 | 场景 | 测试什么 | 失败标志 |
 |---|---|---|
 | copilot | 用户主导，daemon 执行+建议 | daemon 抢决策、不等用户确认方向就行动 |
-| mentor | daemon 引导，用户学习 | daemon 直接给答案而不引导思考、跳过教学过程 |
-| coach | daemon 规划，用户执行 | daemon 等用户来安排、不主动生成计划 |
-| operator | daemon 自主，用户监督 | daemon 事事请示、不自主行动 |
+| instructor | daemon 引导，用户学习 | daemon 直接给答案而不引导思考、跳过教学过程 |
+| navigator | daemon 规划，用户执行 | daemon 等用户来安排、不主动生成计划 |
+| autopilot | daemon 自主，用户监督 | daemon 事事请示、不自主行动 |
 
 **SOP 工作流验证**（系统层）：
 
@@ -2166,8 +2166,8 @@ FINAL 规则：
 |---|---|---|
 | Build → Lit mapping | copilot 场景连续完成 engineer steps | 自动提醒做 literature mapping |
 | 日报推送 | 每天固定时间 | Telegram 收到按领域分类的摘要 |
-| 英文纠正 | 英文产出完成后 | LanguageTool 自动检查 + mentor 解释 |
-| Code review 教学 | PR 提交 | mentor 引导用户做 review，不代替 |
+| 英文纠正 | 英文产出完成后 | LanguageTool 自动检查 + instructor 解释 |
+| Code review 教学 | PR 提交 | instructor 引导用户做 review，不代替 |
 
 **组件层指标**（前置条件，不过关则系统层不测）：
 
@@ -2780,7 +2780,7 @@ researcher 搜索前沿 → admin 评估差距 → engineer 起草新版 skill
 
 **agent 专属哲学**（写入各 agent 自己的 SOUL.md）：
 - L1 copilot：规划的审慎性——宁可少做不可乱做，不确定时选保守路径
-- L1 mentor/coach/operator：各场景侧重不同，但共享规划审慎性原则
+- L1 instructor/navigator/autopilot：各场景侧重不同，但共享规划审慎性原则
 - researcher：知识的可靠性——多源交叉验证，标注置信度，区分事实与观点
 - engineer：工程的简洁性——最简实现，不过度设计，可读性优先
 - writer：写作的真实性——准确表达而非华丽堆砌，风格服务于内容

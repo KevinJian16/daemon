@@ -6,9 +6,9 @@
   "agent_model_map": {
     "_comment": "Per-agent model assignment for Step execution.",
     "copilot": "fast",
-    "mentor": "fast",
-    "coach": "fast",
-    "operator": "fast",
+    "instructor": "fast",
+    "navigator": "fast",
+    "autopilot": "fast",
     "researcher": "analysis",
     "engineer": "analysis",
     "writer": "creative",

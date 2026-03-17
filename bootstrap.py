@@ -1,6 +1,6 @@
 """Cold-start bootstrap: validate OpenClaw environment, ensure directory structure.
 
-New architecture (7th draft): Psyche/Retinue/Ledger replaced by Mem0/OC native/PG.
+New architecture (7th draft): Mem0/OC native sessions/PG replace old subsystems.
 Bootstrap now focuses on:
   1. OpenClaw config normalization (10 agents: 4 L1 + 6 L2)
   2. Directory structure creation
@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 # New architecture: 4 L1 + 6 L2 agents
-L1_AGENTS = ["copilot", "mentor", "coach", "operator"]
+L1_AGENTS = ["copilot", "instructor", "navigator", "autopilot"]
 L2_AGENTS = ["researcher", "engineer", "writer", "reviewer", "publisher", "admin"]
 ALL_AGENTS = L1_AGENTS + L2_AGENTS
 

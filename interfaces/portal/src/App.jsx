@@ -22,16 +22,16 @@ import AppSidebarFooter from "./components/AppSidebarFooter";
 // Source: .ref/SYSTEM_DESIGN.md §0 lines 135-140
 const SCENES = [
   { id: "copilot", label: "Copilot", desc: "You lead, Daemon executes", color: "var(--scene-copilot)" },
-  { id: "mentor", label: "Mentor", desc: "Daemon guides, you learn", color: "var(--scene-mentor)" },
-  { id: "coach", label: "Coach", desc: "Daemon plans, you perform", color: "var(--scene-coach)" },
-  { id: "operator", label: "Operator", desc: "Daemon acts, you oversee", color: "var(--scene-operator)" },
+  { id: "instructor", label: "Instructor", desc: "Daemon guides, you learn", color: "var(--scene-instructor)" },
+  { id: "navigator", label: "Navigator", desc: "Daemon plans, you perform", color: "var(--scene-navigator)" },
+  { id: "autopilot", label: "Autopilot", desc: "Daemon acts, you oversee", color: "var(--scene-autopilot)" },
 ];
 
 const SCENE_GREETINGS = {
   copilot: "What are we working on?",
-  mentor: "What would you like to explore?",
-  coach: "How's it going today?",
-  operator: "Everything's running. Anything to review?",
+  instructor: "What would you like to explore?",
+  navigator: "How's it going today?",
+  autopilot: "Everything's running. Anything to review?",
 };
 
 // Half-screen threshold: collapse sidebars when window is narrow (split mode)

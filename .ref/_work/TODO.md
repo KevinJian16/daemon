@@ -34,7 +34,7 @@
 **Fix**: Implement 5 methods in `services/store.py`:
 - `list_projects()` → `SELECT * FROM daemon_tasks WHERE task_type='project' AND status!='closed'`
 - `list_active_tasks(project_id?)` → `SELECT * FROM daemon_tasks WHERE status IN ('open','in_progress')`
-- `list_tasks_by_source(source)` → filter by `source` column (mentor assignments etc.)
+- `list_tasks_by_source(source)` → filter by `source` column (instructor assignments etc.)
 - `list_jobs_by_source(source)` → filter jobs by source metadata
 - `get_job_metrics(scene, days=7)` → aggregate job success/fail/duration stats
 **Files**: `services/store.py`
@@ -317,10 +317,10 @@ All activities use Ollama 32b (local-heavy). Add schedule to `config/schedules.j
 - `researcher/cfp_tracking` — monitor conference deadlines
 - `researcher/literature_mapping` — systematic lit review after build cycle
 - `researcher/peer_review_simulation` — simulate reviewer critique
-- `mentor/code_review_teaching` — teach user to do code review (not just do it for them)
-- `mentor/english_correction` — LanguageTool + error pattern tracking
+- `instructor/code_review_teaching` — teach user to do code review (not just do it for them)
+- `instructor/english_correction` — LanguageTool + error pattern tracking
 - `writer/arxiv_paper` — arXiv-specific paper structure
-- `coach/exercise_plan` — weekly plan generation from Strava/intervals.icu data
+- `navigator/exercise_plan` — weekly plan generation from Strava/intervals.icu data
 - `copilot/build_cycle_reminder` — detect build completion, trigger lit mapping
 - `publisher/blog_cross_post` — cross-post to Dev.to + Hashnode with canonical URL
 **Files**: `openclaw/workspace/*/skills/*/SKILL.md` (new skills)
@@ -338,11 +338,11 @@ All activities use Ollama 32b (local-heavy). Add schedule to `config/schedules.j
    - Files: `temporal/activities_infopull.py`, `interfaces/telegram/adapter.py`
 4. **周报推送**：BackgroundMaintenanceWorkflow system_snapshot → 各 L1 场景生成周报 → Telegram
    - Files: `temporal/activities_background.py`
-5. **英文 LanguageTool post-hook**：writer/publisher 英文产出后自动触发 LanguageTool MCP 检查 → mentor 解读
+5. **英文 LanguageTool post-hook**：writer/publisher 英文产出后自动触发 LanguageTool MCP 检查 → instructor 解读
    - Files: `temporal/activities_exec.py`（post-step hook）
 6. **GitHub profile + 博客提醒**：copilot L1 检测 build+write 周期完成 → 提醒
    - Files: `services/session_manager.py`
-7. **Code review 教学**：GitHub webhook 收到 PR → mentor L1 session 引导用户 review
+7. **Code review 教学**：GitHub webhook 收到 PR → instructor L1 session 引导用户 review
    - Files: `services/plane_webhook.py` or new GitHub webhook handler
 8. **三层推送模型**：实时（0-2/天 Telegram 即时）+ 日报（每天固定时间）+ 周报（每周趋势分析 Telegram + Obsidian）
    - Depends on: H8 InfoPull + H7 Background Maintenance + H9 Telegram

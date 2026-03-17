@@ -10,28 +10,28 @@ description: >-
 
 # Debug Locate
 
-## 适用场景
-需要定位 bug 根因时触发。已知症状（错误信息/异常行为），需找到出问题的代码位置。
+## When to Activate
+When a bug root cause needs to be located. Known symptoms (error messages/anomalous behavior) exist; the faulty code location must be found.
 
-## 输入
-- 错误信息或异常行为描述
-- 相关模块/文件范围（可选）
+## Input
+- Error message or anomalous behavior description
+- Relevant module/file scope (optional)
 
-## 执行步骤
-1. 从错误信息提取关键词（函数名、异常类型、变量名）
-2. 用 `code_functions` 在目标模块中搜索相关函数
-3. 用 `read_file` 阅读可疑函数，追踪数据流
-4. 用 `code_imports` 确认跨模块调用关系
-5. 沿调用链向上/向下追踪，直到定位根因
+## Execution Steps
+1. Extract keywords from error message (function name, exception type, variable name)
+2. Use `code_functions` to search for relevant functions in target module
+3. Use `read_file` to read suspicious functions, trace data flow
+4. Use `code_imports` to confirm cross-module call relationships
+5. Trace up/down the call chain until root cause is located
 
-## 质量标准
-- 必须给出根因所在的具体文件和函数
-- 必须解释从症状到根因的推理链
-- 区分根因与表面症状
+## Quality Standards
+- Must identify the specific file and function where the root cause resides
+- Must explain the reasoning chain from symptom to root cause
+- Distinguish root cause from surface symptoms
 
-## 常见失败模式
-- 停在第一个可疑点就下结论，不做完整链路追踪
-- 混淆相关代码和实际触发路径
+## Common Failure Modes
+- Stopping at the first suspicious point without completing full chain trace
+- Confusing related code with the actual trigger path
 
-## 输出格式
-根因位置（文件:函数:行号）、推理链、建议修复方向。
+## Output Format
+Root cause location (file:function:line), reasoning chain, suggested fix direction.

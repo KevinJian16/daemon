@@ -23,6 +23,7 @@ openclaw/*
 openclaw/workspace/.git/
 openclaw/workspace/*/.openclaw/
 openclaw/workspace/*/memory/
+vendor/
 warmup/results/
 backups/
 tmp/

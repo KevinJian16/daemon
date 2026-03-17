@@ -46,30 +46,30 @@
     },
     {
       "id": "S03",
-      "title": "Mentor: Guided learning (not direct answers)",
-      "scene": "mentor",
+      "title": "Instructor: Guided learning (not direct answers)",
+      "scene": "instructor",
       "sop_workflow": "learning_plan → assignment → review",
-      "description": "Ask mentor 'teach me about Raft consensus'. Verify mentor creates a learning plan, gives assignments, and guides through understanding — does NOT just explain Raft directly.",
-      "scene_check": "Mentor GUIDES, not TELLS. Should ask questions, give hints, point to resources. Should NOT dump a complete explanation.",
+      "description": "Ask instructor 'teach me about Raft consensus'. Verify instructor creates a learning plan, gives assignments, and guides through understanding — does NOT just explain Raft directly.",
+      "scene_check": "Instructor GUIDES, not TELLS. Should ask questions, give hints, point to resources. Should NOT dump a complete explanation.",
       "expected_agents": ["researcher", "writer"],
       "pass_criteria": [
-        "Mentor asks what user already knows before teaching",
+        "Instructor asks what user already knows before teaching",
         "Learning plan has progressive milestones",
         "Includes hands-on assignment (not just reading)",
         "Resources are tiered by depth",
-        "Mentor waits for user response at each checkpoint"
+        "Instructor waits for user response at each checkpoint"
       ]
     },
     {
       "id": "S04",
-      "title": "Mentor: Code review teaching",
-      "scene": "mentor",
+      "title": "Instructor: Code review teaching",
+      "scene": "instructor",
       "sop_workflow": "code_review_teaching",
-      "description": "Tell mentor 'I submitted a PR, can you help me review it?' Verify mentor teaches user HOW to review, not just does the review for them.",
-      "scene_check": "Mentor teaches methodology (3-pass method, comment tags), does not produce the review directly.",
+      "description": "Tell instructor 'I submitted a PR, can you help me review it?' Verify instructor teaches user HOW to review, not just does the review for them.",
+      "scene_check": "Instructor teaches methodology (3-pass method, comment tags), does not produce the review directly.",
       "expected_agents": ["engineer"],
       "pass_criteria": [
-        "Mentor explains review methodology before reviewing",
+        "Instructor explains review methodology before reviewing",
         "Asks user to try reviewing a section first",
         "Provides feedback on user's review attempt",
         "Does not produce the final review comment for user to copy-paste"
@@ -77,70 +77,70 @@
     },
     {
       "id": "S05",
-      "title": "Mentor: English correction post-hook",
-      "scene": "mentor",
+      "title": "Instructor: English correction post-hook",
+      "scene": "instructor",
       "sop_workflow": "english_correction",
-      "description": "Submit an English text with deliberate grammar errors to mentor. Verify LanguageTool check triggers and mentor explains error patterns.",
-      "scene_check": "Mentor explains WHY the errors are wrong, not just what the correction is.",
+      "description": "Submit an English text with deliberate grammar errors to instructor. Verify LanguageTool check triggers and instructor explains error patterns.",
+      "scene_check": "Instructor explains WHY the errors are wrong, not just what the correction is.",
       "expected_agents": [],
       "pass_criteria": [
         "LanguageTool MCP called automatically",
         "Errors identified with explanations of underlying grammar rules",
-        "Mentor tracks error pattern in Mem0 for future reference",
+        "Instructor tracks error pattern in Mem0 for future reference",
         "Does not just return corrected text — teaches"
       ]
     },
     {
       "id": "S06",
-      "title": "Coach: Proactive weekly plan",
-      "scene": "coach",
+      "title": "Navigator: Proactive weekly plan",
+      "scene": "navigator",
       "sop_workflow": "exercise_plan + weekly_review",
-      "description": "Enter coach scene. Verify coach proactively generates a weekly plan without being asked, based on recent Strava/intervals.icu data.",
-      "scene_check": "Coach PLANS and PROPOSES, does not wait for user to ask. User executes.",
+      "description": "Enter navigator scene. Verify navigator proactively generates a weekly plan without being asked, based on recent Strava/intervals.icu data.",
+      "scene_check": "Navigator PLANS and PROPOSES, does not wait for user to ask. User executes.",
       "expected_agents": [],
       "pass_criteria": [
-        "Coach presents plan within 2 turns of entering scene",
+        "Navigator presents plan within 2 turns of entering scene",
         "Plan is based on recent data (not generic)",
-        "Coach sets quantitative targets",
-        "Coach does not ask 'what would you like to do?' — it tells"
+        "Navigator sets quantitative targets",
+        "Navigator does not ask 'what would you like to do?' — it tells"
       ]
     },
     {
       "id": "S07",
-      "title": "Coach: Push strategy linked to exercise schedule",
-      "scene": "coach",
+      "title": "Navigator: Push strategy linked to exercise schedule",
+      "scene": "navigator",
       "sop_workflow": "push_strategy_sync",
-      "description": "Verify that daemon's push timing adapts to the user's exercise schedule (from interview §3: push should sync with coach-managed exercise plan).",
-      "scene_check": "Coach coordinates info push timing, not just exercise.",
+      "description": "Verify that daemon's push timing adapts to the user's exercise schedule (from interview §3: push should sync with navigator-managed exercise plan).",
+      "scene_check": "Navigator coordinates info push timing, not just exercise.",
       "expected_agents": [],
       "pass_criteria": [
-        "Coach knows today's exercise schedule",
+        "Navigator knows today's exercise schedule",
         "Daily digest timing avoids exercise windows",
-        "Coach can explain why a particular time was chosen"
+        "Navigator can explain why a particular time was chosen"
       ]
     },
     {
       "id": "S08",
-      "title": "Operator: Autonomous daily digest",
-      "scene": "operator",
+      "title": "Autopilot: Autonomous daily digest",
+      "scene": "autopilot",
       "sop_workflow": "daily_digest",
-      "description": "Verify operator autonomously produces and pushes a daily digest to Telegram without user prompting. Check the digest is categorized by domain.",
-      "scene_check": "Operator ACTS autonomously. Does not ask for permission or confirmation.",
+      "description": "Verify autopilot autonomously produces and pushes a daily digest to Telegram without user prompting. Check the digest is categorized by domain.",
+      "scene_check": "Autopilot ACTS autonomously. Does not ask for permission or confirmation.",
       "expected_agents": ["researcher", "publisher"],
       "pass_criteria": [
         "Digest appears in Telegram at scheduled time",
         "Content categorized by domain (academic/industry/community)",
         "No ask for user confirmation before sending",
-        "Operator reports summary in scene if user visits"
+        "Autopilot reports summary in scene if user visits"
       ]
     },
     {
       "id": "S09",
-      "title": "Operator: Self-heal without user intervention",
-      "scene": "operator",
+      "title": "Autopilot: Self-heal without user intervention",
+      "scene": "autopilot",
       "sop_workflow": "incident_response",
-      "description": "Simulate a container restart (docker restart daemon-langfuse-worker-1). Verify operator detects, diagnoses, and resolves without asking user.",
-      "scene_check": "Operator ACTS first, REPORTS after. Does not ask 'should I restart it?'",
+      "description": "Simulate a container restart (docker restart daemon-langfuse-worker-1). Verify autopilot detects, diagnoses, and resolves without asking user.",
+      "scene_check": "Autopilot ACTS first, REPORTS after. Does not ask 'should I restart it?'",
       "expected_agents": ["admin"],
       "pass_criteria": [
         "Health check detects the issue within one cycle",

@@ -33,11 +33,11 @@
 
     "task_decomposition_copilot": { "agent": "copilot", "type": "agent", "description": "User request → Task/Job DAG decomposition" },
     "replan_assessment_copilot": { "agent": "copilot", "type": "agent", "description": "Output vs goal deviation assessment" },
-    "task_decomposition_mentor": { "agent": "mentor", "type": "agent", "description": "Learning request → Task/Job DAG decomposition" },
-    "replan_assessment_mentor": { "agent": "mentor", "type": "agent", "description": "Output vs goal deviation assessment" },
-    "task_decomposition_coach": { "agent": "coach", "type": "agent", "description": "Life management → Task/Job DAG decomposition" },
-    "replan_assessment_coach": { "agent": "coach", "type": "agent", "description": "Output vs goal deviation assessment" },
-    "task_decomposition_operator": { "agent": "operator", "type": "agent", "description": "Operations request → Task/Job DAG decomposition" },
-    "replan_assessment_operator": { "agent": "operator", "type": "agent", "description": "Output vs goal deviation assessment" }
+    "task_decomposition_instructor": { "agent": "instructor", "type": "agent", "description": "Learning request → Task/Job DAG decomposition" },
+    "replan_assessment_instructor": { "agent": "instructor", "type": "agent", "description": "Output vs goal deviation assessment" },
+    "task_decomposition_navigator": { "agent": "navigator", "type": "agent", "description": "Life management → Task/Job DAG decomposition" },
+    "replan_assessment_navigator": { "agent": "navigator", "type": "agent", "description": "Output vs goal deviation assessment" },
+    "task_decomposition_autopilot": { "agent": "autopilot", "type": "agent", "description": "Operations request → Task/Job DAG decomposition" },
+    "replan_assessment_autopilot": { "agent": "autopilot", "type": "agent", "description": "Output vs goal deviation assessment" }
   }
 }

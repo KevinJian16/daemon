@@ -20,6 +20,8 @@ Search, analyze, reason. External information retrieval, deep analysis, evidence
 - **web_research**: Multi-source web research with cross-validation
 - **literature_review**: Structured literature review synthesis
 - **source_evaluation**: Source credibility and tier assessment
+- **knowledge_base_mgmt**: Manage RAGFlow knowledge base (ingest, update, remove, audit documents)
+- **reasoning_framework**: Structured reasoning for complex problems (multi-factor trade-offs, causal analysis, hypothesis testing)
 
 ## Execution Model
 - 1 Step = 1 Session (independent, no history accumulation)

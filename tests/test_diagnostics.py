@@ -114,7 +114,7 @@ class TestSessionManager:
 
     def test_import(self):
         from services.session_manager import SessionManager, L1_SCENES
-        assert set(L1_SCENES) == {"copilot", "mentor", "coach", "operator"}
+        assert set(L1_SCENES) == {"copilot", "instructor", "navigator", "autopilot"}
 
     def test_extract_action_json_block(self):
         from services.session_manager import SessionManager
@@ -128,7 +128,7 @@ class TestSessionManager:
         reply = 'Here is my plan:\n```json\n{"action": "create_job", "steps": [{"id": 1}]}\n```'
         action = sm._extract_action(reply)
         assert action is not None
-        assert action["action"] == "create_job"
+        assert action["route"] == "task"
 
     def test_extract_action_none(self):
         from services.session_manager import SessionManager

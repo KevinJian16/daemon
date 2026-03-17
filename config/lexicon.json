@@ -12,12 +12,12 @@
     { "term": "Artifact", "zh": "产物", "category": "core", "state": "canonical", "definition_zh": "Job 交付物，存储在 MinIO。", "definition_en": "Job deliverable, stored in MinIO." },
     { "term": "Draft", "zh": "草稿", "category": "core", "state": "canonical", "definition_zh": "尚未正式化的候选 Task，对应 Plane DraftIssue。", "definition_en": "Candidate Task not yet formalized, maps to Plane DraftIssue." },
 
-    { "term": "L1 Agent", "zh": "场景代理", "category": "agent", "state": "canonical", "definition_zh": "4 个场景 agent：copilot/mentor/coach/operator。持久 session，理解意图并分发任务。", "definition_en": "4 scene agents: copilot/mentor/coach/operator. Persistent sessions, understand intent and dispatch tasks." },
+    { "term": "L1 Agent", "zh": "场景代理", "category": "agent", "state": "canonical", "definition_zh": "4 个场景 agent：copilot/instructor/navigator/autopilot。持久 session，理解意图并分发任务。", "definition_en": "4 scene agents: copilot/instructor/navigator/autopilot. Persistent sessions, understand intent and dispatch tasks." },
     { "term": "L2 Agent", "zh": "执行代理", "category": "agent", "state": "canonical", "definition_zh": "6 个执行 agent：researcher/engineer/writer/reviewer/publisher/admin。一次性 session，执行具体步骤。", "definition_en": "6 execution agents: researcher/engineer/writer/reviewer/publisher/admin. Ephemeral sessions, execute specific steps." },
     { "term": "Copilot", "zh": "副驾", "category": "agent", "state": "canonical", "definition_zh": "工作协同场景 L1 agent。", "definition_en": "Work collaboration scene L1 agent." },
-    { "term": "Mentor", "zh": "导师", "category": "agent", "state": "canonical", "definition_zh": "学习成长场景 L1 agent。", "definition_en": "Learning and growth scene L1 agent." },
-    { "term": "Coach", "zh": "教练", "category": "agent", "state": "canonical", "definition_zh": "生活管理场景 L1 agent。", "definition_en": "Life management scene L1 agent." },
-    { "term": "Operator", "zh": "运维", "category": "agent", "state": "canonical", "definition_zh": "系统运维场景 L1 agent。", "definition_en": "System operations scene L1 agent." },
+    { "term": "Instructor", "zh": "导师", "category": "agent", "state": "canonical", "definition_zh": "学习成长场景 L1 agent。", "definition_en": "Learning and growth scene L1 agent." },
+    { "term": "Navigator", "zh": "教练", "category": "agent", "state": "canonical", "definition_zh": "生活管理场景 L1 agent。", "definition_en": "Life management scene L1 agent." },
+    { "term": "Autopilot", "zh": "运维", "category": "agent", "state": "canonical", "definition_zh": "系统运维场景 L1 agent。", "definition_en": "System operations scene L1 agent." },
     { "term": "Researcher", "zh": "研究员", "category": "agent", "state": "canonical", "definition_zh": "搜索、分析、推理。", "definition_en": "Search, analyze, reason." },
     { "term": "Engineer", "zh": "工程师", "category": "agent", "state": "canonical", "definition_zh": "编码、调试、重构。", "definition_en": "Code, debug, refactor." },
     { "term": "Writer", "zh": "写手", "category": "agent", "state": "canonical", "definition_zh": "写作、格式适配、数据可视化。", "definition_en": "Write, format, data visualization." },
@@ -34,7 +34,7 @@
     { "term": "Store", "zh": "数据层", "category": "infra", "state": "canonical", "definition_zh": "PG asyncpg 数据层，替代旧 Ledger JSON。", "definition_en": "PG asyncpg data layer, replaces old Ledger JSON." },
     { "term": "Knowledge Base", "zh": "知识库", "category": "infra", "state": "canonical", "definition_zh": "外部知识缓存，RAGFlow + PG knowledge_cache 表。", "definition_en": "External knowledge cache, RAGFlow + PG knowledge_cache table." },
 
-    { "term": "Scene", "zh": "场景", "category": "surface", "state": "canonical", "definition_zh": "4 个用户交互场景：copilot/mentor/coach/operator。", "definition_en": "4 user interaction scenes: copilot/mentor/coach/operator." },
+    { "term": "Scene", "zh": "场景", "category": "surface", "state": "canonical", "definition_zh": "4 个用户交互场景：copilot/instructor/navigator/autopilot。", "definition_en": "4 user interaction scenes: copilot/instructor/navigator/autopilot." },
     { "term": "Telegram", "zh": "Telegram", "category": "surface", "state": "canonical", "definition_zh": "通知与命令通道，OC 原生 Telegram channel。", "definition_en": "Notification and command channel, OC native Telegram channel." },
     { "term": "CLI", "zh": "CLI", "category": "surface", "state": "canonical", "definition_zh": "命令行入口。", "definition_en": "Command-line entry point." },
     { "term": "Plane", "zh": "Plane", "category": "surface", "state": "canonical", "definition_zh": "前端和项目管理界面，替代旧 Portal/Console。", "definition_en": "Frontend and project management UI, replaces old Portal/Console." }

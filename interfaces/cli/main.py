@@ -1,6 +1,6 @@
 """Daemon CLI — command-line interface to the Daemon API.
 
-New architecture (7th draft): 4 L1 scenes, Jobs/Steps, no Spine/Psyche/Ledger.
+New architecture (7th draft): 4 L1 scenes, Jobs/Steps, Store/PG data layer.
 
 Reference: SYSTEM_DESIGN.md §4.9
 """
@@ -71,7 +71,7 @@ Commands:
   chat <scene> <message>      Send a message to an L1 scene
   panel <scene>               Show scene panel data
 
-Scenes: copilot, mentor, coach, operator
+Scenes: copilot, instructor, navigator, autopilot
 
 Examples:
   daemon status

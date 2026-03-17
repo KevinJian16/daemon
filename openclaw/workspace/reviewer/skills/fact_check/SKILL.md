@@ -11,25 +11,25 @@ description: >-
 
 # Fact Check
 
-## 适用场景
-验证输出中的事实性声明是否有来源支撑。
+## When to Activate
+When verifying whether factual claims in output have source support.
 
-## 输入
-待验证的文本段落或声明列表。
+## Input
+Text paragraphs or list of claims to verify.
 
-## 执行步骤
-1. 提取所有事实性声明（数字、日期、因果、引用）
-2. 对每条声明分类：Tier A（有主源佐证）、Tier B（有次源或推断合理）、Tier C（无源或矛盾）
-3. 用 MCP 工具检索相关源文档进行比对
-4. 输出分类结果及修正建议
+## Execution Steps
+1. Extract all factual claims (numbers, dates, causal assertions, citations)
+2. Classify each claim: Tier A (primary source confirmed), Tier B (secondary source or reasonable inference), Tier C (unsupported or contradicted)
+3. Use MCP tools to retrieve relevant source documents for comparison
+4. Output classification results and correction suggestions
 
-## 质量标准
-- Tier C 声明必须标注修正方案
-- 不得将未验证声明标为 Tier A
+## Quality Standards
+- Tier C claims must include a correction plan
+- Unverified claims must not be labeled Tier A
 
-## 常见失败模式
-- 仅做表面关键词匹配，未核实语义一致性
-- 遗漏隐含声明（如"显著提升"暗含比较基准）
+## Common Failure Modes
+- Surface keyword matching only, without verifying semantic consistency
+- Missing implicit claims (e.g., "significant improvement" implies a comparison baseline)
 
-## 输出格式
-每条声明一行：`[A/B/C] 声明内容 | 来源/修正建议`
+## Output Format
+One line per claim: `[A/B/C] claim content | source / correction suggestion`

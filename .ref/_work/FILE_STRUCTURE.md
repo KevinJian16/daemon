@@ -334,9 +334,9 @@ openclaw/workspace/{agent}/
 | Agent | Skills |
 |---|---|
 | **copilot** | routing_decision, task_decomposition, requires_review_judgment, replan_assessment |
-| **mentor** | routing_decision, task_decomposition, requires_review_judgment, replan_assessment |
-| **coach** | routing_decision, task_decomposition, requires_review_judgment, replan_assessment |
-| **operator** | routing_decision, task_decomposition, requires_review_judgment, replan_assessment |
+| **instructor** | routing_decision, task_decomposition, requires_review_judgment, replan_assessment |
+| **navigator** | routing_decision, task_decomposition, requires_review_judgment, replan_assessment |
+| **autopilot** | routing_decision, task_decomposition, requires_review_judgment, replan_assessment |
 
 All 4 L1 agents share the same 4 skills (formerly counsel's exclusive capabilities, now generalized).
 
