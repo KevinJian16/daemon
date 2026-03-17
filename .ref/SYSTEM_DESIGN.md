@@ -1716,7 +1716,42 @@ Mem0 中的记忆随使用不断积累，会出现碎片化、重复、矛盾、
 - 每个任务设超时（默认 30 分钟），超时跳过不阻塞
 - 任务失败不影响系统运行，下一周期重试
 
-用户工作流 SOP 见 `.ref/_work/SOP.md`（Research / Engineering / Life 三条主线）。
+用户工作流操作指南见 `.ref/_work/SOP.md`（Research / Engineering / Life 三条主线的具体方法论和步骤）。以下 §5.10 提取 SOP 中**系统必须实现的行为**。
+
+### 5.10 主动触发工作流
+
+**FINAL 规则：daemon 不只被动响应用户指令，还必须根据以下规则主动触发工作流。**
+
+这些是系统需求，不是建议。L1 agent 和 Temporal Schedule 负责检测触发条件并执行。
+
+| 触发条件 | 动作 | 执行者 | 实现方式 |
+|---|---|---|---|
+| Engineer build 周期结束（检测到 copilot 场景连续多个 engineer step 完成） | 提醒用户做 literature mapping | copilot L1 | L1 在对话中主动提出 |
+| 接近 CFP deadline（T-8 周） | 提醒启动论文写作 | copilot/mentor L1 | Temporal Schedule 检查 mldeadlines 日历 |
+| InfoPull 发现新论文（符合用户关注领域） | 推送到 Telegram + 存入 Zotero | operator → publisher | InfoPullWorkflow → notify_urgent |
+| 每天固定时间 | 日报推送（当日巡检摘要，按领域分类） | operator | Temporal Schedule → InfoPullWorkflow triage → Telegram |
+| 每周 | 推荐 2-3 篇论文 + 运动周报 + 项目进度 | mentor/coach/copilot | BackgroundMaintenanceWorkflow → system_snapshot → 各 L1 推送 |
+| Writer/publisher 产出英文内容后 | LanguageTool 检查 + mentor 解释错误模式 | mentor | Post-step hook：检测英文输出 → LanguageTool MCP → mentor session 解读 |
+| 完成一个 build + write 周期 | 提醒更新 GitHub profile + 写技术博客 | copilot L1 | L1 在对话中主动提出 |
+| 代码 PR 提交 | mentor 引导用户做 code review（教学目的，不是代替用户 review） | mentor L1 | GitHub webhook 触发 → mentor session |
+
+**三层推送模型**（来源：Stage 0 Interview §3）：
+
+| 层级 | 频率 | 内容 | 渠道 |
+|---|---|---|---|
+| 实时层 | 0-2 条/天 | 紧急/时效性事件（CFP deadline、依赖 breaking change、关注论文被引爆） | Telegram 即时 |
+| 日报层 | 每天固定时间 | 当日巡检摘要，按领域分类，用户标记感兴趣的由 daemon 深挖 | Telegram |
+| 周报层 | 每周 | 趋势分析，literature mapping 级归纳——领域加速方向、新聚集、与当前项目关联 | Telegram + Obsidian vault |
+
+**英文浸泡规则**（来源：Stage 0 Interview §3，已在 §0.9.1 声明系统工作语言，此处补充交互行为）：
+
+| 规则 | daemon 行为 |
+|---|---|
+| daemon 技术内容全英文输出 | writer / researcher 的 SOUL.md 强制英文产出 |
+| 用户输入不限语言 | L1 接受中文提问，英文回复 |
+| 不懂就问 | 用中文解释具体概念，不整篇翻译 |
+| 所有对外产出从第一天起全英文 | publisher 强制检查语言 |
+| 英文写作经 LanguageTool 检查 | mentor 场景，每次输出后 LanguageTool MCP → 解释错误模式 → Mem0 记录常犯错误 |
 
 ---
 

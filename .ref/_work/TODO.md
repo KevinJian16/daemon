@@ -326,6 +326,28 @@ All activities use Ollama 32b (local-heavy). Add schedule to `config/schedules.j
 **Files**: `openclaw/workspace/*/skills/*/SKILL.md` (new skills)
 **Effort**: 8 hours
 
+### I3. §5.10 主动触发工作流
+**Section**: §5.10
+**Problem**: 8 个主动触发工作流和三层推送模型全部未实现。这些是系统需求，不是建议。
+**Fix**:
+1. **Build 周期检测 + literature mapping 提醒**：copilot L1 在对话逻辑中检测连续 engineer step 完成 → 主动提出 "Time for literature mapping"
+   - Files: `services/session_manager.py`（L1 对话逻辑）
+2. **CFP deadline 监控**：Temporal Schedule 定期检查 mldeadlines .ics 日历 → T-8 周提醒
+   - Files: `temporal/activities_infopull.py`（新增 cfp_check activity）, `config/schedules.json`
+3. **日报推送**：InfoPullWorkflow triage 结果 → 每天固定时间汇总 → Telegram 推送
+   - Files: `temporal/activities_infopull.py`, `interfaces/telegram/adapter.py`
+4. **周报推送**：BackgroundMaintenanceWorkflow system_snapshot → 各 L1 场景生成周报 → Telegram
+   - Files: `temporal/activities_background.py`
+5. **英文 LanguageTool post-hook**：writer/publisher 英文产出后自动触发 LanguageTool MCP 检查 → mentor 解读
+   - Files: `temporal/activities_exec.py`（post-step hook）
+6. **GitHub profile + 博客提醒**：copilot L1 检测 build+write 周期完成 → 提醒
+   - Files: `services/session_manager.py`
+7. **Code review 教学**：GitHub webhook 收到 PR → mentor L1 session 引导用户 review
+   - Files: `services/plane_webhook.py` or new GitHub webhook handler
+8. **三层推送模型**：实时（0-2/天 Telegram 即时）+ 日报（每天固定时间）+ 周报（每周趋势分析 Telegram + Obsidian）
+   - Depends on: H8 InfoPull + H7 Background Maintenance + H9 Telegram
+**Effort**: 15 hours (after H7/H8/H9 are done)
+
 ---
 
 ## ~~取消的项目~~
