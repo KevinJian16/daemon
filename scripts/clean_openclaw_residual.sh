@@ -2,7 +2,7 @@
 # Clean residual directories from ~/.openclaw/agents/
 #
 # Current canonical agents (10 total):
-#   L1 scene agents: copilot, mentor, coach, operator
+#   L1 scene agents: copilot, instructor, navigator, autopilot
 #   L2 exec agents:  researcher, engineer, writer, reviewer, publisher, admin
 #
 # Directories found in ~/.openclaw/agents/ that do NOT match the canonical list
@@ -19,9 +19,9 @@ AGENTS_DIR="${OPENCLAW_HOME:-$HOME/.openclaw}/agents"
 # Canonical agent IDs
 CANONICAL_AGENTS=(
     copilot
-    mentor
-    coach
-    operator
+    instructor
+    navigator
+    autopilot
     researcher
     engineer
     writer

@@ -114,7 +114,7 @@ def seed_user_persona(memory) -> int:
         "Language strategy: progressive English immersion. daemon outputs all technical content in English. User may input Chinese, daemon replies English. All external output English from day one.",
         "daemon autonomy level: C (high). Can independently execute summaries, correlation analysis, literature mapping. No token budget degradation.",
         "Task management entirely in Plane. Interaction: Telegram (daily) + Plane (global view). Dev: VSCode + Cursor.",
-        "User gives requirements, daemon (engineer) writes everything, user does code review. When learning: daemon as mentor guides user to write, not give complete code.",
+        "User gives requirements, daemon (engineer) writes everything, user does code review. When learning: daemon as instructor guides user to write, not give complete code.",
         # Behavioral profile
         "User's decision mode: fast judgment + metacognitive monitoring. Trusts through understanding mechanisms first, then setting trust boundaries.",
         "User is engineering-minded about shortcomings — states gaps like missing system modules. daemon can point out issues directly without wrapping.",

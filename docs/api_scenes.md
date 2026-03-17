@@ -1,6 +1,6 @@
 # Scene API Endpoints
 
-The Scene API provides endpoints for interacting with L1 (Level 1) agents in different scenes. Scenes represent different agent roles: `copilot`, `mentor`, `coach`, `operator`.
+The Scene API provides endpoints for interacting with L1 (Level 1) agents in different scenes. Scenes represent different agent roles: `copilot`, `instructor`, `navigator`, `autopilot`.
 
 Reference: SYSTEM_DESIGN.md §5.1
 
@@ -14,7 +14,7 @@ Send a message to a scene's L1 agent.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `scene` | string | Scene name: `copilot`, `mentor`, `coach`, `operator` |
+| `scene` | string | Scene name: `copilot`, `instructor`, `navigator`, `autopilot` |
 
 ### Request Body
 
@@ -83,7 +83,7 @@ Get scene panel data including recent messages, digests, and decisions.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `scene` | string | Scene name: `copilot`, `mentor`, `coach`, `operator` |
+| `scene` | string | Scene name: `copilot`, `instructor`, `navigator`, `autopilot` |
 
 ### Response
 
