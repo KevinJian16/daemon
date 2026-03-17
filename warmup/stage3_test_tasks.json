@@ -1,166 +1,170 @@
 {
-  "description": "Warmup Stage 3 test task suite — baseline tasks for Skill calibration",
-  "reference": "SYSTEM_DESIGN.md §7.3 Stage 3",
-  "convergence_criteria": "5 consecutive tasks pass reviewer with minimal edits",
-  "tasks": [
+  "description": "Warmup Stage 3 — Scene × SOP verification matrix",
+  "reference": "SYSTEM_DESIGN.md §7.3 Stage 3, §5.10 主动触发工作流",
+  "convergence_criteria": "System layer: all 4 scene behaviors correct + all SOP workflows trigger correctly + 5 consecutive tasks pass. Component layer: skill activation ≥80%, reviewer pass ≥85%, AI-flavor = 0, token ≤150% baseline.",
+  "automation": "Full auto. Admin runs, reviewer evaluates, user not involved until final report.",
+
+  "component_checks": {
+    "description": "Pre-requisite: run before system-layer tests",
+    "checks": [
+      {"id": "P01", "name": "Skill activation sweep", "method": "For each of 45 skills, issue 3 targeted prompts. Check Langfuse trace for skill_loaded=true. Threshold: ≥80% per skill."},
+      {"id": "P02", "name": "AI-flavor scan", "method": "Run writer on 5 topics. Regex scan output for banned phrases (值得注意的是, 综上所述, it is worth noting, in conclusion, etc.). Threshold: 0 matches."},
+      {"id": "P03", "name": "Token baseline", "method": "Run 10 representative steps. Record token usage per step type. Store as baseline for ≤150% check."}
+    ]
+  },
+
+  "system_tests": [
     {
-      "id": "T01",
+      "id": "S01",
+      "title": "Copilot: Build → Literature Mapping trigger",
       "scene": "copilot",
-      "title": "Single-agent research task",
-      "description": "Search for the latest papers on LLM agent architectures published in 2024-2025",
-      "expected_route": "direct",
-      "agents": ["researcher"],
-      "skills_tested": ["academic_search"],
-      "input": "Find the top 5 most cited papers on LLM agent architectures from 2024-2025, with citation counts and key contributions",
-      "acceptance_criteria": [
-        "Returns 5 papers with title, authors, year, citations",
-        "Papers are from 2024-2025",
-        "Sorted by citation count",
-        "Source tier is A (academic)"
+      "sop_workflow": "build_cycle → literature_mapping",
+      "description": "Simulate completing a build cycle (tell copilot 'I just finished implementing the vector search module'). Verify copilot proactively suggests literature mapping without being asked.",
+      "scene_check": "copilot should SUGGEST, not DECIDE for the user. It should say 'want to do a literature mapping?' not 'I'm starting literature mapping now'.",
+      "expected_agents": ["copilot"],
+      "pass_criteria": [
+        "Copilot mentions literature mapping within 2 turns",
+        "Copilot asks user permission before starting (user-led scene)",
+        "No unsolicited action taken"
       ]
     },
     {
-      "id": "T02",
+      "id": "S02",
+      "title": "Copilot: Full research-to-publish cycle",
       "scene": "copilot",
-      "title": "Two-agent pipeline: research → write",
-      "description": "Research a topic then write a summary",
-      "expected_route": "task",
-      "agents": ["researcher", "writer"],
-      "skills_tested": ["web_research", "tech_blog"],
-      "input": "Research the current state of MCP (Model Context Protocol) and write a technical blog post about it",
-      "acceptance_criteria": [
-        "Research covers MCP spec, adoption, use cases",
-        "Blog post follows tech_blog skill structure",
-        "Content is accurate and well-structured",
-        "Word count 500-1500"
+      "sop_workflow": "engineer → researcher → writer → reviewer → publisher",
+      "description": "Request copilot to research LLM agent memory architectures, write a technical blog post, and publish to GitHub Gist.",
+      "scene_check": "Copilot takes direction from user, coordinates agents, reports progress. Does not make editorial decisions without user input.",
+      "expected_agents": ["researcher", "writer", "reviewer", "publisher"],
+      "pass_criteria": [
+        "Research covers ≥5 recent papers with citations",
+        "Blog post has zero AI-flavor phrases",
+        "Reviewer passes on first or second attempt",
+        "GitHub Gist actually created",
+        "Copilot reports completion, doesn't decide next steps alone"
       ]
     },
     {
-      "id": "T03",
-      "scene": "copilot",
-      "title": "Three-agent pipeline: research → write → review",
-      "description": "Full pipeline with quality gate",
-      "expected_route": "task",
-      "agents": ["researcher", "writer", "reviewer"],
-      "skills_tested": ["literature_review", "academic_paper", "quality_audit"],
-      "input": "Write a literature review section on Retrieval-Augmented Generation (RAG) approaches, covering at least 5 recent papers",
-      "acceptance_criteria": [
-        "Covers at least 5 papers",
-        "Each citation has proper reference",
-        "Reviewer passes with no major issues",
-        "Academic writing style"
-      ]
-    },
-    {
-      "id": "T04",
-      "scene": "copilot",
-      "title": "Code analysis task",
-      "description": "Use tree-sitter to analyze codebase structure",
-      "expected_route": "direct",
-      "agents": ["engineer"],
-      "skills_tested": ["code_review"],
-      "input": "Analyze the code structure of daemon's temporal/ directory. List all functions, their line counts, and identify the 3 largest files",
-      "acceptance_criteria": [
-        "Lists all Python files in temporal/",
-        "Extracts function names and line ranges",
-        "Correctly identifies largest files",
-        "Uses code_structure/code_functions MCP tools"
-      ]
-    },
-    {
-      "id": "T05",
+      "id": "S03",
+      "title": "Mentor: Guided learning (not direct answers)",
       "scene": "mentor",
-      "title": "Learning task with source evaluation",
-      "description": "Find and evaluate learning resources",
-      "expected_route": "task",
-      "agents": ["researcher", "reviewer"],
-      "skills_tested": ["web_research", "source_evaluation", "fact_check"],
-      "input": "Find the best resources for learning Temporal.io workflow orchestration. Evaluate each source's credibility and recommend a learning path",
-      "acceptance_criteria": [
-        "At least 5 resources found",
-        "Each resource has tier classification (A/B/C)",
-        "Learning path is sequenced logically",
-        "Reviewer verifies source quality"
+      "sop_workflow": "learning_plan → assignment → review",
+      "description": "Ask mentor 'teach me about Raft consensus'. Verify mentor creates a learning plan, gives assignments, and guides through understanding — does NOT just explain Raft directly.",
+      "scene_check": "Mentor GUIDES, not TELLS. Should ask questions, give hints, point to resources. Should NOT dump a complete explanation.",
+      "expected_agents": ["researcher", "writer"],
+      "pass_criteria": [
+        "Mentor asks what user already knows before teaching",
+        "Learning plan has progressive milestones",
+        "Includes hands-on assignment (not just reading)",
+        "Resources are tiered by depth",
+        "Mentor waits for user response at each checkpoint"
       ]
     },
     {
-      "id": "T06",
+      "id": "S04",
+      "title": "Mentor: Code review teaching",
+      "scene": "mentor",
+      "sop_workflow": "code_review_teaching",
+      "description": "Tell mentor 'I submitted a PR, can you help me review it?' Verify mentor teaches user HOW to review, not just does the review for them.",
+      "scene_check": "Mentor teaches methodology (3-pass method, comment tags), does not produce the review directly.",
+      "expected_agents": ["engineer"],
+      "pass_criteria": [
+        "Mentor explains review methodology before reviewing",
+        "Asks user to try reviewing a section first",
+        "Provides feedback on user's review attempt",
+        "Does not produce the final review comment for user to copy-paste"
+      ]
+    },
+    {
+      "id": "S05",
+      "title": "Mentor: English correction post-hook",
+      "scene": "mentor",
+      "sop_workflow": "english_correction",
+      "description": "Submit an English text with deliberate grammar errors to mentor. Verify LanguageTool check triggers and mentor explains error patterns.",
+      "scene_check": "Mentor explains WHY the errors are wrong, not just what the correction is.",
+      "expected_agents": [],
+      "pass_criteria": [
+        "LanguageTool MCP called automatically",
+        "Errors identified with explanations of underlying grammar rules",
+        "Mentor tracks error pattern in Mem0 for future reference",
+        "Does not just return corrected text — teaches"
+      ]
+    },
+    {
+      "id": "S06",
+      "title": "Coach: Proactive weekly plan",
       "scene": "coach",
-      "title": "Life management planning task",
-      "description": "Create a structured plan from a life goal",
-      "expected_route": "task",
-      "agents": ["researcher", "writer"],
-      "skills_tested": ["web_research", "documentation"],
-      "input": "Help me create a weekly exercise and nutrition plan for improving energy levels. Research evidence-based approaches first",
-      "acceptance_criteria": [
-        "Research cites evidence-based sources",
-        "Plan is structured by day/week",
-        "Practical and actionable",
-        "Matches user's preference style"
+      "sop_workflow": "exercise_plan + weekly_review",
+      "description": "Enter coach scene. Verify coach proactively generates a weekly plan without being asked, based on recent Strava/intervals.icu data.",
+      "scene_check": "Coach PLANS and PROPOSES, does not wait for user to ask. User executes.",
+      "expected_agents": [],
+      "pass_criteria": [
+        "Coach presents plan within 2 turns of entering scene",
+        "Plan is based on recent data (not generic)",
+        "Coach sets quantitative targets",
+        "Coach does not ask 'what would you like to do?' — it tells"
       ]
     },
     {
-      "id": "T07",
+      "id": "S07",
+      "title": "Coach: Push strategy linked to exercise schedule",
+      "scene": "coach",
+      "sop_workflow": "push_strategy_sync",
+      "description": "Verify that daemon's push timing adapts to the user's exercise schedule (from interview §3: push should sync with coach-managed exercise plan).",
+      "scene_check": "Coach coordinates info push timing, not just exercise.",
+      "expected_agents": [],
+      "pass_criteria": [
+        "Coach knows today's exercise schedule",
+        "Daily digest timing avoids exercise windows",
+        "Coach can explain why a particular time was chosen"
+      ]
+    },
+    {
+      "id": "S08",
+      "title": "Operator: Autonomous daily digest",
       "scene": "operator",
-      "title": "System diagnostic task",
-      "description": "Run system health check and produce report",
-      "expected_route": "direct",
-      "agents": ["admin"],
-      "skills_tested": ["health_check"],
-      "input": "Run a full system diagnostic and report the health status of all daemon services",
-      "acceptance_criteria": [
-        "Checks all Docker containers",
-        "Checks API/Worker/OC Gateway",
-        "Reports GREEN/YELLOW/RED status",
-        "Actionable recommendations for any failures"
+      "sop_workflow": "daily_digest",
+      "description": "Verify operator autonomously produces and pushes a daily digest to Telegram without user prompting. Check the digest is categorized by domain.",
+      "scene_check": "Operator ACTS autonomously. Does not ask for permission or confirmation.",
+      "expected_agents": ["researcher", "publisher"],
+      "pass_criteria": [
+        "Digest appears in Telegram at scheduled time",
+        "Content categorized by domain (academic/industry/community)",
+        "No ask for user confirmation before sending",
+        "Operator reports summary in scene if user visits"
       ]
     },
     {
-      "id": "T08",
-      "scene": "copilot",
-      "title": "Full chain: research → engineer → reviewer → publisher",
-      "description": "Complete workflow from research to external delivery",
-      "expected_route": "project",
-      "agents": ["researcher", "engineer", "reviewer", "publisher"],
-      "skills_tested": ["academic_search", "implementation", "code_review", "github_publish"],
-      "input": "Research best practices for Python project structure in 2025, then create a reference example project layout, review it, and create a GitHub issue documenting the findings",
-      "acceptance_criteria": [
-        "Research covers modern Python project patterns",
-        "Project layout is practical and complete",
-        "Code review passes",
-        "GitHub issue is created with proper formatting"
+      "id": "S09",
+      "title": "Operator: Self-heal without user intervention",
+      "scene": "operator",
+      "sop_workflow": "incident_response",
+      "description": "Simulate a container restart (docker restart daemon-langfuse-worker-1). Verify operator detects, diagnoses, and resolves without asking user.",
+      "scene_check": "Operator ACTS first, REPORTS after. Does not ask 'should I restart it?'",
+      "expected_agents": ["admin"],
+      "pass_criteria": [
+        "Health check detects the issue within one cycle",
+        "Admin diagnoses root cause",
+        "Self-heal attempted automatically",
+        "User notified after resolution, not asked during"
       ]
     },
     {
-      "id": "T09",
+      "id": "S10",
+      "title": "Cross-scene: Build → Paper → Publish full cycle",
       "scene": "copilot",
-      "title": "Chart generation task",
-      "description": "Create a data visualization",
-      "expected_route": "task",
-      "agents": ["researcher", "writer"],
-      "skills_tested": ["web_research", "documentation"],
-      "input": "Create a comparison chart of the top 5 vector databases (Qdrant, Milvus, Pinecone, Weaviate, ChromaDB) comparing: performance, scalability, ease of use, and pricing",
-      "acceptance_criteria": [
-        "Data is accurate and current",
-        "Chart is generated as PNG",
-        "Comparison covers all 4 dimensions",
-        "Sources are cited"
-      ]
-    },
-    {
-      "id": "T10",
-      "scene": "copilot",
-      "title": "Documentation generation",
-      "description": "Generate API documentation from code",
-      "expected_route": "task",
-      "agents": ["engineer", "writer", "reviewer"],
-      "skills_tested": ["implementation", "documentation", "quality_audit"],
-      "input": "Generate API documentation for daemon's scene endpoints (POST /scenes/{scene}/chat, GET /scenes/{scene}/panel) by reading the source code",
-      "acceptance_criteria": [
-        "Covers all scene endpoints",
-        "Request/response format documented",
-        "Code examples included",
-        "Reviewer validates accuracy against actual code"
+      "sop_workflow": "build_first_research_cycle",
+      "description": "Full build-first cycle: tell copilot you built a new feature → copilot triggers lit mapping → researcher finds related work → writer drafts a short paper/blog → reviewer checks → publisher publishes to GitHub + cross-posts to Dev.to.",
+      "scene_check": "Copilot coordinates the full cycle, each agent plays its role correctly.",
+      "expected_agents": ["researcher", "engineer", "writer", "reviewer", "publisher"],
+      "pass_criteria": [
+        "Literature mapping triggered (SOP)",
+        "Researcher covers ≥5 papers",
+        "Writer output has zero AI-flavor",
+        "Writer output written to Obsidian vault (DD-81)",
+        "Reviewer passes with ≤2 iterations",
+        "Published to ≥1 external platform",
+        "Full cycle completes without user intervention after initial trigger"
       ]
     }
   ]

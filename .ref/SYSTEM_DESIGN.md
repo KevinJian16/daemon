@@ -2143,12 +2143,42 @@ FINAL 规则：
 
 | 维度 | 覆盖项 |
 |---|---|
+| **Scene × SOP** | 每个场景的主导权行为 × 对应的 SOP 工作流（主判据） |
 | 领域 | 用户的专业领域 × 至少 3 个不同领域 |
 | Agent 组合 | 单 agent、双 agent 协作、全链路 |
-| 触发方式 | 手动、定时、前序链 |
+| 触发方式 | 手动、定时、前序链、主动触发（§5.10） |
 | 产出类型 | 代码、文档、数据分析报告、对外发布内容 |
 | 外部出口 | GitHub（commit/PR）、Telegram、其他用户平台 |
 | 持续性 | 一次性任务、需要长期跟踪的任务 |
+
+**Scene 行为验证**（系统层）：
+
+| 场景 | 测试什么 | 失败标志 |
+|---|---|---|
+| copilot | 用户主导，daemon 执行+建议 | daemon 抢决策、不等用户确认方向就行动 |
+| mentor | daemon 引导，用户学习 | daemon 直接给答案而不引导思考、跳过教学过程 |
+| coach | daemon 规划，用户执行 | daemon 等用户来安排、不主动生成计划 |
+| operator | daemon 自主，用户监督 | daemon 事事请示、不自主行动 |
+
+**SOP 工作流验证**（系统层）：
+
+| 工作流 | 触发条件 | 期望行为 |
+|---|---|---|
+| Build → Lit mapping | copilot 场景连续完成 engineer steps | 自动提醒做 literature mapping |
+| 日报推送 | 每天固定时间 | Telegram 收到按领域分类的摘要 |
+| 英文纠正 | 英文产出完成后 | LanguageTool 自动检查 + mentor 解释 |
+| Code review 教学 | PR 提交 | mentor 引导用户做 review，不代替 |
+
+**组件层指标**（前置条件，不过关则系统层不测）：
+
+| 指标 | 阈值 | 来源 |
+|---|---|---|
+| Skill activation rate | ≥80% per skill | Langfuse trace |
+| Reviewer pass rate | ≥85% 首次通过 | reviewer agent |
+| AI-flavor 词频 | 0 | 正则匹配禁用词表 |
+| Token 效率 | 单 Step ≤ 基线 150% | Langfuse |
+
+**暖机全程自动化，用户不参与。** daemon 自主执行 Stage 1-4，自主评估，自主迭代。用户仅在最终验收时收到报告。
 
 #### Stage 4：系统状态与异常场景验证（~30 分钟）
 
@@ -2156,15 +2186,22 @@ FINAL 规则：
 
 ### 7.4 收敛标准
 
-**伪人度**——连续 5 个不同类型任务的对外产出与用户本人无法区分。
+**两层验证，全自动执行。**
 
-由 admin 主导（Stage 3+）：设计测试任务、评估产出质量、调整 skill 和参数、决定是否收敛。
+**系统层（主判据）**：
+- 4 个 Scene 的主导权行为全部正确（reviewer agent 对照 §0.11 场景定义表评估）
+- §5.10 的 8 个主动触发工作流全部能被正确触发和执行
+- 连续 5 个覆盖不同场景×SOP 的测试任务全部通过
 
-FINAL 收敛目标：
-- 单 Task 执行基线稳定
+**组件层（前置条件）**：
+- 所有 skill activation rate ≥80%
+- Reviewer 首次通过率 ≥85%
+- AI-flavor 词频 = 0
+- Token 效率 ≤ 基线 150%
 - chain trigger 命中正确
-- 学习机制形成闭环
-- 对外产出达到可接受的"伪人度"
+- 学习机制形成闭环（Post-Job → Mem0 → 下次 session 可检索）
+
+由 admin 主导（Stage 3+）：执行测试任务、评估产出质量、调整 skill 和参数、决定是否收敛。**用户不参与暖机过程**（Stage 0 Interview §3：C 级主动性），仅收到最终验收报告。
 
 ### 7.5 暖机目录结构
 
