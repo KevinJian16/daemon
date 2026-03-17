@@ -692,6 +692,7 @@ GAPS.md 共 870 条实施细节 Gap（G-1 至 G-13）。以下标注各组在七
 | DD-79 | 2026-03-17 | 多平台策略：macOS + iOS + Telegram（§4.10, §6.10.3） | 不做 Web 端/PWA/远程浏览器访问。macOS Tauri = 完整主控台；iOS Tauri = Artifact 只读查看器（类 Steam app）；Telegram = 信箱+对讲机（daemon→用户通知，用户→daemon 快捷回复）。单向同步：Telegram→本地（本地对话不推送到 Telegram） | FINAL |
 | DD-80 | 2026-03-17 | 取消自动分屏，窗口布局交给 Stage Manager（§4.2） | 自动分屏（macos-control MCP 编排窗口位置）与 macOS Stage Manager 冲突：多个 scene 同时打开不同应用时分屏逻辑不清晰。daemon 只负责 open 目标应用/文件，窗口布局由用户通过 Stage Manager 自行管理。macos-control MCP 从"窗口编排"降级为"应用调起"（仅 open 命令） | FINAL |
 | DD-81 | 2026-03-17 | Obsidian vault 作为用户知识图谱（§5.7.1） | Markdown 产出（报告/文章/笔记）写入 Obsidian vault（Google Drive），二进制文件留 MinIO。只放用户产出（researcher/writer/engineer/mentor），不放系统产出（admin/operator → state/background_reports/）。MCP: @bitbonsai/mcpvault（文件系统直接操作）。Zotero Integration 插件联动论文标注 | FINAL |
+| DD-82 | 2026-03-17 | Graph-native Skill 存储：openclaw-graph（§9.2.1.1） | Skill Graph 从平面 SKILL_GRAPH.md 迁移到 Neo4j 图数据库。参考 alphaonedev/openclaw-graph。动机：平面文件全量加载 token 浪费（25K→660 bytes）、SKILL_GRAPH.md 不可扩展（100+ skill）、activation rate 问题。Skill/SkillCluster 节点 + IN_CLUSTER/RELATED_TO 边 + Cypher 按需查询。Neo4j 加入 Docker Compose | FINAL |
 
 ---
 

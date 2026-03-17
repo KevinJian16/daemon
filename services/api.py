@@ -22,12 +22,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from runtime.temporal import TemporalClient
 from services.api_routes.scenes import router as scenes_router, configure as configure_scenes
+from services.api_routes.auth import router as auth_router, configure as configure_auth, get_current_user
 from services.plane_webhook import router as webhook_router, configure as configure_webhook
 from daemon_env import load_daemon_env
 
@@ -67,12 +69,16 @@ def create_app() -> FastAPI:
     app.state.plane_client = None
     app.state.session_manager = None
     app.state.temporal_client = None
+    app.state.minio_client = None
     app.state.pool = None
 
     # ── Routes ───────────────────────────────────────────────────────────
 
     # Scene routes (L1 agent interaction)
     app.include_router(scenes_router)
+
+    # Auth routes (OAuth)
+    app.include_router(auth_router)
 
     # Plane webhook handler
     app.include_router(webhook_router)
@@ -94,18 +100,28 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health_check():
         """Basic health check."""
-        return {"ok": True, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        ollama_ok = False
+        try:
+            from services.llm_local import healthy
+            ollama_ok = await healthy()
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "ollama": ollama_ok,
+        }
 
     # Jobs and Tasks endpoints (§4.9)
     @app.get("/jobs")
-    async def list_jobs(status: str = "", limit: int = 20):
+    async def list_jobs(status: str = "", limit: int = 20, _user: dict = Depends(get_current_user)):
         """List Jobs, optionally filtered by status."""
         if not app.state.store:
             raise HTTPException(status_code=503, detail="Store not available")
         return await app.state.store.list_jobs(status=status, limit=limit)
 
     @app.get("/tasks/{task_id}")
-    async def get_task(task_id: str):
+    async def get_task(task_id: str, _user: dict = Depends(get_current_user)):
         """Get Task details by ID."""
         if not app.state.store:
             raise HTTPException(status_code=503, detail="Store not available")
@@ -119,7 +135,7 @@ def create_app() -> FastAPI:
         return task
 
     @app.get("/tasks/{task_id}/activity")
-    async def get_task_activity(task_id: str, limit: int = 50):
+    async def get_task_activity(task_id: str, limit: int = 50, _user: dict = Depends(get_current_user)):
         """Get activity feed for a Task (§4.9)."""
         if not app.state.store:
             raise HTTPException(status_code=503, detail="Store not available")
@@ -131,7 +147,7 @@ def create_app() -> FastAPI:
         return await app.state.store.get_task_activity(tid, limit=limit)
 
     @app.post("/jobs/submit")
-    async def submit_job(req: Request):
+    async def submit_job(req: Request, _user: dict = Depends(get_current_user)):
         """Submit a Job directly (for testing and admin use).
 
         Body: {"title": "...", "steps": [...], "concurrency": 2}
@@ -147,6 +163,9 @@ def create_app() -> FastAPI:
         from uuid import uuid4
         task = await app.state.store.create_task(title=title, source="api")
         task_id = task["task_id"]
+        # §3.5: Same Task max 1 non-closed Job
+        if await app.state.store.has_active_job_for_task(task_id):
+            raise HTTPException(status_code=409, detail="Task already has an active job")
         plan = {
             "steps": steps,
             "title": title,
@@ -166,6 +185,90 @@ def create_app() -> FastAPI:
         )
         return {"ok": True, "job_id": job_id, "workflow_id": workflow_id, "run_id": run_id}
 
+    # Artifact endpoints (§4.9, D.1)
+    @app.get("/artifacts/{artifact_id}")
+    async def get_artifact(artifact_id: str, _user: dict = Depends(get_current_user)):
+        """Get artifact metadata and content (§4.9).
+
+        For text-based artifacts, returns content inline.
+        For binary artifacts, returns metadata with download URL.
+        """
+        if not app.state.store:
+            raise HTTPException(status_code=503, detail="Store not available")
+        from uuid import UUID
+        try:
+            aid = UUID(artifact_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid artifact_id format")
+
+        artifact = await app.state.store.get_artifact(aid)
+        if not artifact:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+
+        result = {k: (str(v) if isinstance(v, UUID) else v) for k, v in artifact.items()}
+
+        # For text-based artifacts, include content inline
+        if app.state.minio_client and artifact.get("mime_type", "").startswith("text/"):
+            try:
+                data = app.state.minio_client.download_bytes(artifact["minio_path"])
+                result["content"] = data.decode("utf-8", errors="replace")
+            except Exception as exc:
+                logger.warning("Failed to fetch artifact content from MinIO: %s", exc)
+                result["content"] = None
+
+        return result
+
+    @app.get("/artifacts/{artifact_id}/download")
+    async def download_artifact(artifact_id: str, _user: dict = Depends(get_current_user)):
+        """Download artifact file from MinIO (§4.9)."""
+        if not app.state.store or not app.state.minio_client:
+            raise HTTPException(status_code=503, detail="Store or MinIO not available")
+        from uuid import UUID
+        try:
+            aid = UUID(artifact_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid artifact_id format")
+
+        artifact = await app.state.store.get_artifact(aid)
+        if not artifact:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+
+        minio_path = artifact["minio_path"]
+        mime_type = artifact.get("mime_type") or "application/octet-stream"
+        title = artifact.get("title") or minio_path.rsplit("/", 1)[-1]
+
+        try:
+            response = app.state.minio_client.download_stream(minio_path)
+
+            def iterfile():
+                try:
+                    for chunk in response.stream(8192):
+                        yield chunk
+                finally:
+                    response.close()
+                    response.release_conn()
+
+            return StreamingResponse(
+                iterfile(),
+                media_type=mime_type,
+                headers={"Content-Disposition": f'attachment; filename="{title}"'},
+            )
+        except Exception as exc:
+            logger.warning("Failed to download artifact from MinIO: %s", exc)
+            raise HTTPException(status_code=502, detail=f"MinIO download failed: {exc}")
+
+    @app.get("/jobs/{job_id}/artifacts")
+    async def list_job_artifacts(job_id: str, _user: dict = Depends(get_current_user)):
+        """List all artifacts for a Job."""
+        if not app.state.store:
+            raise HTTPException(status_code=503, detail="Store not available")
+        from uuid import UUID
+        try:
+            jid = UUID(job_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid job_id format")
+        return await app.state.store.get_artifacts_for_job(jid)
+
     # ── Static files (Portal UI) ─────────────────────────────────────────
     # Serve compiled portal from /portal; in production, also serve as fallback
     portal_dir = _daemon_home() / "interfaces" / "portal" / "compiled"
@@ -184,6 +287,38 @@ def create_app() -> FastAPI:
         await _shutdown(app)
 
     return app
+
+
+def _init_langfuse() -> None:
+    """Initialize Langfuse SDK for API-process tracing (§2.9).
+
+    When LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY, and LANGFUSE_SECRET_KEY are all
+    set, the Langfuse SDK is initialized globally so that any code that calls
+    langfuse.get_client() will receive an active client.
+
+    This is intentionally kept separate from the Worker-process Langfuse init
+    in DaemonActivities.__init__ — both processes must initialize independently.
+    """
+    lf_host = os.environ.get("LANGFUSE_HOST", "")
+    lf_pk = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
+    lf_sk = os.environ.get("LANGFUSE_SECRET_KEY", "")
+
+    if not (lf_host and lf_pk and lf_sk):
+        logger.info(
+            "Langfuse tracing: disabled (missing LANGFUSE_HOST / LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY)"
+        )
+        return
+
+    try:
+        from langfuse import Langfuse
+        client = Langfuse(public_key=lf_pk, secret_key=lf_sk, host=lf_host)
+        # Flush auth check — raises if credentials are invalid
+        client.auth_check()
+        logger.info("Langfuse tracing enabled: %s", lf_host)
+    except ImportError:
+        logger.info("Langfuse tracing: disabled (langfuse package not installed)")
+    except Exception as exc:
+        logger.warning("Langfuse tracing init failed: %s", exc)
 
 
 async def _startup(app: FastAPI) -> None:
@@ -222,10 +357,22 @@ async def _startup(app: FastAPI) -> None:
             await event_bus.connect(pool)
             app.state.event_bus = event_bus
             logger.info("EventBus connected")
+            # Replay unconsumed events missed during downtime (§6.4)
+            await event_bus.replay_unconsumed()
         except Exception as exc:
             logger.warning("EventBus connect failed: %s", exc)
 
-    # 4. Plane Client
+    # 4. MinIO Client
+    try:
+        from services.minio_client import MinIOClient
+        minio_client = MinIOClient()
+        minio_client.ensure_bucket()
+        app.state.minio_client = minio_client
+        logger.info("MinIO client initialized: %s", minio_client._endpoint)
+    except Exception as exc:
+        logger.warning("MinIO client init failed: %s", exc)
+
+    # 5. Plane Client
     plane_api_url = os.environ.get("PLANE_API_URL", "http://localhost:8001")
     plane_api_token = os.environ.get("PLANE_API_TOKEN", "")
     plane_workspace = os.environ.get("PLANE_WORKSPACE_SLUG", "daemon")
@@ -238,7 +385,7 @@ async def _startup(app: FastAPI) -> None:
         )
         logger.info("PlaneClient initialized: %s", plane_api_url)
 
-    # 5. OpenClaw adapter (for L1 sessions)
+    # 6. OpenClaw adapter (for L1 sessions)
     openclaw_adapter = None
     try:
         from runtime.openclaw import OpenClawAdapter
@@ -247,7 +394,7 @@ async def _startup(app: FastAPI) -> None:
     except Exception as exc:
         logger.warning("OpenClawAdapter init failed: %s (L1 sessions disabled)", exc)
 
-    # 6. Session Manager (L1 persistent sessions)
+    # 7. Session Manager (L1 persistent sessions)
     if app.state.store:
         from services.session_manager import SessionManager
         session_manager = SessionManager(
@@ -259,7 +406,7 @@ async def _startup(app: FastAPI) -> None:
         app.state.session_manager = session_manager
         logger.info("SessionManager started (4 L1 scenes)")
 
-    # 7. Temporal client (for submitting workflows from API)
+    # 8. Temporal client (for submitting workflows from API)
     try:
         temporal_addr = os.environ.get("TEMPORAL_ADDRESS", "localhost:7233")
         temporal_ns = os.environ.get("TEMPORAL_NAMESPACE", "default")
@@ -272,11 +419,12 @@ async def _startup(app: FastAPI) -> None:
     except Exception as exc:
         logger.warning("Temporal client init failed: %s", exc)
 
-    # 8. Configure routes with dependencies
+    # 9. Configure routes with dependencies
     configure_scenes(
         app.state.session_manager,
         store=app.state.store,
         temporal_client=app.state.temporal_client,
+        plane_client=app.state.plane_client,
     )
     configure_webhook(
         webhook_secret=os.environ.get("PLANE_WEBHOOK_SECRET", ""),
@@ -284,16 +432,40 @@ async def _startup(app: FastAPI) -> None:
         event_bus=app.state.event_bus,
         temporal_client=app.state.temporal_client,
     )
+    api_url = os.environ.get("DAEMON_API_URL", "http://localhost:8000")
+    configure_auth(
+        google_client_id=os.environ.get("GOOGLE_CLIENT_ID", ""),
+        google_client_secret=os.environ.get("GOOGLE_CLIENT_SECRET", ""),
+        github_client_id=os.environ.get("GITHUB_CLIENT_ID", ""),
+        github_client_secret=os.environ.get("GITHUB_CLIENT_SECRET", ""),
+        redirect_base_url=api_url,
+    )
 
-    # 9. Register Plane webhook (so Plane sends events to us)
+    # 10. Langfuse tracing (§2.9) — initialize SDK if LANGFUSE_* env vars are set
+    _init_langfuse()
+
+    # 11. Register Plane webhook (so Plane sends events to us)
     if app.state.plane_client:
         await _ensure_plane_webhook(app.state.plane_client)
+
+    # 12. Start OpenClaw gateway (subprocess, lifecycle tied to daemon)
+    app.state.oc_process = await _start_openclaw_gateway(oc_home)
 
     logger.info("daemon API startup complete")
 
 
 async def _shutdown(app: FastAPI) -> None:
     """Cleanup on shutdown."""
+    # Stop OpenClaw gateway first
+    oc_proc = getattr(app.state, "oc_process", None)
+    if oc_proc and oc_proc.returncode is None:
+        oc_proc.terminate()
+        try:
+            await asyncio.wait_for(oc_proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            oc_proc.kill()
+        logger.info("OpenClaw gateway stopped")
+
     if app.state.session_manager:
         await app.state.session_manager.stop()
 
@@ -307,6 +479,42 @@ async def _shutdown(app: FastAPI) -> None:
         await app.state.pool.close()
 
     logger.info("daemon API shutdown complete")
+
+
+async def _start_openclaw_gateway(oc_home: Path):
+    """Launch OpenClaw gateway as a child process.
+
+    The gateway lifecycle is tied to the daemon API process —
+    it starts on startup and is terminated on shutdown.
+    """
+    oc_bin = oc_home / "node_modules" / ".bin" / "openclaw"
+    if not oc_bin.exists():
+        logger.warning("OpenClaw binary not found at %s — gateway not started", oc_bin)
+        return None
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            str(oc_bin), "gateway", "start",
+            cwd=str(oc_home),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        logger.info("OpenClaw gateway started (pid=%d)", proc.pid)
+
+        # Log output in background without blocking startup
+        async def _log_stream(stream, level):
+            async for line in stream:
+                text = line.decode("utf-8", errors="replace").rstrip()
+                if text:
+                    logger.log(level, "[openclaw] %s", text)
+
+        asyncio.create_task(_log_stream(proc.stdout, logging.INFO))
+        asyncio.create_task(_log_stream(proc.stderr, logging.WARNING))
+
+        return proc
+    except Exception as exc:
+        logger.warning("Failed to start OpenClaw gateway: %s", exc)
+        return None
 
 
 async def _ensure_plane_webhook(plane_client) -> None:
@@ -414,6 +622,7 @@ CREATE TABLE IF NOT EXISTS job_steps (
     depends_on    INTEGER[] DEFAULT '{}',
     input_artifacts TEXT[] DEFAULT '{}',
     output_summary TEXT,
+    skill_used    TEXT,
     token_count   INTEGER,
     error_message TEXT,
     started_at    TIMESTAMPTZ,
@@ -486,7 +695,7 @@ CREATE TABLE IF NOT EXISTS knowledge_cache (
     title         TEXT,
     content_summary TEXT,
     ragflow_doc_id TEXT,
-    embedding     vector(1536),
+    embedding     vector(1024),
     user_id       TEXT DEFAULT 'default',
     expires_at    TIMESTAMPTZ NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -498,7 +707,7 @@ CREATE TABLE IF NOT EXISTS event_log (
     channel       TEXT NOT NULL,
     event_type    TEXT NOT NULL,
     payload       JSONB NOT NULL,
-    consumed      BOOLEAN DEFAULT FALSE,
+    consumed_at   TIMESTAMPTZ DEFAULT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -527,7 +736,8 @@ CREATE INDEX IF NOT EXISTS idx_conversation_digests_scene ON conversation_digest
 CREATE INDEX IF NOT EXISTS idx_conversation_decisions_scene ON conversation_decisions(scene, created_at);
 CREATE INDEX IF NOT EXISTS idx_knowledge_cache_expires ON knowledge_cache(expires_at);
 CREATE INDEX IF NOT EXISTS idx_knowledge_cache_project ON knowledge_cache(project_id);
-CREATE INDEX IF NOT EXISTS idx_event_log_consumed ON event_log(consumed, created_at);
+CREATE INDEX IF NOT EXISTS idx_knowledge_cache_embedding ON knowledge_cache USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX IF NOT EXISTS idx_event_log_consumed ON event_log(consumed_at, created_at);
 """
 
 

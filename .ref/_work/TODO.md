@@ -1,166 +1,369 @@
 # daemon TODO
 
-> Rewritten 2026-03-17. Source of truth: SYSTEM_DESIGN.md 七稿 + DD-78/79/80.
-> Goal: complete all items → warmup Stage 1-4.
-
-## Current State
-
-- **Python 层 + OC agent 层**：Phase 0-5 代码实现完成
-- **Docker**：21 容器运行中
-- **MCP servers**：45 个已注册（config/mcp_servers.json），34 个 Python 脚本已写
-- **Tauri 桌面客户端**：可构建运行（8MB .app），UI 设计完成（shadcn + Bricolage Grotesque）
-- **Warmup 脚本**：Stage 0-4 框架就绪，未实际运行
-- **§10 禁止事项**：48 条全部审计通过
+> Rewritten 2026-03-17. Method: SYSTEM_DESIGN.md every section audited against actual code.
+> Goal: fix all issues → warmup Stage 1-4 → production.
 
 ---
 
-## ❌ NOT DONE — Blocks warmup
+## 🔴 CRITICAL — Runtime crashes or broken data paths
 
-### 1. Tauri P1（客户端完善）
+### C1. Worker missing 4 activity registrations
+**Section**: §3.5, §3.6.2, §3.8, §8.1
+**Problem**: `JobWorkflow` calls 4 activities that are NOT registered in `temporal/worker.py`: `activity_post_job_learn`, `activity_persona_taste_update`, `activity_minimize_redo_scope`, `activity_l1_failure_judgment`. Any Job that completes/fails/re-runs will crash with `ActivityNotRegisteredError`.
+**Fix**: In `temporal/worker.py`, add these 4 to the `activities=` list in `Worker()` constructor. They already exist in `DaemonActivities` class — just not registered.
+**Files**: `temporal/worker.py`
+**Effort**: 10 minutes
 
-- [ ] **菜单栏 tray icon（绿/黄/红状态指示）** — P0 声称完成但实际未实现，lib.rs 里只有窗口定位
-- [ ] **4 个场景 panel（PG 数据驱动）** — 后端 API 就绪，前端 PanelView.jsx 是占位
-- [ ] **菜单栏右键菜单**（Start/Stop、任务数、体检状态、Langfuse/Temporal UI 入口）
-- [ ] **全局快捷键**（唤起/隐藏主窗口）
+### C2. Chain trigger has no downstream handler
+**Section**: §3.10
+**Problem**: `activity_trigger_chain` publishes `chain_triggered` event to PG EventBus, but nothing subscribes to this event to create the downstream Job. Chain triggers are fire-and-forget.
+**Fix**: Add an event handler in the API process (or Worker) that listens for `chain_triggered` events and calls `_submit_job()` to start the downstream Task's Job.
+**Files**: `services/api.py` or `temporal/worker.py` (subscriber), `services/event_bus.py`
+**Effort**: 2 hours
 
-### 2. Mem0 集成验证
+### C3. Auth not enforced on API endpoints
+**Section**: §6.13.1
+**Problem**: OAuth flow exists but scene/chat/panel endpoints have no `Depends(get_current_user)`. Anyone on the local network can use the API.
+**Fix**: Add `current_user: User = Depends(get_current_user)` to all scene/panel/job/artifact endpoints in `api_routes/scenes.py`. Keep `/status` and `/health` public.
+**Files**: `services/api_routes/scenes.py`, `services/api.py`
+**Effort**: 1 hour
 
-- [ ] **mem0_client.py 不存在** — mem0_config.py 有了，但没有实际调用 Mem0 API 的客户端封装
-- [ ] **activity_post_job_learn 是否真正接上 Mem0** — 需要验证 Job 完成后 distillation（提取+整合）是否工作
-- [ ] **Mem0 是否自动做 consolidation** — 查 Mem0 API 文档确认，如果自动做则 Background Maintenance 的记忆蒸馏可简化
-
-### 3. Skill 可靠性（§9.5.1）— 暖机 Stage 3 前置依赖
-
-- [ ] CI 脚本：YAML frontmatter 校验
-- [ ] CI 脚本：description 格式校验（ALWAYS/NEVER 祈使句）
-- [ ] CI 脚本：字符预算计算（< 30000）
-- [ ] CI 脚本：SKILL.md 行数校验（< 500）
-- [ ] OC 配置：SLASH_COMMAND_TOOL_CHAR_BUDGET=30000
-- [ ] 所有 SKILL.md description 重写为祈使句
-- [ ] Skill Activation 测试框架（每 skill ≥3 次触发，< 80% 阻断）
-- [ ] 关键 skill Hook 强制（routing_decision / requires_review_judgment）
-
-### 4. InfoPull Workflow（§2.7.1, 信息监控基础设施）
-
-- [ ] Temporal Schedule `InfoPullWorkflow`
-- [ ] Activity: `pull_sources`（direct，调 MCP 拉取）
-- [ ] Activity: `triage_results`（agent，researcher 分析分级）
-- [ ] Activity: `store_results`（direct，存 RAGFlow / knowledge_cache）
-- [ ] Activity: `notify_urgent`（direct，紧急信息推 Telegram）
-- [ ] PG 表 `info_subscriptions`
-- [ ] 配置 `config/info_triage_rules.toml`
-
-### 5. Background Maintenance（§5.9, 系统自维护）
-
-- [ ] `BackgroundMaintenanceWorkflow`（Temporal Schedule，统一调度）
-- [ ] **记忆整理**：取决于 Mem0 是否自动 consolidation。如果不自动，需 memory_merge + memory_gc
-- [ ] **Persona 深度分析**：每周从近期交互提取偏好变化
-- [ ] **规划经验整合**：合并 planning_experience 为策略级洞察
-- [ ] **知识库维护**：knowledge_audit + source_credibility + artifact_review
-- [ ] **系统自省 + 周期性快照**：收集本周 Job 执行记录 / agent 调用模式 / 失败率 → 存结构化快照 → 喂给自省任务 → 输出改进建议
-- [ ] **Ollama 资源隔离**：队列串行 + 实时优先 + 30 分钟超时
-
-### 6. RSSHub 部署
-
-- [ ] Docker 容器 + MCP wrapper，解决 Reddit/知乎/小红书反爬
+### C4. Panel structured data — 5 Store methods missing
+**Section**: §4.2
+**Problem**: `_copilot_structured()`, `_mentor_structured()`, `_coach_structured()` call Store methods that don't exist: `list_projects()`, `list_active_tasks()`, `list_tasks_by_source()`, `list_jobs_by_source()`, `get_job_metrics()`. Panels silently return empty data.
+**Fix**: Implement 5 methods in `services/store.py`:
+- `list_projects()` → `SELECT * FROM daemon_tasks WHERE task_type='project' AND status!='closed'`
+- `list_active_tasks(project_id?)` → `SELECT * FROM daemon_tasks WHERE status IN ('open','in_progress')`
+- `list_tasks_by_source(source)` → filter by `source` column (mentor assignments etc.)
+- `list_jobs_by_source(source)` → filter jobs by source metadata
+- `get_job_metrics(scene, days=7)` → aggregate job success/fail/duration stats
+**Files**: `services/store.py`
+**Effort**: 3 hours
 
 ---
 
-## ⏳ NOT DONE — Not blocking warmup
+## 🟠 HIGH — Core features not implemented
 
-### 7. Tauri P2+
+### H1. Project route not implemented
+**Section**: §3.1
+**Problem**: L1 routing decision `action: "project"` is treated identically to `task` — no Plane Project creation, no multi-Task DAG, no IssueRelation dependencies.
+**Fix**: Create `_submit_project()` in `services/api_routes/scenes.py`:
+1. `plane_client.create_project(title)` → get project_id
+2. Loop over `tasks[]` array: `plane_client.create_issue()` per task
+3. Create `IssueRelation` (blocked_by) between tasks based on dependencies
+4. Start entry task's first Job via `_submit_job()`
+**Files**: `services/api_routes/scenes.py`, `services/plane_client.py` (may need `create_project()`)
+**Effort**: 4 hours
 
-- [ ] [P2] iOS Tauri artifact 查看器（只读）— DD-79
-- [ ] [P3] macOS 开机自启动（launchd plist 已创建，未验证）
+### H2. WebSocket message type protocol
+**Section**: §4.9
+**Problem**: Server sends raw `{type: "reply"}` messages. Design requires 6 typed messages: `text`, `panel_update`, `native_open`, `artifact_show`, `status_update`, `notification`. Frontend has no type-based dispatch.
+**Fix**:
+- Server: In `scenes.py` WebSocket handler, wrap all outgoing messages with the type field per §4.9 table
+- Client: In `SceneChat.jsx` or a new message dispatcher, route by type: `text` → message thread, `panel_update` → refresh panel, `native_open` → call Tauri open command, etc.
+**Files**: `services/api_routes/scenes.py`, `interfaces/portal/src/components/SceneChat.jsx`
+**Effort**: 4 hours
 
-### 8. Google MCP OAuth 补全
+### H3. native_open implementation
+**Section**: §4.2, DD-78, DD-80
+**Problem**: No mechanism for daemon to open external apps. No Tauri shell command, no frontend handler, no window positioning.
+**Fix**:
+1. Tauri: Add `shell` plugin to `Cargo.toml`, expose `open_url` and `open_file` commands
+2. Frontend: On receiving `native_open` message type, call Tauri `invoke('open_file', {path})` or `invoke('open_url', {url})`
+3. Window positioning: After open, run AppleScript via Tauri command to position at 15% left margin
+4. Register `tauri-plugin-shell` in capabilities
+**Files**: `src-tauri/Cargo.toml`, `src-tauri/src/lib.rs`, `src-tauri/capabilities/default.json`, `interfaces/portal/src/lib/api.js`
+**Effort**: 6 hours
 
-- [x] Google OAuth token 已获取（~/.daemon/google_token.json）
-- [ ] Gmail MCP — 代码写好，OAuth 通了，未做端到端测试
-- [ ] Google Calendar MCP — 同上
-- [ ] Google Docs MCP — 同上
-- [ ] Google Drive MCP — 同上
+### H4. Tray icon + right-click menu
+**Section**: §4.2, §6.10.2
+**Problem**: Tauri app has no system tray. Design requires green/yellow/red status icon + right-click menu.
+**Fix**:
+1. Add `tauri-plugin-tray-icon` to `Cargo.toml`
+2. In `lib.rs`: create tray with icon, poll `/status` every 15s, swap icon (green=connected, yellow=degraded, red=disconnected)
+3. Right-click menu items: Start/Stop daemon, task count, health status, Open Langfuse UI, Open Temporal UI
+4. Generate tray icons (green/yellow/red variants) from SVG
+**Files**: `src-tauri/Cargo.toml`, `src-tauri/src/lib.rs`, `src-tauri/icons/tray-*.png`
+**Effort**: 6 hours
 
-### 9. MCP servers 端到端验证
+### H5. Persona file layer missing
+**Section**: §5.3
+**Problem**: `persona/voice/` directory and all persona files don't exist. Design requires: `identity.md`, `common.md`, `zh.md`, `en.md`, `overlays/*.md`.
+**Fix**: Create from Stage 0 interview data:
+1. `persona/voice/identity.md` — core identity from interview §1
+2. `persona/voice/common.md` — shared behavioral norms from interview §6
+3. `persona/voice/en.md` — English output style from interview §2
+4. `persona/voice/zh.md` — Chinese explanation style
+5. `persona/voice/overlays/` — per-scene tone adjustments
+**Files**: `persona/voice/` (new directory)
+**Effort**: 2 hours
 
-45 个已注册，代码已写，但大部分未做端到端测试：
-- [ ] 逐个验证 Python MCP server 能启动、tool 能调用、返回正确结果
-- [ ] 验证需要 API key 的 MCP（Twitter/Strava/intervals.icu/Dev.to/Hashnode/Libraries.io/NewsData/Kaggle）是否有对应 key 在 .env
-- [ ] 验证 npm 包 MCP（zotero/academix/dblp/echarts/leetcode/openweathermap）能 npx 启动
+### H6. Mem0 client wrapper missing
+**Section**: §5.4, §5.5, §8.1
+**Problem**: `mem0_config.py` initializes Mem0, but there's no `mem0_client.py` service wrapper. `activity_post_job_learn` calls Mem0 but the distillation (Extraction + Consolidation) flow is not verified end-to-end.
+**Fix**:
+1. Create `services/mem0_client.py` wrapping Mem0 API: `add_memory()`, `search()`, `get_all()`, `delete()`, `healthy()`
+2. Verify `activity_post_job_learn` actually calls Mem0 write after Job completion
+3. Check if Mem0's built-in Update phase handles consolidation automatically (read Mem0 docs)
+**Files**: `services/mem0_client.py` (new), `temporal/activities.py`
+**Effort**: 3 hours
 
-### 10. 前端遗留
+### H7. Background Maintenance Workflow (§5.9)
+**Section**: §5.9.1-§5.9.4
+**Problem**: `BackgroundMaintenanceWorkflow` doesn't exist. 13 background tasks not implemented. Current `MaintenanceWorkflow` only does basic cleanup.
+**Fix**: Create `temporal/workflows_background.py`:
+```
+BackgroundMaintenanceWorkflow (Temporal Schedule, weekly)
+  ├─ activity_system_snapshot — collect week's Job/agent/failure stats → state/background_reports/
+  ├─ activity_skill_effectiveness — analyze skill usage success rates via Langfuse
+  ├─ activity_failure_pattern — find common failure patterns across Jobs
+  ├─ activity_writing_style_update — update Persona writing traits from recent outputs
+  ├─ activity_persona_deep_analysis — extract preference changes from interactions
+  ├─ activity_planning_consolidate — merge planning_experience into strategy insights
+  └─ activity_knowledge_audit — check knowledge_cache staleness + RAGFlow sync
+```
+All activities use Ollama 32b (local-heavy). Add schedule to `config/schedules.json`.
+**Files**: `temporal/workflows_background.py` (new), `temporal/activities_background.py` (new), `config/schedules.json`, `temporal/worker.py`
+**Effort**: 12 hours
 
-- [ ] Electron 残留目录 `interfaces/portal/electron/` — 可删除
-- [ ] Panel 前端实现（目前 PanelView.jsx 只有 Digests/Decisions 占位，需按 CLIENT_SPEC §2.2 重写）
+### H8. InfoPull Workflow (§2.7.1)
+**Section**: §2.7.1
+**Problem**: Entire InfoPull system missing — no workflow, no activities, no PG table, no triage config.
+**Fix**:
+1. PG migration: `CREATE TABLE info_subscriptions (id, source_type, source_url, pull_frequency, last_pulled, scene, active)`
+2. Config: `config/info_triage_rules.toml` with classification rules
+3. Workflow: `InfoPullWorkflow` in `temporal/workflows.py` (Temporal Schedule)
+4. Activities:
+   - `pull_sources` (direct): call RSS/arXiv/HN MCP servers, collect raw items
+   - `triage_results` (agent): researcher classifies by urgency/relevance
+   - `store_results` (direct): store in RAGFlow/knowledge_cache by tier
+   - `notify_urgent` (direct): push urgent items to Telegram
+5. Register schedule in `config/schedules.json`
+**Files**: `scripts/init-databases.sql`, `config/info_triage_rules.toml` (new), `temporal/workflows.py`, `temporal/activities_infopull.py` (new), `config/schedules.json`
+**Effort**: 10 hours
+
+### H9. Telegram architecture fix
+**Section**: §4.10, DD-79
+**Problem**: Single bot with scene-switching command, not 4 independent DMs. Also `/events/publish` endpoint doesn't exist (desktop sync broken).
+**Fix**:
+1. Either refactor adapter to run 4 webhook handlers (one per bot token) OR document current scene-switching as accepted deviation
+2. Add `POST /events/publish` endpoint to `api.py` for Telegram→desktop sync
+3. Ensure one-way sync: Telegram messages → PG → desktop client (DD-79)
+**Files**: `interfaces/telegram/adapter.py`, `services/api.py`
+**Effort**: 4 hours
+
+### H10. Obsidian vault integration
+**Section**: §5.7.1, DD-81
+**Problem**: Design says Markdown outputs go to Obsidian vault. No vault writing, no vault path config, MCP registered but not wired.
+**Fix**:
+1. Add `OBSIDIAN_VAULT_PATH` to `.env` (Google Drive path)
+2. In publisher/writer post-step activities: if output is Markdown, write to vault via `obsidian-vault` MCP
+3. Vault structure: `daily/`, `references/`, `projects/`, `research/`, `drafts/`, `knowledge/`, `templates/`, `attachments/`
+4. Install Obsidian + Zotero Integration plugin on user's Mac
+**Files**: `.env`, `temporal/activities_exec.py` (post-step hook), vault directory structure
+**Effort**: 4 hours
 
 ---
 
-## ✅ DONE — Completed items（压缩）
+## 🟡 MEDIUM — Incomplete features
 
-### Python 层
-- Phase 0-5 全部 🔴🟠🟡🟢🧹 代码实现 ✅
-- 旧代码全部删除（spine/ psyche/ folio_writ cadence herald ether retinue cortex）✅
-- 新胶水层（plane_client store event_bus session_manager minio_client ragflow_client quota）✅
-- NeMo Guardrails 两层 ✅
-- OAuth + JWT ✅
-- Temporal workflows + activities 全套 ✅
-- Langfuse trace ✅
-- Ollama 本地 LLM（qwen2.5:32b/7b + nomic-embed）+ llm_local.py ✅
+### M1. Skill Graph completeness
+**Section**: §9.2.1
+**Problem**: 15 of 45 skills missing from SKILL_GRAPH.md files. L1 agents' `routing_decision` and `requires_review_judgment` are ungraphed. Only writer is fully covered.
+**Fix**: Update all 10 SKILL_GRAPH.md files to include every skill in the agent's `skills/` directory. Add appropriate edges.
+**Files**: `openclaw/workspace/*/SKILL_GRAPH.md`
+**Effort**: 2 hours
 
-### OC Agent 层
-- 10 agents workspace（SOUL.md/TOOLS.md/AGENTS.md/MEMORY.md/SKILL_GRAPH.md）✅
-- Stage 0 Persona 采访完成 ✅
-- Skills 结构创建 ✅
+### M2. skill_registry.json broken
+**Section**: §9
+**Problem**: 15 skills missing from registry, 10 have naming mismatches (e.g. `task_decomposition_copilot` vs actual dir `task_decomposition`).
+**Fix**: Regenerate `skill_registry.json` from actual workspace directory structure. Script: scan `openclaw/workspace/*/skills/*/SKILL.md`, extract name from frontmatter, write registry.
+**Files**: `config/skill_registry.json`, `scripts/validate_skills.py` (new)
+**Effort**: 1 hour
 
-### 基础设施
-- Docker Compose 21 容器 ✅
-- Firecrawl 自建部署 + SSRF 修复 ✅
-- Docker mem_limit 防护 ✅
-- Embedding primary → nomic-embed-text ✅
+### M3. Skill Graph injection broken in activities_exec.py
+**Section**: §9.2.1
+**Problem**: `step.get("skill")` is never populated by L1 routing — the field doesn't exist in routing decision schema. So `_current_skill` is always empty and no neighbors are injected.
+**Fix**: Add fallback logic: if no explicit `skill` field, match step goal against SKILL_GRAPH.md entry point trigger patterns to find the best-matching skill, then inject its neighbors.
+**Files**: `temporal/activities_exec.py`
+**Effort**: 3 hours
 
-### 桌面客户端
-- Tauri 构建 + 8MB .app ✅
-- UI：shadcn/ui + Bricolage Grotesque + 暖色 mauve 色板 ✅
-- Zoom 1.25（Tauri 自动）✅
-- 15% 左边距窗口定位 ✅
-- OAuth branded 完成页 ✅
-- Icon（淡紫渐变）✅
+### M4. Skill reliability CI scripts (§9.5.1)
+**Section**: §9.5.1
+**Problem**: No CI validation for SKILL.md files. No char budget check. No activation test framework.
+**Fix**: Create `scripts/validate_skills.py`:
+1. Parse all SKILL.md YAML frontmatters — fail on invalid YAML
+2. Check description contains ALWAYS/NEVER — fail if not
+3. Sum all descriptions per agent — fail if > 30000 chars
+4. Check SKILL.md line count — warn if > 500
+5. Optionally: activation test framework that issues targeted prompts and checks Langfuse
+**Files**: `scripts/validate_skills.py` (new)
+**Effort**: 3 hours
 
-### MCP Servers
-- 45 个注册到 mcp_servers.json ✅
-- 34 个 Python 脚本写完 ✅
-- 6 个 npm 包直接注册 ✅
-- Google OAuth helper + token 获取 ✅
+### M5. SLASH_COMMAND_TOOL_CHAR_BUDGET not configured
+**Section**: §9.5.1
+**Problem**: OC config doesn't have this setting. Skills may be silently truncated.
+**Fix**: Add to `openclaw/openclaw.json` under workspace config: `"SLASH_COMMAND_TOOL_CHAR_BUDGET": 30000`. Verify OC respects this setting.
+**Files**: `openclaw/openclaw.json`
+**Effort**: 30 minutes
 
-### 设计决策
-- DD-78：Electron → Tauri + 原生应用调起 ✅
-- DD-79：多平台（macOS Tauri + iOS Tauri + Telegram 信箱）✅
-- DD-80：取消自动分屏，窗口布局交给 Stage Manager ✅
-- §10 禁止事项 48 条审计 ✅
+### M6. L1 multi-session chaining
+**Section**: §3.3.1
+**Problem**: Design says L1 can have multiple sessions chained. Code only tracks one session per scene.
+**Fix**: In `SessionManager`, when current session approaches context limit, create a new session and link via `previous_session_key`. Carry forward compressed context.
+**Files**: `services/session_manager.py`
+**Effort**: 4 hours
 
-### 文件类型 → 应用映射
-- PDF → Zotero ✅
-- 图片 → Preview.app ✅
-- Markdown/HTML → 系统浏览器 ✅
-- 代码 → VS Code ✅
+### M7. Artifact Google Drive sync lifecycle
+**Section**: §6.12.1
+**Problem**: `gdrive_synced` field exists but no sync workflow. Artifacts never reach Google Drive.
+**Fix**: Add post-Job activity: for each artifact in the completed Job, if it's a user-facing output, upload to Google Drive via `google-drive` MCP, mark `gdrive_synced=True`. After 30 days, delete local MinIO copy of synced artifacts.
+**Files**: `temporal/activities.py`, `services/store.py`
+**Effort**: 4 hours
+
+### M8. Plane writeback retry/compensation
+**Section**: §6.6
+**Problem**: No explicit 5-retry with exponential backoff on Plane writeback. No compensation for failed syncs.
+**Fix**: Wrap `activity_plane_writeback` with proper Temporal RetryPolicy: `initial_interval=2s, backoff_coefficient=2, maximum_attempts=5`. On final failure, publish `plane_sync_failed` event and queue for manual review.
+**Files**: `temporal/workflows.py`, `temporal/activities.py`
+**Effort**: 2 hours
+
+### M9. launchd plist fix
+**Section**: §6.10.1
+**Problem**: Plist runs `docker compose up -d` directly, not `scripts/start.py`. Worker and API not started on boot.
+**Fix**: Change plist `ProgramArguments` to `["python3", "/Users/kevinjian/daemon/scripts/start.py"]`.
+**Files**: `config/com.daemon.startup.plist`
+**Effort**: 10 minutes
+
+### M10. Schedule auto-recreation
+**Section**: §6.9
+**Problem**: `activity_schedule_reconciliation` detects drift but doesn't auto-fix.
+**Fix**: When a schedule is missing, recreate it from `config/schedules.json` via `temporal_client.create_schedule()`.
+**Files**: `temporal/activities_health.py`
+**Effort**: 2 hours
+
+### M11. Job sub_status inconsistency
+**Section**: §1.2
+**Problem**: Code uses both `completed` and `succeeded` interchangeably.
+**Fix**: Canonicalize to `succeeded` everywhere. Update PG CHECK constraint if needed.
+**Files**: `services/store.py`, `temporal/workflows.py`, `temporal/activities.py`, `scripts/init-databases.sql`
+**Effort**: 1 hour
+
+### M12. Stage 0 artifacts incomplete
+**Section**: §7.3
+**Problem**: `warmup/writing_samples/` and `warmup/about_me.md` don't exist.
+**Fix**: Create from interview data. Copy writing sample from interview §5 to `warmup/writing_samples/`. Generate `about_me.md` from interview §1.
+**Files**: `warmup/writing_samples/` (new), `warmup/about_me.md` (new)
+**Effort**: 30 minutes
+
+### M13. stage3_test_tasks.json references dead "counsel" agent
+**Section**: §7.3
+**Problem**: T10 lists "counsel" in expected_agents. counsel was removed in seven-draft.
+**Fix**: Replace "counsel" with appropriate L1 agent (likely "copilot").
+**Files**: `warmup/stage3_test_tasks.json`
+**Effort**: 5 minutes
+
+---
+
+## 🟢 LOW — Polish, not blocking
+
+### L1. openclaw.json model overrides stale
+**Problem**: `openclaw.json` has model overrides (researcher→deepseek-reasoner, writer→glm-z1-flash, reviewer→qwen-max) that may not match model_policy.json v7.
+**Fix**: Align or remove OC-level model overrides — Python layer's model_policy should be authoritative.
+**Files**: `openclaw/openclaw.json`
+
+### L2. Electron directory cleanup
+**Problem**: `interfaces/portal/electron/` still exists (Electron has been replaced by Tauri).
+**Fix**: `rm -rf interfaces/portal/electron/`
+**Files**: `interfaces/portal/electron/`
+
+### L3. MCP servers end-to-end verification
+**Problem**: 46 MCP servers registered, most never tested. API keys for some (Twitter/Strava/intervals.icu/Dev.to/Hashnode/Libraries.io/NewsData/Kaggle) may not be in .env.
+**Fix**: Write a verification script that starts each MCP server and calls a basic tool. Check .env for all required keys.
+**Files**: `scripts/verify_mcp.py` (new), `.env`
+
+### L4. UserPromptSubmit hooks for critical skills
+**Section**: §9.5.1
+**Problem**: No OC hooks for `routing_decision` and `requires_review_judgment`.
+**Fix**: Add `UserPromptSubmit` hook configuration in openclaw.json or agent workspace config.
+**Files**: `openclaw/openclaw.json` or workspace config
+
+### L5. RSSHub deployment
+**Problem**: Design mentions RSSHub for Reddit/知乎/小红书 anti-scraping. Not in Docker Compose.
+**Fix**: Add `rsshub` service to `docker-compose.yml`. Write MCP wrapper or configure RSS Reader MCP to use RSSHub endpoints.
+**Files**: `docker-compose.yml`, `mcp_servers/rss_reader.py`
+
+---
+
+## 📐 INFRASTRUCTURE — New systems to build
+
+### I1. Neo4j + openclaw-graph (DD-82)
+**Section**: §9.2.1.1
+**Problem**: Skill Graph is flat files. Token waste + scalability limit + activation accuracy.
+**Fix**:
+1. Add Neo4j to `docker-compose.yml`
+2. Write seed script: parse 45 SKILL.md → create Skill nodes + SkillCluster nodes + IN_CLUSTER/RELATED_TO edges
+3. Replace SKILL_GRAPH.md with Cypher query directives in workspace files
+4. Patch OC workspace.ts (or write Python-side query resolution in activities_exec.py)
+5. Write Rust or Python sync daemon for bidirectional file↔graph sync
+6. Verify token savings (target 60-70%)
+**Files**: `docker-compose.yml`, `scripts/seed_neo4j.py` (new), `temporal/activities_exec.py`, workspace files
+**Effort**: 20 hours
+
+### I2. SOP-driven skill creation
+**Section**: `.ref/_work/SOP.md`
+**Problem**: SOP designed 3 work lines (Research/Engineering/Life) with specific workflows, but no corresponding skills exist for many steps.
+**Fix**: Create new skills for:
+- `researcher/cfp_tracking` — monitor conference deadlines
+- `researcher/literature_mapping` — systematic lit review after build cycle
+- `researcher/peer_review_simulation` — simulate reviewer critique
+- `mentor/code_review_teaching` — teach user to do code review (not just do it for them)
+- `mentor/english_correction` — LanguageTool + error pattern tracking
+- `writer/arxiv_paper` — arXiv-specific paper structure
+- `coach/exercise_plan` — weekly plan generation from Strava/intervals.icu data
+- `copilot/build_cycle_reminder` — detect build completion, trigger lit mapping
+- `publisher/blog_cross_post` — cross-post to Dev.to + Hashnode with canonical URL
+**Files**: `openclaw/workspace/*/skills/*/SKILL.md` (new skills)
+**Effort**: 8 hours
 
 ---
 
 ## ~~取消的项目~~
 
-- ~~远程访问 + PWA~~ — DD-79：不做 Web 端
-- ~~BrowserView / 阅读器 / Monaco~~ — DD-78：原生应用调起
-- ~~自动分屏（macos-control 编排窗口）~~ — DD-80：与 Stage Manager 冲突
-- ~~Electron~~ — DD-78：Tauri 替代
+- ~~远程访问 + PWA~~ — DD-79
+- ~~BrowserView / 阅读器 / Monaco~~ — DD-78
+- ~~自动分屏~~ — DD-80
+- ~~Electron~~ — DD-78
+- ~~Skim PDF viewer~~ — 改用 Zotero
+- ~~XnView MP~~ — 改用 Preview.app
 
 ---
 
-## Warmup（§7）— 上述 1-6 全部完成后
+## ✅ DONE（压缩）
 
-- [x] **Stage 0** — Persona 采访（`persona/stage0_interview.md`）✅
-- [ ] **Stage 1** — Persona 校准：LLM 分析写作样本 → 生成 Persona → Mem0 → writer 试写 + reviewer 校验
-- [ ] **Stage 2** — 链路验证：17 条数据链路端到端（`warmup/stage2_link_verification.py`）
-- [ ] **Stage 3** — 测试任务 + Skill 校准：8-15 个真实任务（`warmup/stage3_runner.py`）
-- [ ] **Stage 4** — 异常场景验证：10 个场景（`warmup/stage4_exceptions.py`）
+- Phase 0-5 Python 层代码框架 ✅
+- 10 agents OC workspace (SOUL/TOOLS/AGENTS/MEMORY/SKILL_GRAPH) ✅
+- 45 SKILL.md + Agent Skills 标准 frontmatter ✅
+- Docker Compose 21 容器 ✅
+- Tauri 桌面客户端 (8MB .app, zoom 1.25, 15% margin, icon) ✅
+- UI: shadcn/ui + Bricolage Grotesque + mauve palette ✅
+- 46 MCP servers 注册 + 34 Python scripts ✅
+- Google OAuth Desktop + branded page ✅
+- Model policy v7 ✅
+- §10 禁止事项 48 条审计 ✅
+- DD-78/79/80/81/82 设计决策 ✅
+- SOP 设计 (Research/Engineering/Life) ✅
+- 基础设施健康检查通过 ✅
+- Warmup Stage 0-4 脚本框架 ✅
+
+---
+
+## Warmup（§7）— C1-C4 + H1-H10 完成后
+
+- [x] **Stage 0** — Persona 采访 ✅
+- [ ] **Stage 1** — Persona 校准 (需要 H5 persona 文件 + H6 Mem0 验证)
+- [ ] **Stage 2** — 17 链路验证 (需要 C1 worker 修复 + C2 chain 修复)
+- [ ] **Stage 3** — Skill 校准 (需要 M1-M5 skill 修复 + M13 test task 修复)
+- [ ] **Stage 4** — 异常场景验证
 
 **收敛标准**：pseudo-human — 连续 5 个不同类型任务的外部产出，与用户本人风格无法区分。

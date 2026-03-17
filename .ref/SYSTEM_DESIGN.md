@@ -2495,6 +2495,42 @@ Skill Graph 的作用是将 agent 的 skill 集合从扁平列表变为有向图
 
 **Skill Graph 的更新遵循 §9.7 的 skill 更新规则**（git 管理、CC/Codex 审查、不自动更新）。
 
+#### 9.2.1.1 Graph-Native Skill 存储（DD-82: openclaw-graph）
+
+**FINAL 规则：Skill Graph 从平面 SKILL_GRAPH.md 迁移到 Neo4j 图数据库，使用 openclaw-graph 方案。**
+
+参考实现：[alphaonedev/openclaw-graph](https://github.com/alphaonedev/openclaw-graph)
+
+**动机**：
+- 平面文件全量加载所有 skill description 到 prompt → token 浪费（~25K bytes → ~660 bytes 查询指令）
+- SKILL_GRAPH.md 手动维护关系不可扩展（SOP 设计后 skill 数量将增长到 100+）
+- 扁平列表导致 activation rate ~50%（§9.5.1），按需查询相关 skill 可提升匹配精度
+- Skill 之间的关系（依赖/互斥/顺序）需要图结构表达，平面文本无法胜任
+
+**架构**：
+```
+workspace 文件（SOUL.md / TOOLS.md 等）
+    ↓ 替换为 Cypher 查询指令
+    <!-- GRAPH: MATCH (s:Skill)-[:IN_CLUSTER]->(c:SkillCluster) ... -->
+    ↓ 运行时查询 Neo4j
+    返回结构化 Markdown 注入 prompt（只包含相关 skill）
+```
+
+**图模型**：
+- `Skill` 节点：每个 skill 一个节点，含 name / description / content / tags
+- `SkillCluster` 节点：按领域分组
+- `(:Skill)-[:IN_CLUSTER]->(:SkillCluster)` 归属关系
+- `(:Skill)-[:RELATED_TO]->(:Skill)` 关联关系（支持多跳遍历）
+- 所有节点含 `workspace` 属性隔离多 agent
+
+**收益**：
+- Token 节省 60-70%（按需加载 vs 全量加载）
+- 子毫秒级 skill 查询
+- Skill 关系可视化和遍历
+- 添加新 skill 时自动融入图结构
+
+**实施**：Neo4j 加入 Docker Compose，seed 脚本从现有 SKILL.md 文件导入。
+
 #### 9.2.2 L1 与 skill 的关系
 
 **FINAL 规则：L1 不感知 skill，只负责目标和 agent。**
