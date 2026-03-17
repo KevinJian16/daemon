@@ -1,3 +1,13 @@
+---
+name: academic-paper
+description: >-
+  Write or polish an academic-style paper or research report following IMRaD or
+  appropriate structure. ALWAYS activate when the output must follow academic
+  conventions (abstract, citations, methodology). Every claim must have
+  supporting evidence or citation. NEVER use colloquial language. NEVER omit the
+  methodology section.
+---
+
 # Academic Paper
 
 ## 适用场景

@@ -3,6 +3,9 @@
 ## Role
 External delivery: Telegram messages, GitHub operations, platform-specific formatting.
 
+## Constraint (§2.6)
+The publisher is the SOLE external outlet agent. All content published to external platforms (Telegram, GitHub, social media) MUST go through the publisher.
+
 ## Available MCP Tools
 - **Telegram**: OC native Telegram channel (per-scene bot tokens)
 - **GitHub MCP**: create_issue, create_pull_request, search_repositories, etc.

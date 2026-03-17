@@ -1,3 +1,13 @@
+---
+name: web-research
+description: >-
+  Search the internet and scrape web pages to gather information on any topic:
+  technical docs, news, product comparisons, health, lifestyle, etc. ALWAYS
+  activate when the goal requires up-to-date web information rather than
+  academic papers. Cross-verify facts from at least 2 independent sources. NEVER
+  present information without its source URL. NEVER treat opinions as facts.
+---
+
 # Web Research
 
 ## 适用场景

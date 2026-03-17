@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback } from "react";
+import { Button } from "@/components/ui/button";
+import { ArrowUpIcon, PlusIcon } from "lucide-react";
 
-export default function Composer({ onSend, disabled }) {
+export default function Composer({ onSend, disabled, sceneName }) {
   const [text, setText] = useState("");
   const textareaRef = useRef(null);
 
@@ -9,7 +11,6 @@ export default function Composer({ onSend, disabled }) {
     if (!trimmed || disabled) return;
     onSend(trimmed);
     setText("");
-    // Reset height
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
@@ -24,37 +25,50 @@ export default function Composer({ onSend, disabled }) {
 
   const handleInput = (e) => {
     setText(e.target.value);
-    // Auto-resize
     const el = e.target;
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 200) + "px";
   };
 
+  const handleAttach = () => {
+    // TODO: implement file upload when backend supports multipart
+  };
+
   return (
-    <div className="border-t border-surface-3 px-4 py-3">
-      <div className="flex items-end gap-2 max-w-3xl mx-auto">
-        <textarea
-          ref={textareaRef}
-          value={text}
-          onChange={handleInput}
-          onKeyDown={handleKeyDown}
-          placeholder={disabled ? "Connecting..." : "Type a message... (Enter to send, Shift+Enter for newline)"}
-          disabled={disabled}
-          rows={1}
-          className="flex-1 bg-surface-2 border border-surface-3 rounded-xl px-4 py-2.5 text-sm
-                     text-gray-100 placeholder-gray-500 resize-none outline-none
-                     focus:border-accent/50 focus:ring-1 focus:ring-accent/20
-                     disabled:opacity-50 transition-colors"
-        />
-        <button
-          onClick={handleSend}
-          disabled={disabled || !text.trim()}
-          className="bg-accent hover:bg-accent-hover disabled:bg-surface-3 disabled:text-gray-600
-                     text-white rounded-xl px-4 py-2.5 text-sm font-medium
-                     transition-colors shrink-0"
-        >
-          Send
-        </button>
+    <div className="px-5 pb-4 pt-2 shrink-0">
+      <div className="max-w-2xl mx-auto">
+        <div className="flex items-center gap-2 rounded-xl border border-input bg-background p-2.5 shadow-xs focus-within:ring-1 focus-within:ring-ring transition-shadow">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={handleAttach}
+            disabled={disabled}
+            className="text-muted-foreground shrink-0"
+          >
+            <PlusIcon className="h-4 w-4" />
+          </Button>
+          <textarea
+            ref={textareaRef}
+            value={text}
+            onChange={handleInput}
+            onKeyDown={handleKeyDown}
+            placeholder={disabled ? "Connecting..." : `Message ${sceneName || "Daemon"}...`}
+            disabled={disabled}
+            rows={1}
+            className="flex-1 bg-transparent border-none outline-none resize-none
+                       min-h-[28px] max-h-[200px] text-sm leading-[28px]
+                       placeholder:text-muted-foreground disabled:opacity-50"
+          />
+          <Button
+            size="icon-sm"
+            variant={text.trim() ? "default" : "ghost"}
+            onClick={handleSend}
+            disabled={disabled || !text.trim()}
+            className="shrink-0"
+          >
+            <ArrowUpIcon className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
     </div>
   );

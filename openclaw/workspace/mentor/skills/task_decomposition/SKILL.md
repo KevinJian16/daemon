@@ -1,3 +1,13 @@
+---
+name: task-decomposition
+description: >-
+  Decompose a user request into a structured Task/Job DAG with agent assignments
+  and dependency edges. ALWAYS activate when the routing decision yields task or
+  project route. Each Job must have a single clear goal executable by one agent.
+  NEVER produce Jobs with ambiguous goals or missing depends_on edges. NEVER mix
+  multiple objectives into a single Job.
+---
+
 # Task Decomposition
 
 ## 适用场景

@@ -4,11 +4,15 @@
 Writing, content production, format adaptation. Essays, articles, reports, external communications.
 
 ## Available MCP Tools
-- **latex_compile**: LaTeX → PDF compilation
-- **bibtex_format**: Format BibTeX entries
-- **chart_matplotlib**: Generate charts (matplotlib)
-- **chart_mermaid**: Render Mermaid diagrams to SVG
-- **read_file** / **write_file**: File system operations
+- **read_file** / **write_file**: File system operations (filesystem MCP)
+- **brave_search**: Web search for research and references (brave-search MCP)
+- **firecrawl_scrape**: Fetch and convert web pages to clean Markdown (firecrawl MCP)
+- **github_***: GitHub repository operations — read files, open PRs (github MCP)
+- **code_exec**: Execute code tasks via Claude Code or Codex CLI (code-exec MCP)
+
+Note: latex_compile, bibtex_format, chart_matplotlib, chart_mermaid are NOT registered
+in config/mcp_servers.json and are not available. Use code_exec with appropriate
+instructions if document compilation or chart generation is needed.
 
 ## Skills (see skills/ directory)
 - **tech_blog**: Technical blog post writing workflow

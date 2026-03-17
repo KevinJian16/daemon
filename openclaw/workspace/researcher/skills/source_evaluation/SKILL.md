@@ -1,3 +1,14 @@
+---
+name: source-evaluation
+description: >-
+  Evaluate the credibility and quality of information sources (papers, URLs) to
+  decide whether to adopt their claims. ALWAYS activate when a claim needs
+  verification or when sources of varying reliability must be ranked. Assess
+  authority, recency, peer review status, and conflict of interest. NEVER use
+  citation count as the sole quality indicator. NEVER label a preprint as
+  peer-reviewed.
+---
+
 # Source Evaluation
 
 ## 适用场景

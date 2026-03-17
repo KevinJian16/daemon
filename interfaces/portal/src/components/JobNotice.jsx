@@ -1,16 +1,27 @@
 import { useState, useEffect } from "react";
 import { listJobs } from "../lib/api";
 
-const STATUS_COLORS = {
-  running: "bg-blue-500/20 text-blue-300 border-blue-500/30",
-  closed: "bg-green-500/20 text-green-300 border-green-500/30",
-  failed: "bg-red-500/20 text-red-300 border-red-500/30",
+const STATUS_STYLES = {
+  running: {
+    background: "rgba(99, 102, 241, 0.08)",
+    color: "#6366f1",
+    border: "1px solid rgba(99, 102, 241, 0.2)",
+  },
+  closed: {
+    background: "rgba(5, 150, 105, 0.08)",
+    color: "#059669",
+    border: "1px solid rgba(5, 150, 105, 0.2)",
+  },
+  failed: {
+    background: "rgba(220, 38, 38, 0.08)",
+    color: "#dc2626",
+    border: "1px solid rgba(220, 38, 38, 0.2)",
+  },
 };
 
 export default function JobNotice({ job, onDismiss }) {
   const [status, setStatus] = useState("running");
 
-  // Poll job status
   useEffect(() => {
     if (status !== "running") return;
     const interval = setInterval(async () => {
@@ -31,21 +42,23 @@ export default function JobNotice({ job, onDismiss }) {
 
   const actionType = job.action?.action || "job";
   const title = job.action?.title || `Job ${job.job_id.slice(0, 8)}`;
-  const colorClass = STATUS_COLORS[status] || STATUS_COLORS.running;
+  const style = STATUS_STYLES[status] || STATUS_STYLES.running;
 
   return (
     <div
-      className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs ${colorClass}`}
+      className="flex items-center justify-between rounded-lg px-3 py-2 text-xs animate-fade-in"
+      style={style}
     >
       <div className="flex items-center gap-2">
         <span className="font-medium">{actionType}</span>
-        <span className="text-gray-400">|</span>
+        <span style={{ color: "var(--text-tertiary)" }}>|</span>
         <span>{title}</span>
         <span className="opacity-60">({status})</span>
       </div>
       <button
         onClick={() => onDismiss(job.job_id)}
-        className="text-gray-500 hover:text-gray-300 ml-2"
+        className="ml-2 transition-colors"
+        style={{ color: "var(--text-tertiary)" }}
       >
         &times;
       </button>

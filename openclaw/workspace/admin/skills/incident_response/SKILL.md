@@ -1,3 +1,14 @@
+---
+name: incident-response
+description: >-
+  Respond to system failures: triage, contain the blast radius, diagnose root
+  cause, fix, and produce a post-mortem. ALWAYS activate when a system component
+  is down or degraded and user operations are impacted. Contain the incident
+  BEFORE diagnosing root cause. NEVER skip containment to jump straight into
+  debugging. NEVER close an incident without a prevention measure in the
+  post-mortem.
+---
+
 # Incident Response
 
 ## 适用场景

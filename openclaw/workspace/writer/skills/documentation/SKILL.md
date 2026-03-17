@@ -1,3 +1,14 @@
+---
+name: documentation
+description: >-
+  Write structured documentation: API references, user guides, how-to manuals,
+  structured plans (fitness, study, project), or operational procedures. ALWAYS
+  activate when the goal is to produce any form of reference documentation or
+  actionable plan. Match structure to doc type (reference, guide, plan, manual).
+  NEVER produce a plan without concrete timelines and actionable steps. NEVER
+  let code examples diverge from the current codebase.
+---
+
 # Documentation
 
 ## 适用场景

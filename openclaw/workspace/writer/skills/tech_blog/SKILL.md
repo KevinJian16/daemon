@@ -1,3 +1,14 @@
+---
+name: tech-blog
+description: >-
+  Write a technical blog post targeting developers, with clear structure,
+  runnable code examples, and actionable takeaways. ALWAYS activate when the
+  goal is to produce a blog post or technical article for a developer audience.
+  State reader benefit within the first 3 sentences. NEVER include code examples
+  that cannot run standalone. NEVER use undefined technical terms without
+  explanation.
+---
+
 # Tech Blog
 
 ## 适用场景

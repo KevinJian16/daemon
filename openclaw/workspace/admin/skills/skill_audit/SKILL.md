@@ -1,3 +1,14 @@
+---
+name: skill-audit
+description: >-
+  Audit SKILL.md effectiveness using Langfuse trace data: measure success rate,
+  latency, token usage, and identify failure patterns. ALWAYS activate when
+  skill performance needs evaluation or when success rates drop below baseline.
+  Base all recommendations on actual trace evidence. NEVER propose changes
+  without citing specific trace IDs. NEVER draw conclusions from insufficient
+  sample sizes.
+---
+
 # Skill Audit
 
 ## 适用场景

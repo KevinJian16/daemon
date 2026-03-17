@@ -3,17 +3,28 @@
  *
  * All HTTP goes through /api → http://127.0.0.1:8100
  * WebSocket goes through /ws → ws://127.0.0.1:8100
+ *
+ * Includes JWT token in Authorization header when available.
  */
 
+import { getStoredToken } from "./platform";
+
 // In dev mode (Vite), /api gets proxied to the daemon API.
-// In production (served by FastAPI at /portal/), no prefix needed.
-const API = import.meta.env.DEV ? "/api" : "";
+// In Tauri, request daemon API directly at localhost:8100.
+// In production web (if ever), no prefix needed.
+const API = import.meta.env.DEV
+  ? "/api"
+  : window.__TAURI_INTERNALS__
+    ? "http://127.0.0.1:8100"
+    : "";
 
 async function request(method, path, body) {
-  const opts = {
-    method,
-    headers: { "Content-Type": "application/json" },
-  };
+  const token = await getStoredToken();
+  const headers = { "Content-Type": "application/json" };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const opts = { method, headers };
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(`${API}${path}`, opts);
   if (!res.ok) {
@@ -64,9 +75,13 @@ export async function getHealth() {
 // ── WebSocket ─────────────────────────────────────────────────────────────
 
 export function connectStream(scene, { onReply, onAction, onError, onClose }) {
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const wsPrefix = import.meta.env.DEV ? "/ws" : "";
-  const url = `${proto}//${window.location.host}${wsPrefix}/scenes/${scene}/chat/stream`;
+  const isTauri = !!window.__TAURI_INTERNALS__;
+  const wsBase = import.meta.env.DEV
+    ? `ws://${window.location.host}/ws`
+    : isTauri
+      ? "ws://127.0.0.1:8100"
+      : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
+  const url = `${wsBase}/scenes/${scene}/chat/stream`;
   const ws = new WebSocket(url);
 
   ws.onmessage = (event) => {

@@ -1,3 +1,14 @@
+---
+name: data-visualization
+description: >-
+  Transform structured data into charts, tables, or diagrams (Markdown tables,
+  matplotlib, Mermaid) for clear visual communication. ALWAYS activate when the
+  goal involves presenting data comparisons, trends, rankings, or architecture
+  as visual artifacts. Label all axes, add titles and legends, cite data
+  sources. NEVER exceed 6 comparison dimensions per chart. NEVER omit source
+  attribution below the visualization.
+---
+
 # Data Visualization
 
 ## 适用场景

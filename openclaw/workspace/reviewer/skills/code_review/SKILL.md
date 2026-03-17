@@ -1,3 +1,13 @@
+---
+name: code-review
+description: >-
+  Audit code changes for correctness, security, and style conformance, producing
+  categorized findings with line references. ALWAYS activate when code diffs or
+  changed files need independent review. Mark all security issues as blockers.
+  NEVER review changed lines in isolation without reading surrounding context.
+  NEVER mix severity levels (blocker vs. nit) without clear categorization.
+---
+
 # Code Review
 
 ## 适用场景

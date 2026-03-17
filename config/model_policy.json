@@ -1,31 +1,53 @@
 {
-  "_comment": "Model routing policy — maps agents to model aliases. Consumed by OpenClaw agent sessions.",
-  "_version": "3.0.0",
-  "_updated": "2026-03-15",
+  "_comment": "Model routing policy v7 — 2026-03-17. MiniMax=L1 conversation, Qwen=routing+researcher+engineer, GLM=writer+reviewer, Ollama=publisher+admin+internal tasks.",
+  "_version": "7.0.0",
+  "_updated": "2026-03-17",
   "default_alias": "fast",
   "agent_model_map": {
-    "_comment": "Per-agent model assignment. Mirrors openclaw.json agent overrides.",
+    "_comment": "Per-agent model assignment for Step execution.",
     "copilot": "fast",
     "mentor": "fast",
     "coach": "fast",
     "operator": "fast",
-    "researcher": "fast",
-    "engineer": "fast",
+    "researcher": "analysis",
+    "engineer": "analysis",
     "writer": "creative",
     "reviewer": "review",
-    "publisher": "fast",
-    "admin": "fast"
+    "publisher": "local-light",
+    "admin": "local-heavy"
+  },
+  "l1_routing_model": {
+    "_comment": "Routing decision (DAG planning, agent selection) uses Qwen for reasoning quality. Separate from L1 conversation model.",
+    "alias": "analysis"
+  },
+  "task_model_map": {
+    "_comment": "Internal tasks routed to local models. These override agent_model_map.",
+    "infopull_triage": "local-heavy",
+    "infopull_classify": "local-light",
+    "guardrails_check": "local-light",
+    "replan_gate": "local-heavy",
+    "knowledge_extract": "local-heavy",
+    "feedback_classify": "local-light",
+    "health_check_quality": "local-light",
+    "session_compress": "local-heavy",
+    "l1_failure_judgment": "local-heavy"
+  },
+  "embedding_model": {
+    "_comment": "Primary: local nomic-embed-text (768d, 47ms). Fallback: zhipu embedding-3 (1024d).",
+    "primary": "local-embedding",
+    "fallback": "embedding"
   },
   "budget_limits": {
-    "minimax_tokens_per_day": 20000000,
-    "deepseek_tokens_per_day": 5000000,
+    "_comment": "MiniMax: -1 = Coding Plan. Qwen/Zhipu: per-token daily caps. Ollama: unlimited (local).",
+    "minimax_tokens_per_day": -1,
     "qwen_tokens_per_day": 10000000,
-    "zhipu_tokens_per_day": 5000000
+    "zhipu_tokens_per_day": 10000000,
+    "ollama_tokens_per_day": -1
   },
   "provider_route": [
     "minimax",
     "qwen",
     "zhipu",
-    "deepseek"
+    "ollama"
   ]
 }

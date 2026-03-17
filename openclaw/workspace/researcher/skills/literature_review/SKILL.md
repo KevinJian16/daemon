@@ -1,3 +1,13 @@
+---
+name: literature-review
+description: >-
+  Conduct a systematic literature review on a topic, producing a structured
+  survey of foundational work, mainstream methods, and recent advances. ALWAYS
+  activate when the goal is a comprehensive survey or state-of-the-art analysis.
+  Cover three layers: foundational, mainstream, and cutting-edge work. NEVER
+  produce a mere list of papers without analytical narrative and synthesis.
+---
+
 # Literature Review
 
 ## 适用场景

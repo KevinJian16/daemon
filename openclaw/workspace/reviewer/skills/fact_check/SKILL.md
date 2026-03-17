@@ -1,3 +1,14 @@
+---
+name: fact-check
+description: >-
+  Verify factual claims in text by classifying each as Tier A (primary source
+  confirmed), Tier B (secondary source or reasonable inference), or Tier C
+  (unsupported or contradicted). ALWAYS activate when output contains factual
+  assertions (numbers, dates, causal claims, citations) that need verification.
+  NEVER label an unverified claim as Tier A. NEVER skip implicit claims (e.g.,
+  comparative statements implying a baseline).
+---
+
 # Fact Check
 
 ## 适用场景

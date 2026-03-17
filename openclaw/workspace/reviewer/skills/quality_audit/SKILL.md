@@ -1,3 +1,13 @@
+---
+name: quality-audit
+description: >-
+  Evaluate whether an output artifact meets the original requirements and
+  acceptance criteria. ALWAYS activate when a completed deliverable must be
+  validated against its specification. Check every acceptance criterion; flag
+  missing and extraneous content. NEVER pass an artifact that fails any blocking
+  criterion. NEVER do surface-only checks without verifying substantive content.
+---
+
 # Quality Audit
 
 ## 适用场景

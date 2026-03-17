@@ -1,3 +1,13 @@
+---
+name: debug-locate
+description: >-
+  Locate the root cause of a bug by tracing from symptoms through the call chain
+  to the originating code. ALWAYS activate when given an error message, stack
+  trace, or anomalous behavior to diagnose. Follow the full call chain; NEVER
+  stop at the first suspicious location without completing the trace. NEVER
+  confuse a surface symptom with the root cause.
+---
+
 # Debug Locate
 
 ## 适用场景

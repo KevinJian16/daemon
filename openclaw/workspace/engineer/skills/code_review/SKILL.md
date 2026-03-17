@@ -1,3 +1,13 @@
+---
+name: code-review
+description: >-
+  Review code changes for correctness, security vulnerabilities, and style
+  consistency. ALWAYS activate when receiving code diffs or file changes for
+  review. Reference specific file paths and line numbers for every issue found.
+  NEVER skip security checks (injection, hardcoded credentials, unsafe
+  dependencies). NEVER conflate style nits with correctness blockers.
+---
+
 # Code Review
 
 ## 适用场景

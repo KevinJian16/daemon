@@ -1,3 +1,13 @@
+---
+name: health-check
+description: >-
+  Diagnose the running status of all system components (API, Worker, PostgreSQL,
+  MinIO, Langfuse, Temporal). ALWAYS activate when the goal is to check system
+  health or when anomalies are suspected. Verify actual service response, not
+  just port availability. NEVER report a service as healthy based solely on an
+  open port without a successful response.
+---
+
 # Health Check
 
 ## 适用场景

@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
 import { getPanel } from "../lib/api";
+import { Button } from "@/components/ui/button";
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 
 function Section({ title, children, count }) {
   const [open, setOpen] = useState(true);
@@ -7,12 +9,16 @@ function Section({ title, children, count }) {
     <div className="mb-4">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 text-xs font-medium text-gray-400 uppercase tracking-wider mb-2 hover:text-gray-300"
+        className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider mb-2 text-muted-foreground hover:text-foreground transition-colors"
       >
-        <span>{open ? "\u25BE" : "\u25B8"}</span>
+        {open ? (
+          <ChevronDownIcon className="w-3 h-3" />
+        ) : (
+          <ChevronRightIcon className="w-3 h-3" />
+        )}
         <span>{title}</span>
         {count != null && (
-          <span className="text-gray-600">({count})</span>
+          <span className="text-muted-foreground/50">({count})</span>
         )}
       </button>
       {open && children}
@@ -47,22 +53,21 @@ export default function PanelView({ scene }) {
     };
     load();
     const interval = setInterval(load, 30000);
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
+    return () => { mounted = false; clearInterval(interval); };
   }, [scene]);
 
   if (error) {
     return (
-      <div className="p-4 text-xs text-gray-500">
+      <div className="p-4 text-xs text-muted-foreground">
         Panel unavailable: {error}
       </div>
     );
   }
 
   if (!data) {
-    return <div className="p-4 text-xs text-gray-500">Loading panel...</div>;
+    return (
+      <div className="p-4 text-xs text-muted-foreground">Loading panel...</div>
+    );
   }
 
   const digests = data.digests || [];
@@ -72,15 +77,15 @@ export default function PanelView({ scene }) {
     <div className="p-4 overflow-y-auto h-full text-sm">
       <Section title="Digests" count={digests.length}>
         {digests.length === 0 ? (
-          <p className="text-xs text-gray-600">No digests yet.</p>
+          <p className="text-xs text-muted-foreground">No digests yet.</p>
         ) : (
           <div className="space-y-2">
             {digests.map((d, i) => (
-              <div key={d.digest_id || i} className="bg-surface-2 rounded-lg p-3 text-xs">
-                <div className="text-gray-400 mb-1">
+              <div key={d.digest_id || i} className="rounded-lg bg-muted p-3 text-xs">
+                <div className="mb-1 text-muted-foreground">
                   {timeAgo(d.time_range_end)} &middot; {d.source_message_count || "?"} msgs
                 </div>
-                <div className="text-gray-200 whitespace-pre-wrap">{d.summary}</div>
+                <div className="text-foreground whitespace-pre-wrap">{d.summary}</div>
               </div>
             ))}
           </div>
@@ -89,22 +94,25 @@ export default function PanelView({ scene }) {
 
       <Section title="Decisions" count={decisions.length}>
         {decisions.length === 0 ? (
-          <p className="text-xs text-gray-600">No decisions yet.</p>
+          <p className="text-xs text-muted-foreground">No decisions yet.</p>
         ) : (
           <div className="space-y-2">
             {decisions.map((d, i) => (
-              <div key={d.decision_id || i} className="bg-surface-2 rounded-lg p-3 text-xs">
+              <div key={d.decision_id || i} className="rounded-lg bg-muted p-3 text-xs">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="px-1.5 py-0.5 rounded bg-accent/20 text-accent text-[10px] font-medium uppercase">
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-medium uppercase bg-primary/10 text-primary">
                     {d.decision_type}
                   </span>
-                  <span className="text-gray-500">{timeAgo(d.created_at)}</span>
+                  <span className="text-muted-foreground">{timeAgo(d.created_at)}</span>
                 </div>
-                <div className="text-gray-200">{d.content}</div>
+                <div className="text-foreground">{d.content}</div>
                 {d.tags?.length > 0 && (
                   <div className="flex gap-1 mt-1.5">
                     {d.tags.map((t) => (
-                      <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-gray-400">
+                      <span
+                        key={t}
+                        className="text-[10px] px-1.5 py-0.5 rounded bg-accent text-accent-foreground"
+                      >
                         {t}
                       </span>
                     ))}

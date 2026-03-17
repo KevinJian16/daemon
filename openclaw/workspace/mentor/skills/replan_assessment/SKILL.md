@@ -1,3 +1,14 @@
+---
+name: replan-assessment
+description: >-
+  Evaluate a completed Job's output against its original goal and decide whether
+  replanning is needed. ALWAYS activate at the Replan Gate after every Job
+  closes. Compare output to goal, check downstream input requirements, and
+  classify deviation as none/adjustable/replan. NEVER pass a clearly deficient
+  output through the gate. NEVER introduce new Jobs unrelated to the original
+  goal during replanning.
+---
+
 # Replan Assessment
 
 ## 适用场景

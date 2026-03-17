@@ -1,76 +1,196 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+@import '@fontsource-variable/bricolage-grotesque';
+
+@theme {
+  /* shadcn color mappings */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Scene colors — softer palette */
+  --color-scene-copilot: var(--scene-copilot);
+  --color-scene-mentor: var(--scene-mentor);
+  --color-scene-coach: var(--scene-coach);
+  --color-scene-operator: var(--scene-operator);
+
+  /* Radius — rounder, softer */
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+
+  /* Font — Bricolage Grotesque: quirky grotesque with subtle serif hints */
+  --font-sans: 'Bricolage Grotesque Variable', ui-sans-serif, system-ui, sans-serif;
+
+  /* Custom animations */
+  --animate-fade-in: fade-in 0.2s ease-out;
+  --animate-pulse-bar: pulse-bar 1.8s ease-in-out infinite;
+
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(3px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes pulse-bar {
+    0% { width: 0%; opacity: 0.6; }
+    50% { width: 100%; opacity: 1; }
+    100% { width: 0%; opacity: 0.6; }
+  }
+}
+
+/* ── Base ── */
 
 @layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+
+  body {
+    font-size: 16px;
+    line-height: 1.6;
+    letter-spacing: -0.01em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    @apply bg-background text-foreground;
+  }
+
   * {
     scrollbar-width: thin;
-    scrollbar-color: #333 transparent;
+    @apply border-border outline-ring/50;
   }
 
-  ::selection {
-    background: rgba(99, 102, 241, 0.3);
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { @apply bg-border rounded-sm; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-muted-foreground/40; }
+
+  :root {
+    /* Warm cream background, soft rose-mauve primary */
+    --background: oklch(0.995 0.004 75);
+    --foreground: oklch(0.25 0.015 300);
+    --card: oklch(0.995 0.004 75);
+    --card-foreground: oklch(0.25 0.015 300);
+    --popover: oklch(0.997 0.003 75);
+    --popover-foreground: oklch(0.25 0.015 300);
+    --primary: oklch(0.65 0.1 310);
+    --primary-foreground: oklch(0.99 0.005 310);
+    --secondary: oklch(0.965 0.012 310);
+    --secondary-foreground: oklch(0.48 0.06 310);
+    --muted: oklch(0.965 0.008 310);
+    --muted-foreground: oklch(0.55 0.015 300);
+    --accent: oklch(0.955 0.015 310);
+    --accent-foreground: oklch(0.48 0.06 310);
+    --destructive: oklch(0.65 0.16 15);
+    --border: oklch(0.93 0.006 310);
+    --input: oklch(0.93 0.006 310);
+    --ring: oklch(0.65 0.1 310);
+    --chart-1: oklch(0.65 0.1 310);
+    --chart-2: oklch(0.7 0.1 350);
+    --chart-3: oklch(0.62 0.08 260);
+    --chart-4: oklch(0.72 0.08 175);
+    --chart-5: oklch(0.7 0.1 60);
+    --radius: 0.75rem;
+    --sidebar: oklch(0.985 0.006 310);
+    --sidebar-foreground: oklch(0.25 0.015 300);
+    --sidebar-primary: oklch(0.65 0.1 310);
+    --sidebar-primary-foreground: oklch(0.99 0.005 310);
+    --sidebar-accent: oklch(0.955 0.015 310);
+    --sidebar-accent-foreground: oklch(0.42 0.06 310);
+    --sidebar-border: oklch(0.925 0.008 310);
+    --sidebar-ring: oklch(0.65 0.1 310);
+
+    /* Scene colors — pastel, soft */
+    --scene-copilot: oklch(0.65 0.1 290);
+    --scene-mentor: oklch(0.72 0.1 60);
+    --scene-coach: oklch(0.68 0.08 175);
+    --scene-operator: oklch(0.68 0.1 15);
+  }
+
+  .dark {
+    --background: oklch(0.16 0.015 280);
+    --foreground: oklch(0.94 0.01 280);
+    --card: oklch(0.2 0.015 280);
+    --card-foreground: oklch(0.94 0.01 280);
+    --popover: oklch(0.2 0.015 280);
+    --popover-foreground: oklch(0.94 0.01 280);
+    --primary: oklch(0.72 0.12 300);
+    --primary-foreground: oklch(0.16 0.015 280);
+    --secondary: oklch(0.26 0.02 280);
+    --secondary-foreground: oklch(0.94 0.01 280);
+    --muted: oklch(0.26 0.02 280);
+    --muted-foreground: oklch(0.65 0.02 280);
+    --accent: oklch(0.26 0.02 280);
+    --accent-foreground: oklch(0.94 0.01 280);
+    --destructive: oklch(0.7 0.18 18);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.72 0.12 300);
+    --sidebar: oklch(0.19 0.015 280);
+    --sidebar-foreground: oklch(0.94 0.01 280);
+    --sidebar-primary: oklch(0.72 0.12 300);
+    --sidebar-primary-foreground: oklch(0.16 0.015 280);
+    --sidebar-accent: oklch(0.26 0.02 280);
+    --sidebar-accent-foreground: oklch(0.94 0.01 280);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.72 0.12 300);
   }
 }
 
-@layer components {
-  .scene-pill {
-    @apply px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-150
-           cursor-pointer select-none;
-  }
+/* ── Message content ── */
 
-  .scene-pill-active {
-    @apply text-white shadow-lg;
-  }
-
-  .scene-pill-inactive {
-    @apply text-gray-400 hover:text-gray-200 bg-surface-2 hover:bg-surface-3;
-  }
-
-  .msg-bubble {
-    @apply max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed;
-  }
-
-  .msg-user {
-    @apply bg-accent text-white ml-auto rounded-br-md;
-  }
-
-  .msg-assistant {
-    @apply bg-surface-2 text-gray-100 mr-auto rounded-bl-md;
-  }
-
-  .msg-system {
-    @apply bg-surface-1 text-gray-400 mx-auto text-xs italic border border-surface-3;
-  }
-}
-
-/* Markdown-like formatting inside messages */
-.msg-bubble p + p {
+.msg-content p + p {
   margin-top: 0.5em;
 }
 
-.msg-bubble code {
-  @apply bg-black/30 px-1 py-0.5 rounded text-xs font-mono;
+.msg-content a {
+  @apply text-primary underline underline-offset-2;
 }
 
-.msg-bubble pre {
-  @apply bg-black/40 rounded-lg p-3 my-2 overflow-x-auto text-xs;
+.msg-content blockquote {
+  @apply border-l-2 border-primary/30 pl-3 text-muted-foreground my-2;
 }
 
-.msg-bubble pre code {
-  @apply bg-transparent p-0;
+/* ── Streaming cursor ── */
+
+.streaming-cursor {
+  @apply inline-block w-0.5 h-4 ml-0.5 bg-primary;
+  animation: pulse-subtle 1.5s ease-in-out infinite;
 }
 
-/* Typing indicator */
-@keyframes blink {
-  0%, 80%, 100% { opacity: 0.2; }
-  40% { opacity: 1; }
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
-
-.typing-dot {
-  @apply inline-block w-1.5 h-1.5 rounded-full bg-gray-400 mx-0.5;
-  animation: blink 1.4s infinite;
-}
-
-.typing-dot:nth-child(2) { animation-delay: 0.2s; }
-.typing-dot:nth-child(3) { animation-delay: 0.4s; }

@@ -1,3 +1,13 @@
+---
+name: announcement
+description: >-
+  Draft a concise announcement for product launches, feature updates, or change
+  notifications in inverted-pyramid style. ALWAYS activate when the goal is to
+  communicate a change, release, or update to an audience. Lead with the key
+  message; keep under 500 words. NEVER bury critical information in later
+  paragraphs. NEVER omit effective date or impact scope.
+---
+
 # Announcement
 
 ## 适用场景

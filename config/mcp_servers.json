@@ -16,10 +16,7 @@
     "semantic-scholar": {
       "transport": "stdio",
       "command": "python3",
-      "args": ["/Users/kevinjian/daemon/mcp_servers/semantic_scholar.py"],
-      "env": {
-        "S2_API_KEY": "${S2_API_KEY}"
-      }
+      "args": ["/Users/kevinjian/daemon/mcp_servers/semantic_scholar.py"]
     },
     "code-functions": {
       "transport": "stdio",
@@ -46,6 +43,242 @@
       "transport": "stdio",
       "command": "python3",
       "args": ["/Users/kevinjian/daemon/mcp_servers/paper_tools.py"]
+    },
+    "playwright": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    },
+    "code-exec": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/runtime/mcp_code_exec.py"]
+    },
+
+    "zotero": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "mcp-zotero"],
+      "env": {
+        "ZOTERO_API_KEY": "${ZOTERO_API_KEY}",
+        "ZOTERO_USER_ID": "${ZOTERO_USER_ID}"
+      }
+    },
+    "academix": {
+      "transport": "stdio",
+      "command": "uvx",
+      "args": ["academix"],
+      "env": {
+        "ACADEMIX_EMAIL": "${ACADEMIX_EMAIL}"
+      }
+    },
+    "echarts": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "mcp-echarts"],
+      "env": {
+        "MINIO_ENDPOINT": "127.0.0.1",
+        "MINIO_PORT": "9000",
+        "MINIO_USE_SSL": "false",
+        "MINIO_ACCESS_KEY": "${MINIO_ROOT_USER}",
+        "MINIO_SECRET_KEY": "${MINIO_ROOT_PASSWORD}",
+        "MINIO_BUCKET_NAME": "daemon-artifacts"
+      }
+    },
+    "leetcode": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@jinzcdev/leetcode-mcp-server", "--site", "global"]
+    },
+    "openweathermap": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "mcp-openweathermap"],
+      "env": {
+        "OPENWEATHER_API_KEY": "${OPENWEATHER_API_KEY}"
+      }
+    },
+    "dblp": {
+      "transport": "stdio",
+      "command": "uvx",
+      "args": ["mcp-dblp"]
+    },
+
+    "rss-reader": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/rss_reader.py"]
+    },
+    "arxiv": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/arxiv_search.py"]
+    },
+    "openalex": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/openalex.py"]
+    },
+    "crossref": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/crossref.py"]
+    },
+    "core": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/core_api.py"]
+    },
+    "unpaywall": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/unpaywall.py"]
+    },
+    "hackernews": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/hackernews.py"]
+    },
+    "reddit": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/reddit.py"]
+    },
+    "twitter": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/twitter.py"]
+    },
+    "intervals-icu": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/intervals_icu.py"]
+    },
+    "strava": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/strava.py"]
+    },
+    "matplotlib-chart": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/matplotlib_chart.py"]
+    },
+    "mermaid": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/mermaid_render.py"]
+    },
+    "gmail": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/gmail.py"]
+    },
+    "macos-control": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/macos_control.py"]
+    },
+    "languagetool": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/languagetool.py"]
+    },
+    "devto": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/devto.py"],
+      "env": {
+        "DEVTO_API_KEY": "${DEVTO_API_KEY}"
+      }
+    },
+    "hashnode": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/hashnode.py"],
+      "env": {
+        "HASHNODE_TOKEN": "${HASHNODE_TOKEN}"
+      }
+    },
+    "kroki": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/kroki.py"]
+    },
+    "huggingface": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/huggingface.py"]
+    },
+    "libraries-io": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/libraries_io.py"],
+      "env": {
+        "LIBRARIES_IO_API_KEY": "${LIBRARIES_IO_API_KEY}"
+      }
+    },
+    "newsdata": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/newsdata.py"],
+      "env": {
+        "NEWSDATA_API_KEY": "${NEWSDATA_API_KEY}"
+      }
+    },
+    "latex": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/latex.py"]
+    },
+    "typst": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/typst.py"]
+    },
+    "docker-control": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/docker_control.py"]
+    },
+    "kaggle": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/kaggle.py"],
+      "env": {
+        "KAGGLE_USERNAME": "${KAGGLE_USERNAME}",
+        "KAGGLE_KEY": "${KAGGLE_KEY}"
+      }
+    },
+    "excalidraw": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@anthropic-ai/mcp-server-excalidraw"],
+      "_note": "TODO: verify package name, may need local build from excalidraw/excalidraw-mcp"
+    },
+
+    "google-calendar": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/google_calendar.py"]
+    },
+    "google-docs": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/google_docs.py"]
+    },
+    "google-drive": {
+      "transport": "stdio",
+      "command": "python3",
+      "args": ["/Users/kevinjian/daemon/mcp_servers/google_drive.py"]
+    },
+    "obsidian-vault": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@bitbonsai/mcpvault"],
+      "env": {
+        "VAULT_PATH": "${OBSIDIAN_VAULT_PATH}"
+      }
     }
   }
 }

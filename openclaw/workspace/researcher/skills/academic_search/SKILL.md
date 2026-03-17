@@ -1,3 +1,13 @@
+---
+name: academic-search
+description: >-
+  Search academic literature using Semantic Scholar to find papers, citations,
+  and research results for a given query. ALWAYS activate when the goal involves
+  finding scholarly papers, citation data, or domain-specific research.
+  Prioritize peer-reviewed, high-citation papers. NEVER return results without
+  title, authors, year, citation count, and abstract.
+---
+
 # Academic Search
 
 ## 适用场景

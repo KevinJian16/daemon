@@ -1,3 +1,13 @@
+---
+name: telegram-notify
+description: >-
+  Send formatted notifications through the Telegram channel using MarkdownV2
+  formatting. ALWAYS activate when a notification must be delivered to the user
+  via Telegram. Escape all MarkdownV2 special characters. NEVER send messages
+  exceeding 4096 characters without splitting. NEVER send unescaped special
+  characters that would cause API rejection.
+---
+
 # Telegram Notify
 
 ## 适用场景

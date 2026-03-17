@@ -1,3 +1,13 @@
+---
+name: implementation
+description: >-
+  Implement new features or fix bugs, producing working code that follows
+  existing patterns. ALWAYS activate when the step goal requires writing or
+  modifying source code. Read existing code structure and conventions before
+  writing. NEVER write code without first reading the target module's existing
+  style. NEVER skip error handling or boundary checks.
+---
+
 # Implementation
 
 ## 适用场景

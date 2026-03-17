@@ -1,3 +1,13 @@
+---
+name: release-checklist
+description: >-
+  Execute a pre-release checklist to verify all publishing conditions are met
+  before a version release. ALWAYS activate before creating a GitHub release or
+  deploying a new version. Block the release if any mandatory check fails. NEVER
+  skip version consistency checks across pyproject.toml, package.json, and
+  CHANGELOG.
+---
+
 # Release Checklist
 
 ## 适用场景

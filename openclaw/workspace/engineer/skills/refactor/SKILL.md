@@ -1,3 +1,12 @@
+---
+name: refactor
+description: >-
+  Refactor code (rename, extract, restructure) without changing external
+  behavior. ALWAYS activate when the goal is to improve code structure while
+  preserving semantics. Find ALL reference points before making changes. NEVER
+  leave stale references after renaming. NEVER introduce circular imports.
+---
+
 # Refactor
 
 ## 适用场景
