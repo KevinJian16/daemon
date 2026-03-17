@@ -1,5 +1,7 @@
 # Daemon SOP 设计（Standard Operating Procedures）
 
+> **定位**：本文档是 SYSTEM_DESIGN.md 的配套文档，定义用户工作流。被 SYSTEM_DESIGN.md §9.2.1.1 和 MEMORY.md 引用。本文档是独立的操作指南，不重复系统设计内容。
+
 > **日期**：2026-03-17
 > **依据**：Stage 0 Interview + SYSTEM_DESIGN.md 七稿 + 行业/学术标准工作流调研
 > **目标**：定义 daemon 应该主动驱动的用户工作流程，不只是被动响应指令

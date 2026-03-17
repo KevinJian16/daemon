@@ -1263,7 +1263,7 @@ FINAL 规则：自动任务也必须先形成 Draft，除非是明确的 `route=
 
 - 用户问"进展怎么样" → daemon 用对话回复当前任务状态
 - 用户问"这个项目整体情况" → daemon 汇总 Project 下各 Task 状态
-- 用户问"上次的结果呢" → daemon 在阅读器 view 中展示 Artifact
+- 用户问"上次的结果呢" → daemon 通过原生应用打开 Artifact（`native_open` / `artifact_show`，见 §4.9 DD-78）
 
 **FINAL 规则：** 任务的结构化信息（DAG 依赖、执行历史、版本列表）存在于 Plane 后端，但只在用户明确问到时以自然语言或简洁摘要呈现，不默认展示。
 
@@ -1290,13 +1290,14 @@ FINAL 规则：Task 活动流 API 保留，用于后台管理：
 
 ### 4.6 Artifact 呈现
 
-Job 产生的 Artifact 通过两种方式呈现：
+Job 产生的 Artifact 通过原生应用打开呈现（DD-78）：
 
-- **文本类**：在阅读器 view 中直接展示（Markdown 渲染）
-- **需要浏览器的**：在浏览器 view 中打开（网页预览、在线文档等）
-- **文件类**：提供下载入口
+- **Markdown 类**：`artifact_show` → `/artifacts/{id}/render` → 系统浏览器打开渲染页
+- **外部内容（网页、在线文档等）**：`native_open` → 系统浏览器打开 URL
+- **代码/文本文件**：`native_open` → VS Code 打开
+- **文件类**：提供下载入口，或 `native_open` → Preview.app / Finder 打开
 
-FINAL 规则：Artifact 呈现在对话流中自然引出（"写好了，你看看"→ 阅读器 view 自动打开），不需要用户去某个列表里找。
+FINAL 规则：Artifact 呈现在对话流中自然引出（"写好了，你看看"→ 原生应用自动打开），不需要用户去某个列表里找。
 
 ### 4.7 反馈与 Persona 回路
 
@@ -1336,8 +1337,11 @@ FINAL 规则：daemon API 面向自建客户端，按场景路由，提供以下
 | 场景 | `GET /scenes/{scene}/panel` | 场景 panel 数据 |
 | 活动流 | `GET /tasks/{id}/activity` | Task 活动流（后台，面向 CC/admin） |
 | 产物 | `GET /artifacts/{id}` | Artifact 内容 |
+| 产物 | `GET /artifacts/{id}/render` | Artifact Markdown 渲染页（`artifact_show` 目标） |
 | 产物 | `GET /artifacts/{id}/download` | Artifact 下载 |
+| Webhook | `POST /webhooks/plane` | Plane 事件回调（Issue 状态变更等） |
 | 状态 | `GET /status` | 系统整体状态（客户端状态指示用） |
+| 状态 | `GET /health` | 健康检查（Docker / 监控探针用） |
 | 认证 | `GET /auth/google` | Google OAuth 登录 |
 | 认证 | `GET /auth/github` | GitHub OAuth 登录 |
 | 认证 | `GET /auth/callback` | OAuth 回调 |
@@ -1712,6 +1716,8 @@ Mem0 中的记忆随使用不断积累，会出现碎片化、重复、矛盾、
 - 每个任务设超时（默认 30 分钟），超时跳过不阻塞
 - 任务失败不影响系统运行，下一周期重试
 
+用户工作流 SOP 见 `.ref/_work/SOP.md`（Research / Engineering / Life 三条主线）。
+
 ---
 
 ## §6 基础设施与运行时契约
@@ -1963,7 +1969,6 @@ FINAL 规则：
 | 场景 | 认证方式 |
 |---|---|
 | 本地 Tauri 客户端（localhost） | OAuth 登录，token 持久化，不需要每次登录 |
-| 远程 Web 访问（Tailscale Funnel） | OAuth 登录，session 管理 |
 | Telegram | 绑定 OAuth 账号，首次关联后免登录 |
 | API 调用 | JWT token（OAuth 登录后颁发） |
 
